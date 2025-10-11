@@ -778,6 +778,12 @@ def ProcessResult(request):
     # 1 若worklist_mapping第一列的元素为DB1，则将worklist_table中对应列元素为DB1的行的第2至最后一列的内容按照worklist_mapping中内容进行填充
     # 2 若worklist_mapping第一列的元素为Test，则将worklist_table中对应列元素为Test开头（注意这里）的行的第2至最后一列的内容按照worklist_mapping中内容进行填充
     # 3 若worklist_mapping第一列的元素为*，则将worklist_table中除上述已填充的行以外（注意这里）的行的第2至最后一列的内容按照worklist_mapping中内容进行填充
+
+    # 20251011新增规则：
+    # 4 无论worklist_mapping中第一列的元素的什么，若worklist_table中某一列的列名为‘SetName’，则该列的内容按照下述形式填充：'仪器编号-项目名称-日期'，即{instrument_num}-{project_name}-日期，其中日期精确到天（如20251011）。例如：FXS-YZ38-25OHD-20251011
+    # 5 无论worklist_mapping中第一列的元素的什么，若worklist_table中某一列的列名为‘OutputFile’，则该列的内容按照下述形式填充：'年\年月\Data{instrument_num}-{project_name}-日期'，其中日期精确到天（如20251011）。例如：2025\202510\DataFXS-YZ38-25OHD-20251011
+
+
     for _, row in worklist_mapping.iterrows():
         sample_name = row.iloc[0]   # 用 iloc 显式取第一列
         fill_values = row.iloc[1:]  # 用 iloc 显式取剩余列
@@ -873,6 +879,22 @@ def ProcessResult(request):
                     # 普通列，直接填充
                     worklist_table.loc[mask, col] = val
 
+    # 日期精确到天，如 20251011
+    today_str = timezone.localtime().strftime("%Y%m%d")
+    year = today_str[:4]       # 2025
+    yearmonth = today_str[:6]  # 202510
+    
+    # e.g. FXS-YZ38-25OHD-20251011
+    setname_value = f"{instrument_num}-{project_name}-{today_str}"
+
+    # e.g. 2025\202510\DataFXS-YZ38-25OHD-20251011
+    output_value = f"{year}\\{yearmonth}\\Data{setname_value}-{project_name}-{today_str}"
+    
+    if "SetName" in worklist_table.columns:
+        worklist_table["SetName"] = setname_value
+
+    if "OutputFile" in worklist_table.columns:
+        worklist_table["OutputFile"] = output_value
 
     # 转成 records 形式（每行是一个字典）
     worklist_records = worklist_table.to_dict(orient="records")

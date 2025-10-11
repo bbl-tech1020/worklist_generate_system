@@ -1,0 +1,77 @@
+
+{% extends 'dashboard/index.html' %}
+{% load static %}
+
+{% block header %}
+<header class="navbar navbar-expand-md navbar-light d-print-none">
+    <div class="container-fluid">
+        <h1 class="navbar-brand">编辑参数</h1>
+    </div>
+</header>
+{% endblock %}
+
+{% block content %}
+<div class="card mt-4">
+    <div class="card-header">
+        <h3 class="card-title">编辑参数</h3>
+    </div>
+    <div class="card-body">
+        <form method="post" enctype="multipart/form-data">
+            {% csrf_token %}
+            <!-- 其余字段按需添加，可以单独渲染 -->
+            <div class="mb-3">
+                <label class="form-label">项目名称</label>
+                {{ form.project_name }}
+            </div>
+            <div class="mb-3">
+                <label class="form-label">取样方式</label>
+                {{ form.sampling_method }}
+            </div>
+            <div class="mb-3">
+                <label class="form-label">曲线点数</label>
+                {{ form.curve_points }}
+            </div>
+            <div class="mb-3">
+                <label class="form-label">质控组数</label>
+                {{ form.qc_groups }}
+            </div>
+            <div class="mb-3">
+                <label class="form-label">质控水平数</label>
+                {{ form.qc_levels }}
+            </div>
+            <div class="mb-3">
+                <label class="form-label">是否在中间插入质控</label>
+                {{ form.qc_insert }}
+            </div>
+            <div class="mb-3">
+                <label class="form-label">Test数</label>
+                {{ form.test_count }}
+            </div>
+            <div class="mb-3">
+                <label class="form-label">工作清单排列方式</label>
+                {{ form.layout }}
+            </div>
+            <div class="mb-3">
+                <label class="form-label">默认上机仪器</label>
+                {{ form.default_upload_instrument }}
+            </div>
+
+
+            <!-- 对应关系表 -->
+            <div class="mb-3">
+                <label class="form-label">对应关系表</label>
+                {% if config.mapping_file %}
+                    <a href="{{ config.mapping_file.url }}" download class="btn btn-link">下载当前文件</a>
+                {% else %}
+                    <span class="text-muted">无</span>
+                {% endif %}
+                {{ form.mapping_file }}
+                <small class="form-text text-muted">上传新文件可替换原文件</small>
+            </div>
+
+            <button class="btn btn-primary">保存设置</button>
+            <a href="{% url 'project_config' %}" class="btn btn-secondary ms-2">取消</a>
+        </form>
+    </div>
+</div>
+{% endblock %}

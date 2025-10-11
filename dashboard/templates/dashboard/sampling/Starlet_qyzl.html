@@ -1,0 +1,58 @@
+{% extends 'dashboard/index.html' %}
+{% load static %}
+{% block header %}
+<header class="navbar navbar-expand-md navbar-light d-print-none">
+  <div class="container-fluid">
+    <h1 class="navbar-brand">Starlet-生成取样指令</h1>
+  </div>
+</header>
+{% endblock %}
+
+{% block content %}
+<div class="card mt-4">
+
+  <div class="card-body">
+      <!-- <div class="mb-3">
+        <label class="form-label" name="project_id">项目名称</label>
+        <select class="form-select" id="project-select" name="project_id" required>
+          <option value="">请选择项目</option>
+          
+        </select>
+      </div> -->
+
+      <!-- NIMBUS取样表单 -->
+      <div id="starlet-instruction-div">
+          <!-- 在这里写“取样指令生成”需要的内容 -->
+          <div class="mb-3">
+            <div class="card shadow-sm"> 
+                <div class="card-header text-center fw-bold fs-5 bg-primary text-white">
+                    Starlet 取样指令生成器
+                </div>
+                <div class="card-body">
+                    <form method="post" enctype="multipart/form-data">
+                        {% csrf_token %}
+                        <div class="mb-3">
+                            <label for="formFile" class="form-label">上传 Input.xlsx 文件</label>
+                            <input class="form-control" type="file" id="formFile" name="input_file" accept=".xlsx" required>
+                        </div>
+                        <div class="d-grid gap-2">
+                            <button class="btn btn-success" type="submit">生成扫码指令(.xls格式)</button>
+                        </div>
+                    </form>
+
+                    {% if file_url %}
+                    <div class="alert alert-success mt-4" role="alert">
+                        文件已生成！<a href="{{ file_url }}" class="alert-link">点击此处下载结果</a>
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+          </div>
+
+        </div>
+
+  </div>
+</div>
+
+
+{% endblock %}

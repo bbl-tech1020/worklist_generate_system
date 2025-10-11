@@ -1,0 +1,41 @@
+
+{% extends 'dashboard/index.html' %}
+{% block header %}
+<header class="navbar navbar-expand-md navbar-light d-print-none">
+    <div class="container-fluid">
+        <h1 class="navbar-brand">参数详情</h1>
+    </div>
+</header>
+{% endblock %}
+
+{% block content %}
+<div class="card mt-4">
+    <div class="card-header">
+        <h3 class="card-title">参数详情</h3>
+    </div>
+    <div class="card-body">
+        <table class="table">
+            <tr><th>项目名称</th><td>{{ config.project_name }}</td></tr>
+            <tr><th>取样方式</th><td>{{ config.get_sampling_method_display }}</td></tr>
+            <tr><th>曲线点数</th><td>{{ config.curve_points }}</td></tr>
+            <tr><th>质控组数</th><td>{{ config.qc_groups }}</td></tr>
+            <tr><th>质控水平数</th><td>{{ config.qc_levels }}</td></tr>
+            <tr><th>是否在中间插入质控</th><td>{{ config.get_qc_insert_display }}</td></tr>
+            <tr><th>Test数</th><td>{{ config.test_count }}</td></tr>
+            <tr><th>工作清单排列方式</th><td>{{ config.get_layout_display }}</td></tr>
+            <tr><th>默认上机仪器</th><td>{{ config.default_upload_instrument }}</td></tr>
+            <tr>
+                <th>对应关系表</th>
+                <td>
+                    {% if config.mapping_file %}
+                        <a href="{{ config.mapping_file.url }}" download>下载文件</a>
+                    {% else %}
+                        -
+                    {% endif %}
+                </td>
+            </tr>
+        </table>
+        <a href="{% url 'project_config' %}" class="btn btn-secondary mt-3">返回</a>
+    </div>
+</div>
+{% endblock %}

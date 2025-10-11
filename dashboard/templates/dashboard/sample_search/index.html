@@ -1,0 +1,57 @@
+
+{% extends 'dashboard/index.html' %}
+{% load static %}
+{% block header %}
+<header class="navbar navbar-expand-md navbar-light d-print-none">
+    <div class="container-fluid">
+        <h1 class="navbar-brand">历史标本查找</h1>
+    </div>
+</header>
+{% endblock %}
+
+
+{% block content %}
+
+    <!-- 搜索框 -->
+    <div class="mb-3">
+        <!-- <label for="searchInput" class="form-label">请输入条码或者实验号进行查找</label> -->
+        <input type="text" id="searchInput" class="form-control" placeholder="请输入条码或者实验号进行查找...">
+    </div>
+    
+    <!-- 搜索结果显示 -->
+    <div id="searchResults" class="search-results mt-3">
+        <!-- 查询结果将显示在此 -->
+    </div>
+
+    <!-- 确定按钮 -->
+    <div class="btn-save">
+        <button type="button" class="btn btn-primary" onclick="performSearch()">查找</button>
+    </div>
+
+<script>
+function performSearch() {
+    const query = document.getElementById("searchInput").value.trim();
+    if (!query) {
+        alert("请输入条码或实验号");
+        return;
+    }
+
+    fetch(`/dashboard/sample_search_api/?q=${query}`)
+        .then(response => response.json())
+        .then(data => {
+            const resultsDiv = document.getElementById("searchResults");
+            resultsDiv.innerHTML = "";
+            if (data.results.length === 0) {
+                resultsDiv.innerHTML = "<p>未找到相关记录</p>";
+            } else {
+                data.results.forEach(r => {
+                    const p = document.createElement("p");
+                    p.textContent = `项目: ${r.project_name} | 日期: ${r.date} | 板号: ${r.plate_no} | 孔位: ${r.well_str}`;
+                    resultsDiv.appendChild(p);
+                });
+            }
+        });
+}
+</script>
+
+{% endblock %}

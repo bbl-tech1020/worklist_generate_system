@@ -1,0 +1,152 @@
+
+{% extends 'dashboard/index.html' %}
+{% load static %}
+{% block header %}
+<header class="navbar navbar-expand-md navbar-light d-print-none">
+    <div class="container-fluid">
+        <h1 class="navbar-brand">前端功能入口</h1>
+    </div>
+</header>
+{% endblock %}
+
+{% block content %}
+<style>
+    .sampling-card {
+        border-radius: 1.5rem !important;
+        overflow: hidden;
+        position: relative;
+        min-height: 440px;
+        box-shadow: 0 3px 20px rgba(0, 0, 0, .07);
+        display: flex;
+        flex-direction: column;
+        background: #fff;
+        transition: transform 0.2s cubic-bezier(.4, 2, .6, 1), box-shadow 0.2s;
+        will-change: transform;
+    }
+
+    .sampling-card:hover {
+        transform: scale(1.04);
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.18);
+        z-index: 2;
+    }
+
+    .sampling-strip {
+        height: 48px;
+        width: 100%;
+        position: absolute;
+        top: 0;
+        left: 0;
+    }
+
+    .sampling-img-container {
+        margin-top: 56px;
+        margin-bottom: 10px;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        height: 250px;
+        /* 更高的图片区 */
+        transition: transform 0.2s cubic-bezier(.4, 2, .6, 1);
+    }
+
+    .sampling-card:hover .sampling-img-container img {
+        transform: scale(1.07);
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.08);
+    }
+
+    .sampling-img-container img {
+        width: 280px;
+        /* 固定宽度 */
+        height: 240px;
+        /* 固定高度 */
+        border-radius: 1rem;
+        object-fit: contain;
+        transition: transform 0.2s cubic-bezier(.4, 2, .6, 1), box-shadow 0.2s;
+        background: #f9f9f9;
+        box-shadow: 0 2px 12px rgba(0, 0, 0, .08);
+    }
+
+    .sampling-body {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        justify-content: flex-start;
+        align-items: center;
+        padding: 0 1rem;
+        margin-bottom: 10px;
+        margin-top: 10px;
+        text-align: center;
+    }
+
+    .sampling-footer {
+        margin-top: auto;
+        padding: 1rem;
+        background: transparent;
+    }
+</style>
+
+<div class="container mt-4">
+    <div class="row g-4">
+        <!-- 手工取样 -->
+        <div class="col-12 col-md-6">
+            <div class="card sampling-card">
+                <div class="sampling-strip" style="background: #f44336;"></div>
+                <div class="sampling-img-container">
+                    <img src="{% static 'images/Manual.jpg' %}" alt="手工取样">
+                </div>
+                <div class="sampling-body">
+                    <h5 class="fw-bold mb-2" style="color: #f44336;">手工取样</h5>
+                </div>
+                <div class="sampling-footer">
+                    <a href="#" class="btn btn-warning w-100 rounded-3 fw-bold">进入手工取样</a>
+                </div>
+            </div>
+        </div>
+        <!-- NIMBUS取样 -->
+        <div class="col-12 col-md-6">
+            <div class="card sampling-card">
+                <div class="sampling-strip" style="background: #673ab7;"></div>
+                <div class="sampling-img-container">
+                    <img src="{% static 'images/NIMBUS.jpg' %}" alt="NIMBUS取样">
+                </div>
+                <div class="sampling-body">
+                    <h5 class="fw-bold mb-2" style="color: #673ab7;">NIMBUS取样</h5>
+                </div>
+                <div class="sampling-footer">
+                    <a href="{% url 'NIMBUS_sampling' %}" class="btn btn-warning w-100 rounded-3 fw-bold">进入NIMBUS取样</a>
+                </div>
+            </div>
+        </div>
+        <!-- Starlet取样 -->
+        <div class="col-12 col-md-6">
+            <div class="card sampling-card">
+                <div class="sampling-strip" style="background: #3f51b5;"></div>
+                <div class="sampling-img-container">
+                    <img src="{% static 'images/Starlet.jpg' %}" alt="Starlet取样">
+                </div>
+                <div class="sampling-body">
+                    <h5 class="fw-bold mb-2" style="color: #3f51b5;">Starlet取样</h5>
+                </div>
+                <div class="sampling-footer">
+                    <a href="{% url 'Starlet_sampling' %}" class="btn btn-warning w-100 rounded-3 fw-bold">进入Starlet取样</a>
+                </div>
+            </div>
+        </div>
+        <!-- Tecan取样 -->
+        <div class="col-12 col-md-6">
+            <div class="card sampling-card">
+                <div class="sampling-strip" style="background: #009688;"></div>
+                <div class="sampling-img-container">
+                    <img src="{% static 'images/Tecan.jpg' %}" alt="Tecan取样">
+                </div>
+                <div class="sampling-body">
+                    <h5 class="fw-bold mb-2" style="color: #009688;">Tecan取样</h5>
+                </div>
+                <div class="sampling-footer">
+                    <a href="#" class="btn btn-warning w-100 rounded-3 fw-bold">进入Tecan取样</a>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

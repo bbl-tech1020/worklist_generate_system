@@ -1,0 +1,173 @@
+<aside id="appSidebar" class="navbar navbar-vertical navbar-expand-lg navbar-dark bg-primary py-4">
+    <style>
+        .sidebar-nav-link,
+        .sidebar-nav-link .nav-link-title {
+            font-size: 1.25rem !important;
+            font-weight: bold !important;
+            letter-spacing: 0.01em;
+        }
+
+        .sidebar-nav-link {
+            display: flex;
+            align-items: center;
+            gap: 0.65em;
+            padding-left: 0.5em;
+            padding-right: 0.5em;
+            position: relative;
+        }
+
+        .sidebar-nav-link .nav-link-title {
+            flex: 1;
+            white-space: nowrap;
+        }
+
+        .sidebar-caret {
+            margin-left: auto;
+            font-size: 1em;
+            transition: transform .2s;
+        }
+
+        .sidebar-nav-link.collapsed .sidebar-caret {
+            transform: rotate(-90deg);
+        }
+
+        .sidebar-submenu {
+            padding-left: 1.7em;
+            margin-left: 0.2em;
+            border-left: 2px solid #3b4658;
+        }
+
+        .sidebar-submenu .nav-link {
+            display: flex;
+            align-items: center;
+            gap: 0.6em;
+            padding: 0.37em 0.7em 0.37em 0.6em;
+            margin: 0.5em 0;
+            border-radius: 0.33em;
+            font-size: 1.08rem !important;
+            font-weight: bold !important;
+            letter-spacing: 0.01em;
+            line-height: 1.7;
+            color: #c3c8ce;
+            background: transparent;
+            transition: background .17s, color .17s;
+        }
+
+        .sidebar-submenu .nav-link .submenu-dot {
+            display: inline-block;
+            width: 0.72em;
+            height: 0.72em;
+            border-radius: 50%;
+            border: 2px solid #9097a7;
+            background: #222b3a;
+            margin-right: 0.25em;
+            flex-shrink: 0;
+            transition: border-color .2s, background .2s;
+        }
+
+        .sidebar-submenu .nav-link.active,
+        .sidebar-submenu .nav-link:hover {
+            background: #1b273c;
+            color: #4ea1ff;
+        }
+
+        .sidebar-submenu .nav-link.active .submenu-dot,
+        .sidebar-submenu .nav-link:hover .submenu-dot {
+            border-color: #4ea1ff;
+            background: #4ea1ff;
+        }
+    </style>
+
+    <div class="container-fluid flex-column align-items-stretch">
+        <div class="d-flex flex-row align-items-center justify-content-between">
+            <a href="#" class="navbar-brand sidebar-title">工作清单与<br>上机列表生成系统</a>
+          
+            <!-- 移动端折叠（保留原有） -->
+            <button class="sidebar-toggler d-lg-none" type="button" data-bs-toggle="collapse"
+                    data-bs-target="#sidebarMenu" aria-controls="sidebarMenu" aria-expanded="false" aria-label="切换侧边栏">
+              <i class="ti ti-menu-2"></i>
+            </button>
+          
+            <!-- 桌面端缩窄/展开 -->
+            <button id="sidebarCollapseBtn" class="sidebar-toggle-btn d-none d-lg-inline-flex" type="button"
+                    title="折叠/展开侧边栏">
+              <i class="ti ti-layout-sidebar-left-collapse"></i>
+            </button>
+          </div>
+
+        <!-- 折叠菜单 -->
+        <div class="collapse d-lg-block" id="sidebarMenu">
+            <div class="navbar-nav flex-grow-1 d-flex flex-column justify-content-start">
+                <ul class="navbar-nav">
+
+                    <!-- 前端功能入口 -->
+                    <li class="nav-item">
+                        <a class="nav-link sidebar-nav-link {% if request.path == '/dashboard/frontend_entry/' %}active{% endif %}"
+                            href="{% url 'frontend_entry' %}">
+                            <span class="nav-link-icon"><i class="ti ti-layout-dashboard"></i></span>
+                            <span class="nav-link-title">前端功能入口</span>
+                        </a>
+                    </li>
+
+                    <li class="nav-item">
+                        <a class="nav-link sidebar-nav-link {% if request.path == '/dashboard/sample_search/' %}active{% endif %}"
+                            href="{% url 'sample_search' %}">
+                            <span class="nav-link-icon"><i class="ti ti-layout-dashboard"></i></span>
+                            <span class="nav-link-title">历史标本查找</span>
+                        </a>
+                    </li>
+
+                    <li class="nav-item">
+                        <a class="nav-link sidebar-nav-link {% if request.path == '/dashboard/file_download/' %}active{% endif %}"
+                            href="{% url 'file_download' %}">
+                            <span class="nav-link-icon"><i class="ti ti-layout-dashboard"></i></span>
+                            <span class="nav-link-title">文件下载</span>
+                        </a>
+                    </li>
+
+                    <!-- 后台参数配置+折叠子菜单 -->
+                    {% with name=request.resolver_match.url_name %}
+
+                        <li class="nav-item">
+                        <a class="nav-link sidebar-nav-link d-flex align-items-center
+                                    {% if name != 'project_config' and name != 'vendor_config' and name != 'injection_volume_config' %}collapsed{% endif %}"
+                            data-bs-toggle="collapse"
+                            data-bs-target="#backendConfigCollapse"
+                            role="button"
+                            aria-expanded="{% if name == 'project_config' or name == 'vendor_config' or name == 'injection_volume_config' %}true{% else %}false{% endif %}">
+                            <span class="nav-link-icon"><i class="ti ti-settings"></i></span>
+                            <span class="nav-link-title">后台参数配置</span>
+                            <span class="sidebar-caret"><i class="ti ti-chevron-down"></i></span>
+                        </a>
+
+                        <div id="backendConfigCollapse"
+                            class="collapse sidebar-submenu{% if name == 'project_config' or name == 'vendor_config' or name == 'injection_volume_config' %} show{% endif %}">
+                            <a class="nav-link {% if name == 'project_config' %}active{% endif %}" href="{% url 'project_config' %}">
+                            <span class="submenu-dot"></span>项目参数配置
+                            </a>
+                            <a class="nav-link {% if name == 'vendor_config' %}active{% endif %}" href="{% url 'vendor_config' %}">
+                            <span class="submenu-dot"></span>仪器厂家参数配置
+                            </a>
+                            <a class="nav-link {% if name == 'injection_volume_config' %}active{% endif %}" href="{% url 'injection_volume_config' %}">
+                            <span class="submenu-dot"></span>进样体积配置
+                            </a>
+                        </div>
+                        </li>
+
+                    {% endwith %}
+
+
+
+                    <li class="nav-item">
+                        <a class="nav-link" href="{% url 'user_manual' %}">
+                            <span class="nav-link-icon d-md-none d-lg-inline-block">📘</span>
+                            <span class="nav-link-title">系统使用说明</span>
+                        </a>
+                    </li>
+
+
+                </ul>
+            </div>
+        </div>
+    </div>
+</aside>

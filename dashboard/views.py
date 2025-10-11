@@ -1,0 +1,1031 @@
+
+from django.views.decorators.http import require_POST
+from django.views.decorators.csrf import csrf_exempt
+from django.shortcuts import render, redirect, get_object_or_404
+from .models import *
+from django.http import JsonResponse,HttpResponseRedirect,HttpResponse, HttpResponseBadRequest
+from django.conf import settings
+from django.template.loader import render_to_string,get_template
+from django.core.files.storage import default_storage
+from django.core.files.base import ContentFile
+from django.utils import timezone
+from .forms import *
+
+import xlrd
+from datetime import datetime,date
+from icecream import ic
+from collections import defaultdict, deque
+import pandas as pd
+pd.set_option('display.max_rows', None)
+
+import os, io, logging
+import re
+from io import StringIO,BytesIO
+import openpyxl
+import xlwt
+from openpyxl import Workbook
+from pathlib import Path
+from math import ceil
+from weasyprint import HTML, CSS
+from weasyprint.text.fonts import FontConfiguration
+
+# Create your views here.
+def home(request):
+    return render(request, "dashboard/index.html")
+
+def user_manual(request):
+    # 这里也可以做权限控制（如仅登录可见）
+    return render(request, "dashboard/user_manual.html")
+
+# 1 前端
+# 前端功能入口
+def frontend_entry(request):
+    return render(request, 'dashboard/frontend/index.html')
+
+# 关联后台参数配置中已设置的所有项目
+def get_project_list(request):
+    configs = SamplingConfiguration.objects.all()
+    data = [
+        {'id': c.id, 'name': c.project_name}
+        for c in configs
+    ]
+    return JsonResponse({'projects': data})
+
+# 选择具体某个项目时，关联后台参数配置中该项目的配置信息
+def get_project_detail(request, pk):
+    configs = SamplingConfiguration.objects.get(pk=pk)
+    data = {
+        'id': configs.id,
+        'name': configs.project_name,
+        'default_upload_instrument': configs.default_upload_instrument
+    }
+    return JsonResponse(data)
+
+# NIMBUS
+def NIMBUS_sampling(request):
+    return render(request, 'dashboard/sampling/NIMBUS.html')
+
+# Starlet
+def Starlet_sampling(request):
+    return render(request, 'dashboard/sampling/Starlet.html')
+
+def Starlet_qyzl(request):
+    if request.method == 'POST' and request.FILES.get('input_file'):
+        input_file = request.FILES['input_file']
+        path = default_storage.save('tmp/' + input_file.name, ContentFile(input_file.read()))
+        tmp_file = os.path.join(default_storage.location, path)
+
+        wb = openpyxl.load_workbook(tmp_file, data_only=True)
+        ws = wb.active
+
+        AreaStartNum = int(ws['I1'].value)
+        AreaRowNum = ws['K1'].value
+        AreaStartPositionID = "B1"
+
+        center_style = xlwt.XFStyle()
+        alignment = xlwt.Alignment()
+        alignment.horz = xlwt.Alignment.HORZ_CENTER
+        alignment.vert = xlwt.Alignment.VERT_CENTER
+        center_style.alignment = alignment
+
+        # 获取条码所在区域
+        # Step 1: 自动检测“最大行和最大列”
+        min_row, min_col = 3, 2  # B3
+        max_row = ws.max_row
+        max_col = ws.max_column
+
+        # 1.1 找到从B3开始实际有数据的最大行和最大列
+        actual_max_row, actual_max_col = min_row, min_col
+
+        for row in range(min_row, ws.max_row+1):
+            for col in range(min_col, ws.max_column+1):
+                cell_value = ws.cell(row=row, column=col).value
+                if cell_value:  # 有值
+                    if row > actual_max_row:
+                        actual_max_row = row
+                    if col > actual_max_col:
+                        actual_max_col = col
+
+        # Step 2: 从B3到实际最大行/列遍历，采集所有有值的条码，仍然按“按列优先”
+        barcode_cells = ws.iter_cols(
+            min_col=min_col, max_col=actual_max_col,
+            min_row=min_row, max_row=actual_max_row
+        )
+        all_barcodes = [cell.value for col in barcode_cells for cell in col if cell.value]
+
+        barcodes = all_barcodes[12:]
+        OutputRowNum = len(barcodes)
+        AreaNum = ceil(OutputRowNum / AreaRowNum)
+
+        output = xlwt.Workbook()
+
+        if AreaStartNum<=5:
+            sheet = output.add_sheet("Import_1_5_Worklist")
+        elif AreaStartNum<=10:
+            sheet = output.add_sheet("Import_6_10_Worklist")
+        elif AreaStartNum<=15:
+            sheet = output.add_sheet("Import_11_15_Worklist")
+        else:
+            sheet = output.add_sheet("Import_16_20_Worklist")
+
+        # sheet = output.add_sheet("Import_1_5_Worklist")
+
+        sheet.col(1).width = 8 * 256
+        sheet.col(2).width = 30 * 256
+        sheet.col(3).width = 15 * 256
+        sheet.col(4).width = 30 * 256
+        sheet.col(5).width = 35 * 256
+        sheet.col(6).width = 15 * 256
+        sheet.col(7).width = 8 * 256
+
+        headers = ["", "Index", "SourceLabwareID", "SourcePositionID", "SourceBarcode", "TargetLabwareID", "TargetPositionID", "Volume"]
+        for col, head in enumerate(headers):
+            sheet.write(0, col, head, center_style)
+
+        def next_source_labware(n):
+            return f"SMP_CAR_32_12x75_A00_{str(n).zfill(4)}"
+
+        def get_target_labware_id(area_index, AreaStartNum):
+            if AreaStartNum % 5 == 0:
+                return f"Cos_96_DW_2mL_{str(5 + area_index).zfill(4)}"
+            else:
+                return f"Cos_96_DW_2mL_{str(AreaStartNum % 5 + area_index).zfill(4)}"
+
+        def generate_target_position_ids(start, count, skip_list=None):
+            if skip_list is None:
+                skip_list = set()
+            col_letter = start[0].upper()
+            row_number = int(start[1:])
+            result = []
+            current_letter = col_letter
+            current_number = row_number
+            generated = 0
+            while generated < count:
+                pos = f"{current_letter}{current_number}"
+                if pos not in skip_list:
+                    result.append(pos)
+                    generated += 1
+                current_number += 1
+                if current_number > 12:
+                    current_number = 1
+                    current_letter = chr(ord(current_letter) + 1)
+            return result
+
+        # -----------修正部分计数器--------------
+        row_num = 1
+        fixed_barcodes = [ws.cell(row=r, column=2).value for r in range(3, 15) if ws.cell(row=r, column=2).value]
+
+        # 以下变量专用于“实际样本”（不含前12条曲线/质控）
+        sample_labware_id_block = 1    # 只针对实际样本自增
+        sample_position_id = 13        # 实际样本 SourcePositionID 从13开始
+
+        for area_index in range(AreaNum):
+            start_index = area_index * AreaRowNum
+            end_index = min(start_index + AreaRowNum, OutputRowNum)
+            area_barcodes = barcodes[start_index:end_index]
+
+            total_barcodes = fixed_barcodes + area_barcodes
+
+            start_row = row_num
+            end_row = row_num + len(total_barcodes) - 1
+            sheet.write_merge(start_row, end_row, 0, 0, f"{area_index + AreaStartNum}", center_style)
+            target_labware_id = get_target_labware_id(area_index, AreaStartNum)
+
+            fixed_positions = [f"A{n}" for n in range(1, 13)]
+            skip_list = {f"B{AreaStartNum+area_index}"}
+            dynamic_positions = generate_target_position_ids(AreaStartPositionID, len(area_barcodes), skip_list)
+            total_positions = fixed_positions + dynamic_positions
+
+            for index, (barcode, position) in enumerate(zip(total_barcodes, total_positions)):
+                sheet.write(row_num, 1, index + 1, center_style)
+
+                if index < 12:
+                    # 前12条曲线/质控
+                    sheet.write(row_num, 2, "SMP_CAR_32_12x75_A00_0001", center_style)
+                    sheet.write(row_num, 3, index + 1, center_style)
+                else:
+                    # 实际样本部分
+                    sheet.write(row_num, 2, next_source_labware(sample_labware_id_block), center_style)
+                    sheet.write(row_num, 3, sample_position_id, center_style)
+
+                    # 只在实际样本递增和判断
+                    sample_position_id += 1
+                    if sample_position_id > 32:
+                        sample_position_id = 1
+                        sample_labware_id_block += 1
+
+                sheet.write(row_num, 4, barcode, center_style)
+                sheet.write(row_num, 5, target_labware_id, center_style)
+                sheet.write(row_num, 6, position, center_style)
+                sheet.write(row_num, 7, 100, center_style)
+
+                row_num += 1
+
+        output_stream = BytesIO()
+        output.save(output_stream)
+        output_stream.seek(0)
+        today_str = datetime.now().strftime("%Y%m%d")
+
+        file_name = f"qyzl-{today_str}-plate_{AreaStartNum}_{AreaStartNum+AreaNum-1}.xls"
+        response = HttpResponse(output_stream.getvalue(), content_type='application/vnd.ms-excel')
+        response['Content-Disposition'] = f'attachment; filename={file_name}'
+        return response
+
+    return render(request, 'dashboard/sampling/Starlet_qyzl.html')
+
+
+def Starlet_worksheet(request):
+    return render(request, 'dashboard/sampling/Starlet_worksheet.html')
+
+# 2 标本查找
+def sample_search(request):
+    return render(request, 'dashboard/sample_search/index.html')
+
+DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+def file_download(request):
+    """
+    展示 downloads 目录下的真实目录结构：
+    downloads/
+    └── 平台名/
+      └── YYYY-MM-DD/
+          └── 项目名/
+              ├── 工作清单.pdf
+              └── 上机列表.xlsx
+    """
+    root = settings.DOWNLOAD_ROOT
+    ic(root)
+
+    groups = []   # [{group:"NIMBUS", days:[{date:"2025-09-20", projects:[{name, files:[{name,url,is_pdf}]}]}]}]
+
+    if not os.path.exists(root):
+        os.makedirs(root)
+
+    for platform in sorted(os.listdir(root)):              # 平台层
+        p_path = os.path.join(root, platform)
+        if not os.path.isdir(p_path):
+            continue
+
+        days = []
+        for date_name in sorted(os.listdir(p_path), reverse=True):  # 日期倒序
+            if not (DATE_RE.match(date_name) and os.path.isdir(os.path.join(p_path, date_name))):
+                continue
+            d_path = os.path.join(p_path, date_name)
+
+            projects = []
+            for proj in sorted(os.listdir(d_path)):        # 项目层
+                proj_path = os.path.join(d_path, proj)
+                if not os.path.isdir(proj_path):
+                    continue
+
+                files = []
+                for fname in sorted(os.listdir(proj_path)):
+                    fpath = os.path.join(proj_path, fname)
+                    if not os.path.isfile(fpath):
+                        continue
+                    files.append({
+                        "name": fname,
+                        "url": f"{settings.DOWNLOAD_URL}{platform}/{date_name}/{proj}/{fname}",
+                        "is_pdf": fname.lower().endswith(".pdf"),
+                    })
+
+                projects.append({"name": proj, "files": files})
+
+            days.append({"date": date_name, "projects": projects})
+
+        groups.append({"group": platform, "days": days})
+
+    return render(request, "dashboard/file_download.html", {"groups": groups})
+
+# 3 后台参数配置
+def project_config(request):
+    project_configs = SamplingConfiguration.objects.all().order_by('-created_at')
+    return render(request, 'dashboard/config/project_config.html', {
+        'project_configs': project_configs
+    })
+
+def project_config_create(request):
+    if request.method == 'POST':
+        # 1. 判断是哪种取样方式
+        sampling_method = request.POST.get('sampling_method')
+        instance = SamplingConfiguration(
+            project_name=request.POST.get('project_name'),
+            sampling_method=sampling_method,
+            curve_points=request.POST.get('curve_points'),
+            qc_groups=request.POST.get('qc_groups'),
+            qc_levels=request.POST.get('qc_levels'),
+            qc_insert=request.POST.get('qc_insert'),
+            test_count=request.POST.get('test_count'),
+            layout=request.POST.get('layout'),
+            default_upload_instrument=request.POST.get('default_upload_instrument'),
+            mapping_file=request.FILES.get('mapping_file'),
+        )
+
+        instance.save()
+        return redirect('project_config')
+    else:
+        curve_range = list(range(6, 11))  # [6, 7, 8, 9, 10]
+    return render(request, 'dashboard/config/project_config_create.html', {
+        'curve_range': curve_range
+    })
+
+def project_config_view(request, pk):
+    config = get_object_or_404(SamplingConfiguration, pk=pk)
+    return render(request, 'dashboard/config/project_config_view.html', {
+        'config': config
+    })
+
+def project_config_edit(request, pk):
+    config = get_object_or_404(SamplingConfiguration, pk=pk)
+    if request.method == 'POST':
+        # 保存旧文件引用
+        old_mapping_file = config.mapping_file.path if config.mapping_file else None
+
+        form = SamplingConfigurationForm(request.POST, request.FILES, instance=config)
+        if form.is_valid():
+            # 检查是否上传新文件，如果上传了，删除原文件
+            if 'mapping_file' in request.FILES and old_mapping_file and os.path.exists(old_mapping_file):
+                os.remove(old_mapping_file)
+
+            form.save()
+            return redirect('project_config')
+    else:
+        curve_range = list(range(6, 11)) 
+        form = SamplingConfigurationForm(instance=config)
+    return render(request, 'dashboard/config/project_config_edit.html', {
+        'form': form,
+        'config': config,
+    })
+
+def project_config_delete(request, pk):
+    if request.method == "POST":
+        config = get_object_or_404(SamplingConfiguration, pk=pk)
+        config.delete()
+        if request.headers.get('x-requested-with') == 'XMLHttpRequest':
+            return JsonResponse({"success": True})
+        return redirect('config_preview')
+    return JsonResponse({"success": False, "error": "Only POST allowed"})
+
+def vendor_config(request):
+    instrument_configs = InstrumentConfiguration.objects.all().order_by('-created_at')
+    return render(request, 'dashboard/config/vendor_config.html', {
+        'instrument_configs': instrument_configs
+    })
+
+def vendor_config_create(request):
+    if request.method == 'POST':
+        instance = InstrumentConfiguration(
+            instrument_name=request.POST.get('instrument_name'),
+            instrument_num=request.POST.get('instrument_num'),
+            upload_file=request.FILES.get('upload_file'),
+        )
+
+        instance.save()
+        return redirect('vendor_config')
+    else:
+        return render(request, 'dashboard/config/vendor_config_create.html')
+    
+def vendor_config_delete(request, pk):
+    if request.method == "POST":
+        config = get_object_or_404(InstrumentConfiguration, pk=pk)
+        config.delete()
+        if request.headers.get('x-requested-with') == 'XMLHttpRequest':
+            return JsonResponse({"success": True})
+        return redirect('vendor_config')
+    return JsonResponse({"success": False, "error": "Only POST allowed"})
+    
+def injection_volume_config(request):
+    injection_volume_configs = InjectionVolumeConfiguration.objects.all().order_by('-created_at')
+    return render(request, 'dashboard/config/injection_volume_config.html', {
+        'injection_volume_configs': injection_volume_configs
+    })
+
+def injection_volume_config_create(request):
+    if request.method == 'POST':
+        instance = InjectionVolumeConfiguration(
+            project_name=request.POST.get('project_name'),
+            instrument_num=request.POST.get('instrument_num'),
+            injection_volume=request.POST.get('injection_volume'),
+        )
+
+        instance.save()
+        return redirect('injection_volume_config')
+    else:
+        return render(request, 'dashboard/config/injection_volume_config_create.html')
+
+def injection_volume_config_delete(request, pk):
+    if request.method == "POST":
+        config = get_object_or_404(InjectionVolumeConfiguration, pk=pk)
+        config.delete()
+        if request.headers.get('x-requested-with') == 'XMLHttpRequest':
+            return JsonResponse({"success": True})
+        return redirect('config_preview')
+    return JsonResponse({"success": False, "error": "Only POST allowed"})
+
+# 结果处理，用户在前端功能入口处选择项目，上传文件并点击提交按钮后的处理逻辑
+def ProcessResult(request):
+    # 获取项目类型
+    project_id = request.POST.get("project_id")
+    
+    # 获取上传的文件对象
+    Stationlist = request.FILES.get('station_list')  # 每日操作清单
+    Scanresult = request.FILES.get('scan_result')  # 扫码结果
+
+    # 文件读取
+    Stationtable = xlrd.open_workbook(filename=None, file_contents=Stationlist.read())  # 每日工作清单
+    Scantable = xlrd.open_workbook(filename=None, file_contents=Scanresult.read())  # 扫码结果
+
+    ###################### 处理扫码结果，处理索引，提取关键几个字段信息 ###################### 
+
+    # 抓取Scantable中孔位、标本状态、条码和Warm四列
+    scan_data = Scantable.sheets()[0]
+    nrows = scan_data.nrows
+    ncols = scan_data.ncols
+
+    # 读取首行作为表头，一次性查找列索引
+    header = [str(scan_data.row_values(0)[i]).strip() for i in range(ncols)]
+    index_map = {col: idx for idx, col in enumerate(header)}
+
+    Positionindex = index_map.get("TPositionId", 0)
+    Statusindex = index_map.get("TSumStateDescription", 0)
+    Barcodeindex = index_map.get("SPositionBC", 0)
+    Warmindex = index_map.get("Warm", 0)
+
+    # 批量读取数据
+    Position = []
+    Status = []
+    OriginBarcode = []  # 原始条码
+    CutBarcode = []     # 以“-”切割后的主条码
+    SubBarcode = []     # 以“-”切割后的子条码
+    Warm = []
+
+    # 提取所有 Warm 列含"X"的定位孔所在TPositionId
+    locator_positions = set()
+
+    for i in range(1, nrows):
+        pos = scan_data.row_values(i)[Positionindex]
+        status = scan_data.row_values(i)[Statusindex]
+        barcode = scan_data.row_values(i)[Barcodeindex]
+        warm = scan_data.row_values(i)[Warmindex]
+
+        # 添加定位孔标识
+        if "X" in warm:
+            locator_positions.add(pos)
+
+        Position.append(pos)
+        Status.append(status)
+        OriginBarcode.append(barcode)
+        # 切割主/子条码，保证即使barcode为非字符串也能处理
+        barcode_str = str(barcode)
+        parts = barcode_str.split("-", 1)
+        CutBarcode.append(parts[0])
+        if len(parts) == 2:
+            SubBarcode.append("-" + parts[1])
+        else:
+            SubBarcode.append("")
+
+        Warm.append(warm)
+    
+    plate_no = next((str(w) for w in Warm if str(w).startswith("X")), "X1")
+
+    ###################### 抓取每日工作清单的主条码与实验号，并与扫码结果匹配 ###################### 
+
+    # 抓取Stationtable中的主条码、实验号
+    station_data = Stationtable.sheets()[0]
+    nrows = station_data.nrows
+    ncols = station_data.ncols
+
+    # 一次性获取表头索引，容错顺序
+    header = [str(station_data.row_values(0)[i]).strip() for i in range(ncols)]
+    index_map = {col: idx for idx, col in enumerate(header)}
+    MainBarcodeindex = index_map.get("主条码", 0)
+    SampleNameindex = index_map.get("实验号", 0)
+
+    # 主条码与实验号列表批量读取
+    MainBarcode = [station_data.row_values(i)[MainBarcodeindex] for i in range(1, nrows)]
+    SampleName = [station_data.row_values(i)[SampleNameindex] for i in range(1, nrows)]
+
+    # 用字典加速查找，支持一对多
+    from collections import defaultdict, Counter
+
+    barcode_to_names = defaultdict(list)
+    for bc, sn in zip(MainBarcode, SampleName):
+        barcode_to_names[str(bc)].append(str(sn))
+
+    cutbarcode_counter = Counter(CutBarcode)  # 统计每个cutbarcode出现次数（用于后续标记）
+
+    MatchSampleName = [] # 匹配到的样本名称
+    MatchResult = [] # 匹配结果，用于判断是否要匹配曲线质控
+
+    DupBarcode = [] # 条码在岗位清单中出现多次，且实验号可能不同
+    DupBarcodeSampleName = [] # 条码在移液/岗位清单出现多次，且实验号也不同
+
+    for cb in CutBarcode:
+        cb_str = str(cb)
+        matched_names = barcode_to_names.get(cb_str, [])
+        cb_count = cutbarcode_counter[cb_str]
+
+        if len(matched_names) == 1:
+            MatchResult.append("TRUE")
+            MatchSampleName.append(matched_names[0])
+            DupBarcode.append("")
+            DupBarcodeSampleName.append("")
+        elif len(matched_names) == 0:
+            MatchResult.append("FALSE")
+            if cb_str != "":
+                MatchSampleName.append(cb_str)
+                DupBarcode.append("")
+                DupBarcodeSampleName.append("")
+            else:
+                MatchSampleName.append("")
+                DupBarcode.append("")
+                DupBarcodeSampleName.append("")
+        elif len(matched_names) == 2:
+            MatchResult.append("TRUE")
+            if matched_names[0] == matched_names[1]:
+                DupBarcode.append("Likely")
+                MatchSampleName.append(matched_names[0])
+                DupBarcodeSampleName.append("")
+            else:
+                DupBarcode.append("TRUE")
+                MatchSampleName.append(matched_names[0] + "-" + matched_names[1])
+                DupBarcodeSampleName.append("TRUE" if cb_count >= 2 else "")      
+        else:
+            MatchResult.append("TRUE")
+            # 三个及以上
+            # 只保留唯一实验号并排序
+            unique_Middlelist = list(dict.fromkeys(matched_names))
+            order = {'VF': 1, 'AE': 2, 'VD': 3, 'V': 4, 'VK': 5, 'WV': 6}
+            def sort_key(x):
+                for prefix_length in (2, 1):
+                    prefix = x[:prefix_length]
+                    if prefix in order:
+                        return order[prefix]
+                return len(order) + 1
+
+            sorted_lis = sorted(unique_Middlelist, key=sort_key)
+            if len(unique_Middlelist) >= 2:
+                MatchSampleName.append('-'.join(sorted_lis))
+                DupBarcode.append("TRUE")
+                DupBarcodeSampleName.append("TRUE" if cb_count >= 2 else "")
+            else:
+                MatchSampleName.append(matched_names[0])
+                DupBarcode.append("")
+                DupBarcodeSampleName.append("")
+
+    ###################### 1 生成工作清单和报错表格 ######################
+    letters = ["A","B","C","D","E","F","G","H"]
+    nums = [str(i) for i in range(1, 13)]
+    rows, cols = 8, 12
+
+    # 抓取96孔板的排列顺序（纵向/横向）
+    config = SamplingConfiguration.objects.get(id=project_id)
+    project_name = config.project_name
+    layout = config.layout
+
+    mapping_file_path = config.mapping_file.path
+
+    # 匹配曲线质控
+    df_mapping = pd.read_excel(mapping_file_path, sheet_name="工作清单")
+
+    # 建立字典方便查找
+    barcode_to_name = dict(zip(df_mapping["Barcode"].astype(str), df_mapping["Name"]))
+
+    # 组装渲染数据
+    well_list = []
+
+    error_rows = []   # 存放错误信息行
+
+    # 建立映射字典： OriginBarcode -> (Well_Position, Well_Number)，方便后续生成上机列表
+    barcode_to_well = {}
+    index_counter = 1  # 从1开始编号
+
+    # 清理旧数据：限定 project_name + record_date + plate_no
+    SampleRecord.objects.filter(
+        project_name=project_name,
+        record_date=date.today(),
+        plate_no=plate_no
+    ).delete()
+
+    for row_idx, row_letter in enumerate(letters):
+        for col_idx, col_num in enumerate(nums):
+            # 根据layout决定数据索引
+            if layout == 'vertical':
+                data_idx = col_idx * rows + row_idx  # 纵向（列优先）
+                
+            else:
+                data_idx = row_idx * cols + col_idx  # 横向（行优先，原来方式）
+                # well_index = col_idx * rows + row_idx + 1
+            
+            well_pos_str = f"{row_letter}{col_num}"   # A1, B3 ...
+            well_number = int(index_counter)          # 序号 (1~96)
+            well_index = row_idx * cols + col_idx + 1
+
+            origin_barcode = str(OriginBarcode[data_idx])  # 来自扫码结果表
+            if origin_barcode not in ("", "nan"):  # 忽略空条码
+                barcode_to_well[origin_barcode] = (well_pos_str, well_number)
+
+            index_counter += 1
+
+            value = str(MatchSampleName[data_idx])
+            if MatchResult[data_idx] == "TRUE":
+                match_sample = value
+            else:
+                if value == "":
+                    match_sample = ""
+                else:
+                    match_sample = barcode_to_name.get(value, "No match")
+
+            well_pos_str = f"{row_letter}{col_num}"
+            is_locator = well_pos_str in locator_positions
+
+            well = {
+                "letter": row_letter,
+                "num": col_num,
+                "well_str": f"{row_letter}{col_num}",
+                "index": well_index,
+                "locator": is_locator,  
+                "locator_warm": Warm[data_idx] if is_locator else "",
+                "match_sample": match_sample,
+                "cut_barcode": CutBarcode[data_idx],
+                "sub_barcode": SubBarcode[data_idx],
+                "origin_barcode": OriginBarcode[data_idx],
+                "warm": Warm[data_idx],
+                "status": Status[data_idx],   
+                "dup_barcode": DupBarcode[data_idx],
+                "dup_barcode_sample": DupBarcodeSampleName[data_idx],
+            }
+            # locator的具体规则：比如 if index == row_idx+1 and col_num == str(index): well["locator"] = True
+            well_list.append(well)
+
+            # 判断是否要加入 error_rows
+            if (str(Warm[data_idx]) in ["1", "4", "16384"]) or (match_sample == "No match"):
+                error_rows.append({
+                    "sample_name": match_sample,
+                    "origin_barcode": OriginBarcode[data_idx],
+                    "plate_no": plate_no, 
+                    "well_str": well_pos_str,
+                    "warn_level": Warm[data_idx],
+                    "warn_info": Status[data_idx],
+                })
+            
+            # ✅ 保存到数据库
+            SampleRecord.objects.create(
+                project_name=project_name,
+                plate_no=plate_no,
+                well_str=well_pos_str,
+                sample_name=match_sample,
+                barcode=origin_barcode,
+            )
+    
+    worksheet_table = [well_list[i*12:(i+1)*12] for i in range(8)]  # 8行，每行12个
+
+    ###################### 2 生成上机列表 ######################
+
+    # 获取仪器编号对应的上机模板
+
+    # 获取上机仪器
+    instrument_num = request.POST.get("instrument_num")
+
+    # 获取上机仪器对应的上机模板,并转化为pandas数据框
+    instrument_config = get_object_or_404(InstrumentConfiguration, instrument_num=instrument_num)
+
+    if not instrument_config.upload_file:
+        return HttpResponse("未设置该上机仪器对应的上机模板,请设置后再试", status=404)
+    
+    with instrument_config.upload_file.open("rb") as f:
+        lines = f.read().decode("utf-8").splitlines()
+    
+    data = "\n".join(lines)
+    df = pd.read_csv(StringIO(data), sep=None, engine="python")
+
+    # 提取表头
+    txt_headers = df.columns.tolist()
+
+    # 获取SampleName列的内容
+    # 第一步：获取OriginBarcode中的内容，并在此基础上去除df_mapping["Barcode"]中的内容
+    barcode_list = [str(x) for x in df_mapping["Barcode"].tolist()]
+    ClinicalSample = [x for x in OriginBarcode if x not in barcode_list]
+    
+    # 第二步：添加DB1和Test(获取用户后台设置的Test个数)
+    test_count = config.test_count
+    test_list = ["DB1"] + [f"Test{i}" for i in range(test_count)]
+
+    # 第三步：添加曲线(获取用户后台设置的STD个数)
+    curve_points = config.curve_points
+
+    # 从“工作清单”表中提取 Code=STD* 对应的 Name，按 STD 序号排序后取前 curve_points+1 个
+    df_std = df_mapping.copy()
+    df_std["Code"] = df_std["Code"].astype(str)
+
+    # 仅保留形如 STD0/STD1/... 的行，并提取数字序号用于排序
+    df_std = df_std[df_std["Code"].str.match(r"^STD\d+$", na=False)].copy()
+    df_std["__std_idx"] = df_std["Code"].str.replace("STD", "", regex=False).astype(int)
+    df_std = df_std.sort_values("__std_idx")
+
+    # 取 Name 列作为曲线名称列表
+    std_names = df_std["Name"].head(curve_points + 1).tolist()
+
+    # 兜底：如果映射里缺失，退回旧逻辑，避免列表为空导致后续失败
+    if not std_names or len(std_names) < (curve_points + 1):
+        std_names = [f"STD{i}" for i in range(curve_points + 1)]
+
+    curve_list = ["DB2"] + std_names
+
+
+    # 第四步：添加QC(获取对应关系表模板中设置的QC名称)
+    qc_list1 = ["DB3"] + df_mapping.loc[df_mapping["Code"].str.startswith("QC"), "Name"].unique().tolist() + ["DB4"]
+
+    # 添加封尾质控和DB
+    qc_list2 = df_mapping.loc[df_mapping["Code"].str.startswith("QC"), "Name"].unique().tolist() + ["DB5"]
+
+    # 拼接上述列表
+    SampleName_list = test_list + curve_list + qc_list1 + ClinicalSample + qc_list2
+
+    worklist_mapping = pd.read_excel(mapping_file_path, sheet_name="上机列表")
+    
+    # 生成上机列表
+    # 获取后台设置的进样体积
+    try:
+        injectionvolume_config = get_object_or_404(InjectionVolumeConfiguration, instrument_num=instrument_num, project_name=project_name)
+        injection_volume = injectionvolume_config.injection_volume
+    except InstrumentConfiguration.DoesNotExist:
+        injection_volume = ""
+
+    # 1. 构建 value -> queue of barcodes 的映射
+    name_to_barcodes = defaultdict(deque)
+    for barcode, name in barcode_to_name.items():
+        name_to_barcodes[name].append(barcode)
+
+    # 1. 创建一个空表，列名与 df 相同
+    worklist_table = pd.DataFrame(columns=df.columns)
+
+    # 2. 填充第一列
+    worklist_table[worklist_mapping.columns[0]] = SampleName_list
+
+    first_col = worklist_table.columns[0]  # 动态获取第一列列名
+
+    # 删除除第一次出现外的所有 "----------" 行
+    dash_mask = worklist_table[first_col].str.count("-") > 3
+    dash_indices = worklist_table[dash_mask].index.tolist()
+    if len(dash_indices) > 1:
+        worklist_table.drop(dash_indices[1:], inplace=True)
+
+    worklist_table.reset_index(drop=True, inplace=True)
+
+    # 3. 遍历 worklist_mapping 按规则填充
+
+    # 填充规则：
+    # 1 若worklist_mapping第一列的元素为DB1，则将worklist_table中对应列元素为DB1的行的第2至最后一列的内容按照worklist_mapping中内容进行填充
+    # 2 若worklist_mapping第一列的元素为Test，则将worklist_table中对应列元素为Test开头（注意这里）的行的第2至最后一列的内容按照worklist_mapping中内容进行填充
+    # 3 若worklist_mapping第一列的元素为*，则将worklist_table中除上述已填充的行以外（注意这里）的行的第2至最后一列的内容按照worklist_mapping中内容进行填充
+    for _, row in worklist_mapping.iterrows():
+        sample_name = row.iloc[0]   # 用 iloc 显式取第一列
+        fill_values = row.iloc[1:]  # 用 iloc 显式取剩余列
+
+        # --- 规则 1: 进样体积单独处理 ---
+        if "SmplInjVol" in worklist_table.columns:
+            worklist_table["SmplInjVol"] = injection_volume
+
+        # --- 规则 2: 按 sample_name 分类处理 --- 
+        if str(sample_name).startswith("DB"):  # 规则1
+            mask = worklist_table.iloc[:, 0].str.startswith("DB")
+            for col, val in zip(worklist_table.columns[1:], fill_values.values):
+                if col == "SmplInjVol":  
+                    continue  # 已经在上面统一处理
+                worklist_table.loc[mask, col] = val
+
+        elif str(sample_name).startswith("Test"): # 规则2
+            mask = worklist_table.iloc[:, 0].str.startswith("Test")
+            for col, val in zip(worklist_table.columns[1:], fill_values.values):
+                if col == "SmplInjVol":  
+                    continue
+                worklist_table.loc[mask, col] = val
+
+        elif sample_name == "*":  # 规则3
+            # 找到还没填充的行（即第2列为空的行）
+            mask = worklist_table.iloc[:, 1].isna()
+            for col, val in zip(worklist_table.columns[1:], fill_values.values):
+                if col == "SmplInjVol" or col == "Injection volume":  
+                    continue
+                if col == "VialPos" or col == "Vial position":  
+                    # 特殊处理 VialPos
+                    def resolve_vialpos(sample_name_value):
+                        # case 1: DB 开头
+                        # if str(sample_name_value).startswith("DB"):
+                        #     if val == "{{Well_Number}}":
+                        #         return 1
+                        #     elif val == "{{Well_Position}}":
+                        #         return "A1"
+                        #     else:
+                        #         return val
+                            
+                        # Case 2: 定位孔 "----------"
+                        if str(sample_name_value).count("-") > 3:
+                            dash_rows = worklist_table[first_col].str.count("-") > 3
+                            dash_indices = worklist_table[dash_rows].index.tolist()
+
+                            if dash_indices and sample_name_value == worklist_table.at[dash_indices[0], first_col]:
+                                # ✅ 第一次出现的 ---------- → 用 well_list 里的定位孔替换
+                                locator_well = next((w for w in well_list if w["locator"]), None)
+                                if locator_well:
+                                    # 替换 SampleName 为实际孔位名 (A1, B3...)
+                                    worklist_table.at[dash_indices[0], first_col] = locator_well["locator_warm"]
+
+                                    # 替换 VialPos
+                                    if val == "{{Well_Number}}":
+                                        return int(locator_well["index"])
+                                    elif val == "{{Well_Position}}":
+                                        return locator_well["well_str"]
+                                return None
+                            else:
+                                # 后续 ---------- 删除
+                                return None
+
+                        # case 3: QC/STD/曲线（worklist_table里存 Name，需要映射到 barcode）
+                        if val in ["{{Well_Number}}", "{{Well_Position}}"]:
+                            if sample_name_value in name_to_barcodes and name_to_barcodes[sample_name_value]:
+                                # 取出当前 sample_name 对应的第一个条码，并从队列中移除，保证顺序消耗
+                                barcode = name_to_barcodes[sample_name_value].popleft()
+
+                                # 再用 barcode 去查 barcode_to_well
+                                if barcode in barcode_to_well:
+                                    well_pos, well_num = barcode_to_well[barcode]
+                                    return int(well_num) if val == "{{Well_Number}}" else well_pos
+                                else:
+                                    return None
+                                
+                            # case 4: 临床样品（worklist_table里就是条码本身）
+                            elif sample_name_value in barcode_to_well:
+                                well_pos, well_num = barcode_to_well[sample_name_value]
+                                return int(well_num) if val == "{{Well_Number}}" else well_pos 
+
+                            else:
+                                return None
+                        else:
+                            return val
+                
+                    worklist_table.loc[mask, col] = worklist_table.loc[mask, first_col].apply(resolve_vialpos)
+
+                    # ✅ 关键：强制转换为 Int64，避免出现小数
+                    worklist_table[col] = worklist_table[col].astype("Int64")
+
+                else:
+                    # 普通列，直接填充
+                    worklist_table.loc[mask, col] = val
+
+
+    # 转成 records 形式（每行是一个字典）
+    worklist_records = worklist_table.to_dict(orient="records")
+
+    request.session["export_payload"] = {
+        "project_name": project_name,           # 如 VD / CSA
+        "worksheet_table": worksheet_table,     # 你生成的 96 孔板展示数据（列表套字典）
+        "error_rows": error_rows,               # 报错信息
+        "txt_headers": txt_headers,             # 上机列表表头
+        "worklist_records": worklist_records,   # 上机列表数据（DataFrame -> to_dict('records') 的结果）
+
+        # ✅ 新增：导出 PDF 页眉需要的元信息（按你 ProcessResult.html 的第二行设计）
+        "header": {
+            "test_date": timezone.localtime().strftime("%Y-%m-%d"),  # 检测日期
+            "plate_no": plate_no,                # 例如 "X2"（你已从 Scanresult Warm 提取）
+            "instrument_num": instrument_num,    # 例如 FXS-YZ___（你已有 POST 获取）
+            "tray_no": request.POST.get("tray_no", ""),  # 上机盘号（如果表单没这个字段就给空）
+        },
+    }
+    request.session.modified = True
+
+    return render(request, 'dashboard/ProcessResult.html',locals())
+
+
+def preview_export(request):
+    """
+    用于浏览器预览 export_pdf.html（不生成 PDF）
+    """
+    payload = request.session.get("export_payload")
+    if not payload:
+        return HttpResponseBadRequest("没有可预览的数据，请先生成结果页面。")
+
+    nums = [str(i) for i in range(1, 13)]
+    # 传 preview=True，让模板走浏览器用的字体加载方式
+    return render(request, "dashboard/export_pdf.html", {
+        "worksheet_table": payload["worksheet_table"],
+        "error_rows": payload["error_rows"],
+        "nums": nums,
+        "preview": True,
+    })
+
+# 导出pdf和excel
+def export_files(request):
+    """使用WeasyPrint生成PDF"""
+    payload = request.session.get("export_payload")
+    if not payload:
+        return HttpResponseBadRequest("没有可导出的数据，请先生成结果页面。")
+
+    # 1) 目录设置
+    today_str = datetime.today().strftime("%Y-%m-%d")
+    project = str(payload.get("project_name", "PROJECT"))
+    base_dir = settings.DOWNLOAD_ROOT
+    target_dir = os.path.join(base_dir, "NIMBUS", today_str, project)
+    os.makedirs(target_dir, exist_ok=True)
+
+    # 2) 字体路径设置
+    font_path = os.path.join(settings.BASE_DIR, 'dashboard', 'static', 'css', 'fonts', 'NotoSansSC-Regular.ttf')
+    ic(font_path)
+
+    # 验证字体文件存在
+    if not os.path.exists(font_path):
+        return JsonResponse({"ok": False, "message": f"字体文件不存在: {font_path}"})
+
+    # 3) 准备模板数据
+    nums = [str(i) for i in range(1, 13)]
+
+    # 4) 渲染HTML
+    pdf_html = render_to_string(
+        "dashboard/export_pdf.html",
+        {
+            "worksheet_table": payload["worksheet_table"],
+            "error_rows": payload["error_rows"],
+            "nums": nums,
+            "preview": False,  # PDF模式，不使用浏览器字体加载
+            "header": payload.get("header", {}), 
+        },
+    )
+
+    # 5) 创建字体配置 - WeasyPrint需要
+    font_config = FontConfiguration()
+
+    # 6) 定义PDF专用CSS，包含字体配置
+    pdf_css = CSS(string=f"""
+        @font-face {{
+            font-family: "NotoSans";
+            src: url("{font_path}") format("truetype");
+            font-weight: normal;
+            font-style: normal;
+        }}
+        
+        @page {{
+            size: A4 landscape;
+            margin: 6mm 6mm 8mm 6mm;
+        }}
+        
+        body, table, td, th, div, span {{
+            font-family: "NotoSans", "DejaVu Sans", sans-serif;
+            font-size: 9pt;
+            line-height: 1.25;
+        }}
+    """, font_config=font_config)
+
+    # 7) 生成PDF
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    pdf_path = os.path.join(target_dir, f"工作清单_{timestamp}.pdf")
+    
+    try:
+        # 使用WeasyPrint生成PDF
+        HTML(string=pdf_html).write_pdf(
+            pdf_path,
+            stylesheets=[pdf_css],
+            font_config=font_config
+        )
+    except Exception as e:
+        return JsonResponse({"ok": False, "message": f"PDF生成失败: {str(e)}"})
+
+    # 8) 生成Excel
+    xlsx_path = os.path.join(target_dir, f"上机列表_{timestamp}.xlsx")
+    
+    # 组装 DataFrame
+    headers = payload["txt_headers"]
+    records = payload["worklist_records"]  # list[dict]
+    df = pd.DataFrame(records, columns=headers)
+    with pd.ExcelWriter(xlsx_path, engine="xlsxwriter") as writer:
+        df.to_excel(writer, sheet_name="Worklist", index=False)
+
+    return JsonResponse({
+        "ok": True,
+        "message": "导出完成",
+        "pdf_url":  f"{settings.DOWNLOAD_URL}{today_str}/{project}/工作清单.pdf",
+        "xlsx_url": f"{settings.DOWNLOAD_URL}{today_str}/{project}/上机列表.xlsx",
+    })
+
+# 历史标本查找
+def sample_search_api(request):
+    query = request.GET.get("q", "").strip()
+    if not query:
+        return JsonResponse({"results": []})
+
+    records = SampleRecord.objects.filter(
+        models.Q(sample_name__icontains=query) | models.Q(barcode__icontains=query)
+    ).order_by("-record_date")
+
+    results = [
+        {
+            "project_name": r.project_name,
+            "date": r.record_date.strftime("%Y-%m-%d"),
+            "plate_no": r.plate_no,
+            "well_str": r.well_str,
+        }
+        for r in records
+    ]
+
+    return JsonResponse({"results": results})
+
+

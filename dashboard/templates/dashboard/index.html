@@ -1,0 +1,148 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="zh-cn">
+
+<head>
+  <meta charset="UTF-8" />
+  <title>{{ page_title }} - 工作清单与上机列表生成系统</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- Tabler CSS -->
+  <link rel="stylesheet" href="{% static 'css/tabler.min.css' %}" />
+  <link rel="stylesheet" href="{% static 'css/font-awesome.min.css' %}">
+  <link rel="stylesheet" type="text/css" href="{% static 'css/tabler-icons.min.css' %}">
+
+  {% csrf_token %}
+
+  <style>
+    .navbar-brand.sidebar-title {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      width: 100%;
+      min-height: 5.6rem;
+      font-size: 1.33rem;
+      font-weight: bold;
+      white-space: pre-line;
+      padding: 1.2rem 0 1.2rem 0;
+      line-height: 2.2rem;
+      /* 控制行间距 */
+      letter-spacing: 1px;
+    }
+
+    .sidebar-spacer {
+      margin-bottom: 2.5rem;
+    }
+
+    .nav-item {
+      margin-bottom: 1.5rem;
+    }
+
+    .navbar-nav .nav-link {
+      font-size: 1.18rem;
+    }
+
+    /* 侧栏折叠样式 */
+    .navbar-vertical.collapsed {
+      width: 80px !important;
+      min-width: 80px !important;
+      transition: width 0.2s;
+    }
+
+    .navbar-vertical.collapsed .navbar-brand.sidebar-title,
+    .navbar-vertical.collapsed .nav-link-title {
+      display: none !important;
+    }
+
+    .navbar-vertical.collapsed .nav-link {
+      justify-content: center;
+      text-align: center;
+      padding-left: 0.5rem;
+    }
+
+    .sidebar-toggle-btn {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      z-index: 1051;
+      border: none;
+      background: transparent;
+      color: #fff;
+      font-size: 1.4rem;
+      cursor: pointer;
+      outline: none;
+      transition: color 0.2s;
+      padding: 0 4px;
+    }
+
+    .sidebar-toggle-btn:hover {
+      color: #ddd;
+    }
+
+    /* 让右侧跟随侧栏宽度变化 */
+    .page > .page-wrapper {
+      transition: margin-left .2s;
+    }
+
+    /* 当侧栏加上 .collapsed 时，同步缩小 page-wrapper 的左边距 */
+    .page > .navbar-vertical.collapsed + .page-wrapper {
+      margin-left: 80px; /* 与你为侧栏设置的窄宽一致 */
+    }
+  </style>
+
+  {% block extrastyle %}{% endblock %}
+</head>
+
+<body>
+  <div class="page">
+
+    <!-- Sidebar -->
+    {% include 'dashboard/sidebar.html' %}
+
+    <div class="page-wrapper">
+      {% block header %}
+      <!-- 默认 header -->
+      {% endblock %}
+      <div class="page-body">
+        <div class="container-fluid">
+          {% block content %}{% endblock %}
+        </div>
+      </div>
+      <footer class="footer footer-transparent d-print-none">
+        <div class="container-xl text-center">
+          <span class="text-muted">Copyright © 2025 工作清单与上机列表生成系统</span>
+        </div>
+      </footer>
+    </div>
+  </div>
+
+  <script src="{% static 'js/tabler.min.js' %}"></script>
+  <script>
+    (function () {
+      const STORAGE_KEY = 'sidebarCollapsed';
+      const aside = document.getElementById('appSidebar');
+      const btn = document.getElementById('sidebarCollapseBtn');
+
+      // 1) 首次加载：还原上一次的缩窄状态
+      try {
+        const saved = localStorage.getItem(STORAGE_KEY);
+        if (saved === 'true') {
+          aside.classList.add('collapsed');
+        }
+      } catch (e) { }
+
+      // 2) 点击切换：添加/移除 .collapsed
+      if (btn && aside) {
+        btn.addEventListener('click', function () {
+          aside.classList.toggle('collapsed');
+          try {
+            localStorage.setItem(STORAGE_KEY, aside.classList.contains('collapsed'));
+          } catch (e) { }
+        });
+      }
+    })();
+  </script>
+</body>
+
+</html>

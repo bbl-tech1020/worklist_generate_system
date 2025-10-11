@@ -1,0 +1,53 @@
+
+{% extends 'dashboard/index.html' %}
+{% load static %}
+
+{% block header %}
+<header class="navbar navbar-expand-md navbar-light d-print-none">
+    <div class="container-fluid">
+        <h1 class="navbar-brand">后台参数配置</h1>
+    </div>
+</header>
+{% endblock %}
+
+{% block content %}
+<div class="card mt-4">
+    <div class="card-header">
+        <h3 class="card-title">参数配置</h3>
+    </div>
+    <div class="card-body">
+        <form method="post" enctype="multipart/form-data">
+            {% csrf_token %}
+
+            <!-- 仪器编号 -->
+            <div class="mb-3">
+                <label class="form-label">仪器编号</label>
+                <input type="text" class="form-control" name="instrument_num" placeholder="请输入仪器编号">
+            </div>
+
+            <!-- 仪器厂家 -->
+            <div class="mb-3">
+                <label class="form-label">仪器厂家</label>
+                <select class="form-select" id="instrument_name" name="instrument_name">
+                    <option value="">请选择</option>
+                    <option value="Sciex">Sciex</option>
+                    <option value="Agilent">Agilent</option>
+                    <option value="Thermo">Thermo</option>
+                    <option value="Waters">Waters</option>
+                    <option value="Shimadzu">Shimadzu</option>
+                </select>
+            </div>
+
+            <div class="mt-3">
+                <label class="form-label">上机模板</label>
+                <input type="file" class="form-control" name="upload_file" accept=".xlsx,.xls,.txt">
+            </div>
+
+            <div class="mt-4">
+                <button class="btn btn-primary">保存设置</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+{% endblock %}

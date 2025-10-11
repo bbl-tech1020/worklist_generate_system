@@ -1,0 +1,90 @@
+
+{% extends 'dashboard/index.html' %}
+{% block header %}
+<header class="navbar navbar-expand-md navbar-light d-print-none">
+    <div class="container-fluid">
+        <h1 class="navbar-brand">参数列表</h1>
+    </div>
+</header>
+<style>
+    .table thead th,
+    .table tbody td {
+        font-size: 1.25rem;
+        font-weight: bold;
+        text-align: center;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="card mt-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <h2 class="card-title"></h2>
+        <a href="{% url 'project_config_create' %}" class="btn btn-primary">新建参数</a>
+    </div>
+    <div class="card-body table-responsive">
+        <table class="table table-bordered table-striped">
+            <thead>
+                <tr>
+                    <th>项目名称</th>
+                    <th>取样方式</th>
+                    <th>曲线点数</th>
+                    <th>Test数</th>
+                    <th>默认上机仪器</th>
+                    <th>操作</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for config in project_configs %}
+                <tr>
+                    <td>{{ config.project_name }}</td>
+                    <td>{{ config.get_sampling_method_display }}</td>
+                    <td>{{ config.curve_points }}</td>
+                    <td>{{ config.test_count }}</td>
+                    <td>{{ config.default_upload_instrument }}</td>
+                    <td>
+                        <a href="{% url 'project_config_view' config.pk %}" class="text-primary me-2">预览</a> |
+                        <a href="{% url 'project_config_edit' config.pk %}" class="text-warning ms-2">编辑</a> |
+                        <a href="javascript:void(0);" class="text-danger ms-2 btn-delete" data-id="{{ config.pk }}">删除</a>
+                    </td>
+                </tr>
+                {% empty %}
+                <tr>
+                    <td colspan="5" class="text-center text-muted">暂无参数，请点击“新建参数”添加</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<script>
+    document.addEventListener("DOMContentLoaded", function () {
+        document.querySelectorAll('.btn-delete').forEach(function(btn) {
+            btn.addEventListener('click', function() {
+                let pk = this.getAttribute('data-id');
+                if (confirm("确认要删除此参数吗？")) {
+                    fetch("{% url 'project_config_delete' 0 %}".replace('/0/', `/${pk}/`), {
+                        method: 'POST',
+                        headers: {
+                            'X-CSRFToken': '{{ csrf_token }}',
+                            'x-requested-with': 'XMLHttpRequest',
+                        },
+                    })
+                    .then(res => res.json())
+                    .then(data => {
+                        if (data.success) {
+                            location.reload();
+                        } else {
+                            alert("删除失败：" + (data.error || ''));
+                        }
+                    });
+                }
+            });
+        });
+    });
+</script>
+
+{% endblock %}
+
+

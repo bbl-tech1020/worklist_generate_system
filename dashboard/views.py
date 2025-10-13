@@ -869,20 +869,12 @@ def ProcessResult(request):
             # 找到还没填充的行（即第2列为空的行）
             mask = worklist_table.iloc[:, 1].isna()
             for col, val in zip(worklist_table.columns[1:], fill_values.values):
-                if col == "SmplInjVol" or col == "Injection volume" or col == "样品瓶":  
+                if col == "SmplInjVol" or col == "Injection volume":  
                     continue
-                if col == "VialPos" or col == "Vial position":  
+                if col in ("VialPos", "Vial position", "样品瓶"):  
                     # 特殊处理 VialPos
                     def resolve_vialpos(sample_name_value):
-                        # case 1: DB 开头
-                        # if str(sample_name_value).startswith("DB"):
-                        #     if val == "{{Well_Number}}":
-                        #         return 1
-                        #     elif val == "{{Well_Position}}":
-                        #         return "A1"
-                        #     else:
-                        #         return val
-                            
+                           
                         # Case 2: 定位孔 "----------"
                         if str(sample_name_value).count("-") > 3:
                             dash_rows = worklist_table[first_col].str.count("-") > 3

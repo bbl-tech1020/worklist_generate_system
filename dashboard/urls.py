@@ -21,6 +21,11 @@ urlpatterns = [
 
 
     path('dashboard/file_download/', views.file_download, name='file_download'),  # 文件下载
+    path(
+        "dashboard/downloads/<str:platform>/<str:date_name>/<str:project>/<path:filename>",
+        views.download_export,
+        name="download_export",
+    ),
     path("dashboard/export_files/", views.export_files, name="export_files"),
 
     path("preview_export/", views.preview_export, name="preview_export"),
@@ -50,7 +55,6 @@ urlpatterns = [
 
     # 结果处理，用户在前端功能入口处选择项目，上传文件并点击提交按钮后的处理逻辑
     path('dashboard/ProcessResult/', views.ProcessResult, name='ProcessResult'), # NIMBUS
-
 
 
     path("dashboard/manual/", views.user_manual, name="user_manual"),

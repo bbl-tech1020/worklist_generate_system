@@ -3,12 +3,14 @@ from django.views.decorators.http import require_POST
 from django.views.decorators.csrf import csrf_exempt
 from django.shortcuts import render, redirect, get_object_or_404
 from .models import *
-from django.http import JsonResponse,HttpResponseRedirect,HttpResponse, HttpResponseBadRequest
+from django.http import JsonResponse,HttpResponseRedirect,HttpResponse, HttpResponseBadRequest,FileResponse, Http404
 from django.conf import settings
 from django.template.loader import render_to_string,get_template
 from django.core.files.storage import default_storage
 from django.core.files.base import ContentFile
 from django.utils import timezone
+from django.utils.encoding import escape_uri_path
+from django.urls import reverse
 from .forms import *
 
 import xlrd
@@ -242,6 +244,32 @@ def sample_search(request):
     return render(request, 'dashboard/sample_search/index.html')
 
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+def download_export(request, platform, date_name, project, filename):
+    """
+    统一的下载入口：无论 .pdf/.xlsx/.txt，都以 attachment 方式下载
+    路径受限在 settings.DOWNLOAD_ROOT 下，防止越权访问
+    """
+    root = settings.DOWNLOAD_ROOT
+    # 组装并规范化路径
+    fpath = os.path.normpath(os.path.join(root, platform, date_name, project, filename))
+
+    # 安全校验：必须在 DOWNLOAD_ROOT 内
+    if not fpath.startswith(os.path.abspath(root) + os.sep):
+        raise Http404("Invalid path")
+
+    if not os.path.exists(fpath) or not os.path.isfile(fpath):
+        raise Http404("File not found")
+
+    # 统一用 FileResponse + as_attachment=True 强制下载
+    # content_type 用二进制更稳妥，浏览器不会尝试内联展示
+    resp = FileResponse(open(fpath, "rb"), as_attachment=True, filename=filename, content_type="application/octet-stream")
+
+    # 兼容一些旧浏览器/中文文件名
+    resp["Content-Disposition"] = f"attachment; filename*=UTF-8''{escape_uri_path(filename)}"
+    return resp
+
+
 def file_download(request):
     """
     展示 downloads 目录下的真实目录结构：
@@ -260,7 +288,7 @@ def file_download(request):
     if not os.path.exists(root):
         os.makedirs(root)
 
-    for platform in sorted(os.listdir(root)):              # 平台层
+    for platform in sorted(os.listdir(root)):     # 平台层
         p_path = os.path.join(root, platform)
         if not os.path.isdir(p_path):
             continue
@@ -284,7 +312,7 @@ def file_download(request):
                         continue
                     files.append({
                         "name": fname,
-                        "url": f"{settings.DOWNLOAD_URL}{platform}/{date_name}/{proj}/{fname}",
+                        "url": reverse("download_export", args=[platform, date_name, proj, fname]),
                         "is_pdf": fname.lower().endswith(".pdf"),
                     })
 
@@ -606,78 +634,87 @@ def ProcessResult(request):
         plate_no=plate_no
     ).delete()
 
-    for row_idx, row_letter in enumerate(letters):
-        for col_idx, col_num in enumerate(nums):
-            # 根据layout决定数据索引
-            if layout == 'vertical':
-                data_idx = col_idx * rows + row_idx  # 纵向（列优先）
-                
-            else:
-                data_idx = row_idx * cols + col_idx  # 横向（行优先，原来方式）
-                # well_index = col_idx * rows + row_idx + 1
-            
-            well_pos_str = f"{row_letter}{col_num}"   # A1, B3 ...
-            well_number = int(index_counter)          # 序号 (1~96)
-            well_index = row_idx * cols + col_idx + 1
+    # 显示网格：8 行 (A~H) × 12 列 (1~12)，按坐标写入，避免被遍历顺序影响
+    worksheet_grid = [[None for _ in nums] for _ in letters]
 
-            origin_barcode = str(OriginBarcode[data_idx])  # 来自扫码结果表
-            if origin_barcode not in ("", "nan"):  # 忽略空条码
-                barcode_to_well[origin_barcode] = (well_pos_str, well_number)
+    def build_well_dict(row_letter, col_num, row_idx, col_idx, data_idx, well_index):
+        well_pos_str = f"{row_letter}{col_num}"
+        origin_barcode = str(OriginBarcode[data_idx])
 
-            index_counter += 1
+        # 建立条码 -> (孔位, 序号) 的映射（供后续 VialPos / Well_Number 使用）
+        if origin_barcode not in ("", "nan"):
+            barcode_to_well[origin_barcode] = (well_pos_str, well_index)
 
-            value = str(MatchSampleName[data_idx])
-            if MatchResult[data_idx] == "TRUE":
-                match_sample = value
-            else:
-                if value == "":
-                    match_sample = ""
-                else:
-                    match_sample = barcode_to_name.get(value, "No match")
+        # 样本名匹配
+        value = str(MatchSampleName[data_idx])
+        if MatchResult[data_idx] == "TRUE":
+            match_sample = value
+        else:
+            match_sample = "" if value == "" else barcode_to_name.get(value, "No match")
 
-            well_pos_str = f"{row_letter}{col_num}"
-            is_locator = well_pos_str in locator_positions
+        is_locator = well_pos_str in locator_positions
 
-            well = {
-                "letter": row_letter,
-                "num": col_num,
-                "well_str": f"{row_letter}{col_num}",
-                "index": well_index,
-                "locator": is_locator,  
-                "locator_warm": Warm[data_idx] if is_locator else "",
-                "match_sample": match_sample,
-                "cut_barcode": CutBarcode[data_idx],
-                "sub_barcode": SubBarcode[data_idx],
+        well = {
+            "letter": row_letter,
+            "num": col_num,
+            "well_str": well_pos_str,
+            "index": well_index,                      # 显示用序号（随布局：列优先/行优先）
+            "locator": is_locator,
+            "locator_warm": Warm[data_idx] if is_locator else "",
+            "match_sample": match_sample,
+            "cut_barcode": CutBarcode[data_idx],
+            "sub_barcode": SubBarcode[data_idx],
+            "origin_barcode": OriginBarcode[data_idx],
+            "warm": Warm[data_idx],
+            "status": Status[data_idx],
+            "dup_barcode": DupBarcode[data_idx],
+            "dup_barcode_sample": DupBarcodeSampleName[data_idx],
+        }
+
+        # 报错信息表（append 顺序 = 遍历顺序）
+        if (str(Warm[data_idx]) in ["1", "4", "16384"]) or (match_sample == "No match"):
+            error_rows.append({
+                "sample_name": match_sample,
                 "origin_barcode": OriginBarcode[data_idx],
-                "warm": Warm[data_idx],
-                "status": Status[data_idx],   
-                "dup_barcode": DupBarcode[data_idx],
-                "dup_barcode_sample": DupBarcodeSampleName[data_idx],
-            }
-            # locator的具体规则：比如 if index == row_idx+1 and col_num == str(index): well["locator"] = True
-            well_list.append(well)
+                "plate_no": plate_no,
+                "well_str": well_pos_str,
+                "warn_level": Warm[data_idx],
+                "warn_info": Status[data_idx],
+            })
 
-            # 判断是否要加入 error_rows
-            if (str(Warm[data_idx]) in ["1", "4", "16384"]) or (match_sample == "No match"):
-                error_rows.append({
-                    "sample_name": match_sample,
-                    "origin_barcode": OriginBarcode[data_idx],
-                    "plate_no": plate_no, 
-                    "well_str": well_pos_str,
-                    "warn_level": Warm[data_idx],
-                    "warn_info": Status[data_idx],
-                })
-            
-            # ✅ 保存到数据库
-            SampleRecord.objects.create(
-                project_name=project_name,
-                plate_no=plate_no,
-                well_str=well_pos_str,
-                sample_name=match_sample,
-                barcode=origin_barcode,
-            )
-    
-    worksheet_table = [well_list[i*12:(i+1)*12] for i in range(8)]  # 8行，每行12个
+        # 写数据库（与遍历顺序无关）
+        SampleRecord.objects.create(
+            project_name=project_name,
+            plate_no=plate_no,
+            well_str=well_pos_str,
+            sample_name=match_sample,
+            barcode=origin_barcode,
+        )
+
+        return well
+
+
+    if layout == 'vertical':
+        # 列优先：A1, B1, ... H1 → A2, B2, ... → ... → H12
+        for col_idx, col_num in enumerate(nums):
+            for row_idx, row_letter in enumerate(letters):
+                data_idx   = col_idx * rows + row_idx           # 列优先取数索引（已有逻辑）
+                well_index = col_idx * rows + row_idx + 1       # 列优先序号（1~96）
+                well = build_well_dict(row_letter, col_num, row_idx, col_idx, data_idx, well_index)
+                # 关键：按“行(row_idx)、列(col_idx)”坐标放进网格
+                worksheet_grid[row_idx][col_idx] = well
+
+    else:
+        # 行优先：A1~A12 → B1~B12 → ... → H1~H12（与原来一致）
+        for row_idx, row_letter in enumerate(letters):
+            for col_idx, col_num in enumerate(nums):
+                data_idx   = row_idx * cols + col_idx           # 行优先取数索引（已有逻辑）
+                well_index = row_idx * cols + col_idx + 1       # 行优先序号（1~96）
+                well = build_well_dict(row_letter, col_num, row_idx, col_idx, data_idx, well_index)
+                worksheet_grid[row_idx][col_idx] = well
+
+    # 最终用于模板的二维表：严格按 A~H 为行，1~12 为列的顺序输出
+    worksheet_table = [[worksheet_grid[r][c] for c in range(cols)] for r in range(rows)]
 
     ###################### 2 生成上机列表 ######################
 
@@ -933,6 +970,7 @@ def preview_export(request):
         "worksheet_table": payload["worksheet_table"],
         "error_rows": payload["error_rows"],
         "nums": nums,
+        "project": payload["project_name"],
         "preview": True,
     })
 
@@ -967,6 +1005,7 @@ def export_files(request):
         {
             "worksheet_table": payload["worksheet_table"],
             "error_rows": payload["error_rows"],
+            "project": payload["project_name"],
             "nums": nums,
             "preview": False,  # PDF模式，不使用浏览器字体加载
             "header": payload.get("header", {}), 
@@ -1018,15 +1057,43 @@ def export_files(request):
     headers = payload["txt_headers"]
     records = payload["worklist_records"]  # list[dict]
     df = pd.DataFrame(records, columns=headers)
-    with pd.ExcelWriter(xlsx_path, engine="xlsxwriter") as writer:
-        df.to_excel(writer, sheet_name="Worklist", index=False)
 
-    return JsonResponse({
+    # 从会话 payload 里取仪器编号，再查仪器厂家
+    instrument_num = (payload.get("header") or {}).get("instrument_num")  # 你在 payload['header'] 里放过它
+    instrument_name = ""
+    if instrument_num:
+        cfg = InstrumentConfiguration.objects.filter(instrument_num=instrument_num).first()
+        if cfg:
+            instrument_name = (cfg.instrument_name or "").strip()
+
+    worklist_url_key = None  # 返回 JSON 用
+    worklist_url_val = None
+
+    if instrument_name.lower() == "sciex":
+        # Sciex：导出制表符分隔的 .txt
+        txt_fname = f"上机列表_{timestamp}.txt"
+        txt_path = os.path.join(target_dir, txt_fname)
+        df.to_csv(txt_path, sep="\t", index=False, encoding="utf-8")
+        worklist_url_key = "txt_url"
+        worklist_url_val = f"{settings.DOWNLOAD_URL}{today_str}/{project}/{txt_fname}"
+
+    else:
+        # 其它厂家：维持原有 .xlsx
+        xlsx_fname = f"上机列表_{timestamp}.xlsx"
+        xlsx_path = os.path.join(target_dir, xlsx_fname)
+        with pd.ExcelWriter(xlsx_path, engine="xlsxwriter") as writer:
+            df.to_excel(writer, sheet_name="Worklist", index=False)
+        worklist_url_key = "xlsx_url"
+        worklist_url_val = f"{settings.DOWNLOAD_URL}{today_str}/{project}/{xlsx_fname}"
+
+    # 返回结果：保留 pdf_url，并根据厂家返回 txt_url 或 xlsx_url
+    resp = {
         "ok": True,
         "message": "导出完成",
-        "pdf_url":  f"{settings.DOWNLOAD_URL}{today_str}/{project}/工作清单.pdf",
-        "xlsx_url": f"{settings.DOWNLOAD_URL}{today_str}/{project}/上机列表.xlsx",
-    })
+        "pdf_url": f"{settings.DOWNLOAD_URL}{today_str}/{project}/工作清单_{timestamp}.pdf",
+    }
+    resp[worklist_url_key] = worklist_url_val
+    return JsonResponse(resp)
 
 # 历史标本查找
 def sample_search_api(request):

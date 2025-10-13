@@ -729,11 +729,32 @@ def ProcessResult(request):
     if not instrument_config.upload_file:
         return HttpResponse("未设置该上机仪器对应的上机模板,请设置后再试", status=404)
     
+    # 解析并读取上机模板
+    # 只支持 .txt / .csv
+    ext = os.path.splitext(instrument_config.upload_file.name)[1].lower()
+    if ext not in (".txt", ".csv"):
+        return HttpResponse(f"仅支持 .txt 或 .csv 模板，当前为：{ext}", status=400)
+
+    # 读取二进制，再做“编码回退”解码
     with instrument_config.upload_file.open("rb") as f:
-        lines = f.read().decode("utf-8").splitlines()
+        raw = f.read()
+
+    text = None
+    last_err = None
+    for enc in ("utf-8", "utf-8-sig", "gb18030"):
+        try:
+            text = raw.decode(enc)
+            break
+        except UnicodeDecodeError as e:
+            last_err = e
+
+    if text is None:
+        # 所有候选编码都失败
+        raise last_err or UnicodeDecodeError("unknown", b"", 0, 1, "unable to decode upload_file")
     
-    data = "\n".join(lines)
-    df = pd.read_csv(StringIO(data), sep=None, engine="python")
+    # 用 pandas 自动嗅探分隔符（支持逗号/制表符等）
+    # 注意：必须指定 engine="python" 才能启用 Sniffer；dtype=str 保持后续逻辑不变
+    df = pd.read_csv(StringIO(text), sep=None, engine="python", dtype=str)
 
     # 提取表头
     txt_headers = df.columns.tolist()
@@ -848,7 +869,7 @@ def ProcessResult(request):
             # 找到还没填充的行（即第2列为空的行）
             mask = worklist_table.iloc[:, 1].isna()
             for col, val in zip(worklist_table.columns[1:], fill_values.values):
-                if col == "SmplInjVol" or col == "Injection volume":  
+                if col == "SmplInjVol" or col == "Injection volume" or col == "样品瓶":  
                     continue
                 if col == "VialPos" or col == "Vial position":  
                     # 特殊处理 VialPos
@@ -906,11 +927,19 @@ def ProcessResult(request):
                                 return None
                         else:
                             return val
-                
+
                     worklist_table.loc[mask, col] = worklist_table.loc[mask, first_col].apply(resolve_vialpos)
 
-                    # ✅ 关键：强制转换为 Int64，避免出现小数
-                    worklist_table[col] = worklist_table[col].astype("Int64")
+                    # 仅当该列（去除空值后）全部为纯数字时，才转换为可空整型 Int64
+                    col_vals = worklist_table[col]
+
+                    # 去掉空值后，检查是否全部匹配纯数字（允许前后空格）
+                    non_null = col_vals.dropna()
+                    all_numeric = non_null.astype(str).str.strip().str.fullmatch(r"\d+").all()
+
+                    if all_numeric and len(non_null) > 0:
+                        # 确保可安全转型
+                        worklist_table[col] = pd.to_numeric(worklist_table[col], errors="coerce").astype("Int64")
 
                 else:
                     # 普通列，直接填充

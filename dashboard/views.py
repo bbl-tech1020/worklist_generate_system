@@ -699,7 +699,7 @@ def ProcessResult(request):
         for col_idx, col_num in enumerate(nums):
             for row_idx, row_letter in enumerate(letters):
                 data_idx   = col_idx * rows + row_idx           # 列优先取数索引（已有逻辑）
-                well_index = col_idx * rows + row_idx + 1       # 列优先序号（1~96）
+                well_index = row_idx * cols + col_idx + 1       # well_index不随LAYOUT_CHOICES的选择而变化
                 well = build_well_dict(row_letter, col_num, row_idx, col_idx, data_idx, well_index)
                 # 关键：按“行(row_idx)、列(col_idx)”坐标放进网格
                 worksheet_grid[row_idx][col_idx] = well
@@ -709,7 +709,7 @@ def ProcessResult(request):
         for row_idx, row_letter in enumerate(letters):
             for col_idx, col_num in enumerate(nums):
                 data_idx   = row_idx * cols + col_idx           # 行优先取数索引（已有逻辑）
-                well_index = row_idx * cols + col_idx + 1       # 行优先序号（1~96）
+                well_index = row_idx * cols + col_idx + 1       # well_index不随LAYOUT_CHOICES的选择而变化
                 well = build_well_dict(row_letter, col_num, row_idx, col_idx, data_idx, well_index)
                 worksheet_grid[row_idx][col_idx] = well
 
@@ -840,7 +840,6 @@ def ProcessResult(request):
     # 20251011新增规则：
     # 4 无论worklist_mapping中第一列的元素的什么，若worklist_table中某一列的列名为‘SetName’，则该列的内容按照下述形式填充：'仪器编号-项目名称-日期'，即{instrument_num}-{project_name}-日期，其中日期精确到天（如20251011）。例如：FXS-YZ38-25OHD-20251011
     # 5 无论worklist_mapping中第一列的元素的什么，若worklist_table中某一列的列名为‘OutputFile’，则该列的内容按照下述形式填充：'年\年月\Data{instrument_num}-{project_name}-日期'，其中日期精确到天（如20251011）。例如：2025\202510\DataFXS-YZ38-25OHD-20251011
-
 
     for _, row in worklist_mapping.iterrows():
         sample_name = row.iloc[0]   # 用 iloc 显式取第一列

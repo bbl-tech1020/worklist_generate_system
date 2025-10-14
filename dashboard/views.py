@@ -760,7 +760,7 @@ def ProcessResult(request):
     txt_headers = df.columns.tolist()
 
     # 获取SampleName列的内容
-    # 第一步：获取OriginBarcode中的内容，并在此基础上去除df_mapping["Barcode"]中的内容
+    # 第一步：获取OriginBarcode中的内容，并在此基础上去除df_mapping["Barcode"]中的内容(为曲线和质控)
     barcode_list = [str(x) for x in df_mapping["Barcode"].tolist()]
     ClinicalSample = [x for x in OriginBarcode if x not in barcode_list]
     
@@ -789,7 +789,6 @@ def ProcessResult(request):
 
     curve_list = ["DB2"] + std_names
 
-
     # 第四步：添加QC(获取对应关系表模板中设置的QC名称)
     qc_list1 = ["DB3"] + df_mapping.loc[df_mapping["Code"].str.startswith("QC"), "Name"].unique().tolist() + ["DB4"]
 
@@ -798,6 +797,8 @@ def ProcessResult(request):
 
     # 拼接上述列表
     SampleName_list = test_list + curve_list + qc_list1 + ClinicalSample + qc_list2
+
+    ic(SampleName_list)
 
     worklist_mapping = pd.read_excel(mapping_file_path, sheet_name="上机列表")
     
@@ -823,12 +824,12 @@ def ProcessResult(request):
     first_col = worklist_table.columns[0]  # 动态获取第一列列名
 
     # 删除除第一次出现外的所有 "----------" 行
-    dash_mask = worklist_table[first_col].str.count("-") > 3
-    dash_indices = worklist_table[dash_mask].index.tolist()
-    if len(dash_indices) > 1:
-        worklist_table.drop(dash_indices[1:], inplace=True)
+    # dash_mask = worklist_table[first_col].str.count("-") > 3
+    # dash_indices = worklist_table[dash_mask].index.tolist()
+    # if len(dash_indices) > 1:
+    #     worklist_table.drop(dash_indices[1:], inplace=True)
 
-    worklist_table.reset_index(drop=True, inplace=True)
+    # worklist_table.reset_index(drop=True, inplace=True)
 
     # 3. 遍历 worklist_mapping 按规则填充
 
@@ -942,10 +943,10 @@ def ProcessResult(request):
     yearmonth = today_str[:6]  # 202510
     
     # e.g. FXS-YZ38-25OHD-20251011
-    setname_value = f"{instrument_num}-{project_name}-{today_str}"
+    setname_value = f"{instrument_num}-{project_name}-{today_str}-{plate_no}"
 
     # e.g. 2025\202510\DataFXS-YZ38-25OHD-20251011
-    output_value = f"{year}\\{yearmonth}\\Data{setname_value}-{project_name}-{today_str}"
+    output_value = f"{year}\\{yearmonth}\\Data{setname_value}"
     
     if "SetName" in worklist_table.columns:
         worklist_table["SetName"] = setname_value

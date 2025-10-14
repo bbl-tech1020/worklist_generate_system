@@ -51,7 +51,7 @@ urlpatterns = [
 
     # 获取后台配置的项目信息
     path('dashboard/get_project_list/', views.get_project_list, name='get_project_list'),
-    path('dashboard/frontend_entry/NIMBUS_sampling/get_project_detail/<int:pk>/', views.get_project_detail, name='get_project_detail'),
+    path('dashboard/frontend_entry/get_project_detail/<int:pk>/', views.get_project_detail, name='get_project_detail'),
 
     # 结果处理，用户在前端功能入口处选择项目，上传文件并点击提交按钮后的处理逻辑
     path('dashboard/ProcessResult/', views.ProcessResult, name='ProcessResult'), # NIMBUS

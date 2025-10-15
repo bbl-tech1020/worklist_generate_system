@@ -141,7 +141,7 @@
                             <div class="locator">{{cell.locator_warm}}</div>
                         {% else %}
                             <div class="hole">{{ cell.letter }}{{ cell.num }}({{ cell.index }})</div>
-                            {% if cell.warm == "1" or cell.warm == "4" or cell.warm == "16384" %}
+                            {% if cell.warm == "1" or cell.warm == "4" or cell.warm == "16384" or cell.status == "Pipetting error" %}
                                 <span><i class="fa fa-flag flag" aria-hidden="true"></i></span>
                             {% endif %}
                             {% if cell.dup_barcode == "TRUE" %}
@@ -150,11 +150,21 @@
                             {% if cell.dup_barcode_sample == "TRUE" %}
                                 <span><i class="fas fa-star fa-star" aria-hidden="true" style="font-size: 20px;"></i></span>
                             {% endif %}
-                            <div class="SampleName">{{ cell.match_sample }}</div>
-                            <div class="Barcode">{{ cell.cut_barcode }}</div>
-                            <div class="Barcode">{{ cell.sub_barcode }}</div>
-                        {% endif %}
-                        
+
+                            {% if platform == 'Starlet' %}
+                                {% if cell.cut_barcode == "NOTUBE" %}
+
+                                {% else %}
+                                    <div class="SampleName">{{ cell.match_sample }}</div>
+                                    <div class="Barcode">{{ cell.cut_barcode }}</div>
+                                    <div class="Barcode">{{ cell.sub_barcode }}</div>
+                                {% endif %}
+                            {% else %}
+                                <div class="SampleName">{{ cell.match_sample }}</div>
+                                <div class="Barcode">{{ cell.cut_barcode }}</div>
+                                <div class="Barcode">{{ cell.sub_barcode }}</div>
+                            {% endif %}
+                        {% endif %}          
                     </td>
                 {% endfor %}
             </tr>
@@ -188,14 +198,16 @@
         </thead>
         <tbody>
             {% for row in error_rows %}
-                <tr>
-                    <td>{{ row.sample_name }}</td>
-                    <td>{{ row.origin_barcode }}</td>
-                    <td>{{ row.plate_no }}</td>
-                    <td>{{ row.well_str }}</td>
-                    <td>{{ row.warn_level }}</td>
-                    <td>{{ row.warn_info }}</td>
-                </tr>
+                {% if row.origin_barcode != 'NOTUBE' %}
+                    <tr>
+                        <td>{{ row.sample_name }}</td>
+                        <td>{{ row.origin_barcode }}</td>
+                        <td>{{ row.plate_no }}</td>
+                        <td>{{ row.well_str }}</td>
+                        <td>{{ row.warn_level }}</td>
+                        <td>{{ row.warn_info }}</td>
+                    </tr>
+                {% endif %}
             {% endfor %}
         </tbody>
     </table>

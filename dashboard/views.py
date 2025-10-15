@@ -479,8 +479,8 @@ def ProcessResult(request):
     Barcodeindex = index_map.get("SPositionBC", 0)
 
     # ✅ 兼容：Starlet 的扫码结果没有 Warm 列，新增 TLabwareId 取板号
-    Warmindex     = index_map.get("Warm", None)  # NIMBUS
-    Labwareindex  = index_map.get("TLabwareId", None) # Starlet
+    Warmindex    = index_map.get("Warm")             # None 表示没有 Warm 列（Starlet）
+    Labwareindex = index_map.get("TLabwareId")       # Starlet 会有
 
     # 批量读取数据
     Position = []
@@ -502,7 +502,7 @@ def ProcessResult(request):
         # Warm 兼容：Starlet 场景下为空串
         warm = ""
         if Warmindex is not None and Warmindex < ncols:
-            warm = scan_data.row_values(i)[Warmindex]
+            warm = scan_data.row_values(i)[Warmindex] if Warmindex is not None else ""
 
         # Starlet 用于定位和板号
         labware_id = ""
@@ -592,11 +592,14 @@ def ProcessResult(request):
                 break
 
     if plate_no is None:
-        # Starlet：从 TLabwareId 末尾提取数字 n，并构造成 "X{n}"
+        # Starlet：从 TLabwareId 末尾数字得 n → plate_no = "X{n}"
+        labware_ids = []
+        if Labwareindex is not None:
+            for i in range(1, nrows):
+                labware_ids.append(str(scan_data.row_values(i)[Labwareindex]).strip())
         first_non_empty = next((s for s in labware_ids if s), "")
         m = re.search(r"(\d+)$", first_non_empty)
-        n = int(m.group(1)) if m else 1
-        plate_no = f"X{n}"
+        plate_no = f"X{int(m.group(1))}" if m else "X1"
 
     # ======= Starlet 的定位孔：按 TLabwareId 末尾数字 n -> B/C/.../H + 列号 =======
     if Warmindex is None:
@@ -786,13 +789,18 @@ def ProcessResult(request):
 
         is_locator = well_pos_str in locator_positions
 
+        locator_label = Warm[data_idx] if is_locator else ""
+
+        if is_locator and (not locator_label):   # Starlet 没 Warm
+            locator_label = plate_no             # 例如 "X7"
+
         well = {
             "letter": row_letter,
             "num": col_num,
             "well_str": well_pos_str,
             "index": well_index,                      # 显示用序号（随布局：列优先/行优先）
             "locator": is_locator,
-            "locator_warm": Warm[data_idx] if is_locator else "",
+            "locator_warm": locator_label, 
             "match_sample": match_sample,
             "cut_barcode": CutBarcode[data_idx],
             "sub_barcode": SubBarcode[data_idx],
@@ -803,16 +811,23 @@ def ProcessResult(request):
             "dup_barcode_sample": DupBarcodeSampleName[data_idx],
         }
 
-        # 报错信息表（append 顺序 = 遍历顺序）
-        if (str(Warm[data_idx]) in ["1", "4", "16384"]) or (match_sample == "No match"):
-            error_rows.append({
-                "sample_name": match_sample,
-                "origin_barcode": OriginBarcode[data_idx],
-                "plate_no": plate_no,
-                "well_str": well_pos_str,
-                "warn_level": Warm[data_idx],
-                "warn_info": Status[data_idx],
-            })
+        # 报错信息表
+
+        # Starlet的添加逻辑
+        status_text = str(Status[data_idx]).strip().lower()
+        is_pipetting_error = ("pipetting error" in status_text)
+
+        if (str(Warm[data_idx]) in ["1", "4", "16384"]) \
+            or is_pipetting_error \
+            or (match_sample == "No match"):
+                error_rows.append({
+                    "sample_name": match_sample,
+                    "origin_barcode": OriginBarcode[data_idx],
+                    "plate_no": plate_no,
+                    "well_str": well_pos_str,
+                    "warn_level": Warm[data_idx] if Warm[data_idx] != "" else ("PIPETTING_ERROR" if is_pipetting_error else ""),
+                    "warn_info": Status[data_idx],
+                })
 
         # 写数据库（与遍历顺序无关）
         SampleRecord.objects.create(
@@ -954,14 +969,6 @@ def ProcessResult(request):
     worklist_table[worklist_mapping.columns[0]] = SampleName_list
 
     first_col = worklist_table.columns[0]  # 动态获取第一列列名
-
-    # 删除除第一次出现外的所有 "----------" 行
-    # dash_mask = worklist_table[first_col].str.count("-") > 3
-    # dash_indices = worklist_table[dash_mask].index.tolist()
-    # if len(dash_indices) > 1:
-    #     worklist_table.drop(dash_indices[1:], inplace=True)
-
-    # worklist_table.reset_index(drop=True, inplace=True)
 
     # 3. 遍历 worklist_mapping 按规则填充
 

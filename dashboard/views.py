@@ -239,6 +239,10 @@ def Starlet_qyzl(request):
 def Starlet_worksheet(request):
     return render(request, 'dashboard/sampling/Starlet_worksheet.html')
 
+# Tecan
+def Tecan_sampling(request):
+    return render(request, 'dashboard/sampling/Tecan.html')
+
 # 2 标本查找
 def sample_search(request):
     return render(request, 'dashboard/sample_search/index.html')

@@ -1,0 +1,93 @@
+{% extends 'dashboard/index.html' %}
+{% load static %}
+{% block header %}
+<header class="navbar navbar-expand-md navbar-light d-print-none">
+  <div class="container-fluid">
+    <h1 class="navbar-brand">Tecan取样</h1>
+  </div>
+</header>
+{% endblock %}
+
+{% block content %}
+<div class="card mt-4">
+
+  <div class="card-body">
+
+    <!-- NIMBUS取样表单 -->
+    <div id="nimbus-feature-group">
+      <form action="{% url 'ProcessResult' %}" method="post" enctype="multipart/form-data">
+        {% csrf_token %}
+
+        <input type="hidden" name="platform" value="NIMBUS">
+        <div class="mb-3">
+          <label class="form-label" name="project_id">项目名称</label>
+          <select class="form-select" id="project-select" name="project_id" required>
+            <option value="">请选择项目</option>
+            <!-- 选项由js动态加载 -->
+          </select>
+        </div>
+
+        <div class="mb-3">
+          <label class="form-label">岗位清单表</label>
+          <input type="file" class="form-control" name="station_list">
+        </div>
+        <div class="mb-3">
+          <label class="form-label">扫码结果表</label>
+          <input type="file" class="form-control" name="scan_result">
+        </div>
+
+        <!-- 上机仪器 -->
+        <div class="mb-3">
+          <label class="form-label">上机仪器</label>
+          <input type="text" class="form-control" id="instrument_num" name="instrument_num" placeholder="请输入仪器编号">
+        </div>
+        <div class="mt-4">
+          <button class="btn btn-primary">提交</button>
+        </div>
+      </form>
+    </div>
+
+  </div>
+</div>
+
+<script>
+  document.addEventListener('DOMContentLoaded', function () {
+    // 1. 加载项目列表
+    fetch("{% url 'get_project_list' %}")
+      .then(res => res.json())
+      .then(data => {
+        const select = document.getElementById('project-select');
+        (data.projects || []).forEach(item => {
+          const opt = document.createElement('option');
+          opt.value = item.id;
+          opt.textContent = item.name;
+          select.appendChild(opt);
+        });
+      });
+  
+    // 2. 项目下拉联动“上机仪器”
+    const projectSelect   = document.getElementById('project-select');
+    const instrumentInput = document.getElementById('instrument_num');
+  
+    // 用 Django 生成“带占位符的绝对 URL”
+    // /dashboard/frontend_entry/get_project_detail/0/
+    const detailUrlTemplate = "{% url 'get_project_detail' pk=0 %}";
+  
+    projectSelect.addEventListener('change', function () {
+      const projectId = this.value;
+      if (!projectId) { instrumentInput.value = ''; return; }
+  
+      // 把最后的 0/ 替换成真实的 projectId + 斜杠
+      const detailUrl = detailUrlTemplate.replace(/0\/?$/, projectId + "/");
+  
+      fetch(detailUrl)
+        .then(res => res.json())
+        .then(data => {
+          instrumentInput.value = data.default_upload_instrument || '';
+        });
+    });
+  });
+  </script>
+  
+
+{% endblock %}

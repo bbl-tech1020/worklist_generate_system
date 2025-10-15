@@ -476,7 +476,10 @@ def ProcessResult(request):
     Positionindex = index_map.get("TPositionId", 0)
     Statusindex = index_map.get("TSumStateDescription", 0)
     Barcodeindex = index_map.get("SPositionBC", 0)
-    Warmindex = index_map.get("Warm", 0)
+
+    # ✅ 兼容：Starlet 的扫码结果没有 Warm 列，新增 TLabwareId 取板号
+    Warmindex     = index_map.get("Warm", None)  # NIMBUS
+    Labwareindex  = index_map.get("TLabwareId", None) # Starlet
 
     # 批量读取数据
     Position = []
@@ -485,23 +488,31 @@ def ProcessResult(request):
     CutBarcode = []     # 以“-”切割后的主条码
     SubBarcode = []     # 以“-”切割后的子条码
     Warm = []
+    labware_ids   = []   # Starlet: 记录 TLabwareId
 
-    # 提取所有 Warm 列含"X"的定位孔所在TPositionId
+    # 两种来源的定位孔集合（NIMBUS: Warm；Starlet: TLabwareId 映射）
     locator_positions = set()
 
     for i in range(1, nrows):
         pos = scan_data.row_values(i)[Positionindex]
         status = scan_data.row_values(i)[Statusindex]
         barcode = scan_data.row_values(i)[Barcodeindex]
-        warm = scan_data.row_values(i)[Warmindex]
 
-        # 添加定位孔标识
-        if "X" in warm:
-            locator_positions.add(pos)
+        # Warm 兼容：Starlet 场景下为空串
+        warm = ""
+        if Warmindex is not None and Warmindex < ncols:
+            warm = scan_data.row_values(i)[Warmindex]
+
+        # Starlet 用于定位和板号
+        labware_id = ""
+        if Labwareindex is not None and Labwareindex < ncols:
+            labware_id = str(scan_data.row_values(i)[Labwareindex]).strip()
+        labware_ids.append(labware_id)
 
         Position.append(pos)
         Status.append(status)
         OriginBarcode.append(barcode)
+
         # 切割主/子条码，保证即使barcode为非字符串也能处理
         barcode_str = str(barcode)
         parts = barcode_str.split("-", 1)
@@ -512,8 +523,51 @@ def ProcessResult(request):
             SubBarcode.append("")
 
         Warm.append(warm)
-    
-    plate_no = next((str(w) for w in Warm if str(w).startswith("X")), "X1")
+
+        # 添加定位孔标识
+        # ======= NIMBUS：Warm 含 'X' 的孔即定位孔（保持原逻辑） =======
+        if Warmindex is not None:
+            if isinstance(warm, str) and ("X" in warm):
+                locator_positions.add(pos)
+
+    # ======= 板号：NIMBUS 优先 Warm；否则 Starlet 用 TLabwareId 末尾数字 =======
+    import re
+
+    plate_no = None
+    if Warmindex is not None:
+        for w in Warm:
+            w_str = str(w)
+            if w_str.startswith("X"):
+                m = re.search(r"X(\d+)", w_str)
+                plate_no = int(m.group(1)) if m else 1
+                break
+
+    if plate_no is None:
+        # Starlet：从 TLabwareId 末尾提取数字 n，并构造成 "X{n}"
+        first_non_empty = next((s for s in labware_ids if s), "")
+        m = re.search(r"(\d+)$", first_non_empty)
+        n = int(m.group(1)) if m else 1
+        plate_no = f"X{n}"
+
+    # ======= Starlet 的定位孔：按 TLabwareId 末尾数字 n -> B/C/.../H + 列号 =======
+    if Warmindex is None:
+        # 取用于定位映射的 n（TLabwareId 末尾数字）
+        first_non_empty = next((s for s in labware_ids if s), "")
+        m = re.search(r"(\d+)$", first_non_empty)
+        if m:
+            n = int(m.group(1))  # 1-based
+            # 将 n 映射到 96 孔板从 B 行开始的 12 列栅格（B..H 共 7 行可覆盖到 84）
+            # 若 n > 84，则按 84 回绕（可根据业务需要改为报错或其他规则）
+            base = max(1, n)
+            i0 = (base - 1) % 84           # 0..83
+            row_block = i0 // 12           # 0..6 -> B..H
+            col = (i0 % 12) + 1            # 1..12
+            row_letters = ["B", "C", "D", "E", "F", "G", "H"]
+            row = row_letters[row_block]
+            locator_positions = {f"{row}{col}"}  # 覆盖为 Starlet 的单一定位孔
+        else:
+            # 无法从 TLabwareId 提取数字时，不设定位孔（维持空集合）
+            locator_positions = set()
 
     ###################### 抓取每日工作清单的主条码与实验号，并与扫码结果匹配 ###################### 
 

@@ -18,6 +18,7 @@
       <form action="{% url 'ProcessResult' %}" method="post" enctype="multipart/form-data">
         {% csrf_token %}
 
+        <input type="hidden" name="platform" value="NIMBUS">
         <div class="mb-3">
           <label class="form-label" name="project_id">项目名称</label>
           <select class="form-select" id="project-select" name="project_id" required>

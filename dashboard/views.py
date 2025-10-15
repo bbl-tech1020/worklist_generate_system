@@ -451,8 +451,9 @@ def injection_volume_config_delete(request, pk):
 
 # 结果处理，用户在前端功能入口处选择项目，上传文件并点击提交按钮后的处理逻辑
 def ProcessResult(request):
-    # 获取项目类型
+    # 获取项目类型和取样平台 layout
     project_id = request.POST.get("project_id")
+    platform = request.POST.get('platform')
     
     # 获取上传的文件对象
     Stationlist = request.FILES.get('station_list')  # 每日操作清单
@@ -530,6 +531,54 @@ def ProcessResult(request):
             if isinstance(warm, str) and ("X" in warm):
                 locator_positions.add(pos)
 
+
+    if platform == 'Starlet':
+        # 预期 96 孔的顺序（Starlet 固定横排：A1..A12, B1..B12, ...）
+        letters_fix = ["A","B","C","D","E","F","G","H"]
+        nums_fix    = [str(i) for i in range(1, 13)]
+        expected_positions = [f"{r}{c}" for r in letters_fix for c in nums_fix]
+
+        # 先把『读到的』行按 TPositionId 做成字典，便于精准落位
+        row_by_pos = {}
+        for i in range(1, nrows):
+            pos = str(scan_data.row_values(i)[Positionindex]).strip()
+            row_by_pos[pos] = {
+                "Status":        scan_data.row_values(i)[Statusindex],
+                "OriginBarcode": scan_data.row_values(i)[Barcodeindex],
+                "Warm":          ""  # Starlet 无 Warm
+            }
+
+        # 把上面你已经 append 完成的数组，替换成『按 expected_positions 对齐后的新数组』
+        Position_aligned, Status_aligned, OriginBarcode_aligned = [], [], []
+        CutBarcode_aligned, SubBarcode_aligned, Warm_aligned     = [], [], []
+
+        for pos in expected_positions:
+            if pos in row_by_pos:
+                status  = row_by_pos[pos]["Status"]
+                bc      = row_by_pos[pos]["OriginBarcode"]
+                warm    = row_by_pos[pos]["Warm"]
+            else:
+                # 关键：缺行用占位，不前移
+                status, bc, warm = "Not used", "NOTUBE", ""
+
+            Position_aligned.append(pos)
+            Status_aligned.append(status)
+            Warm_aligned.append(warm)
+
+            bc_str = str(bc)
+            parts  = bc_str.split("-", 1)
+            OriginBarcode_aligned.append(bc_str)
+            CutBarcode_aligned.append(parts[0])
+            SubBarcode_aligned.append("-" + parts[1] if len(parts) == 2 else "")
+
+        # 用对齐后的数组覆盖原数组
+        Position       = Position_aligned
+        Status         = Status_aligned
+        OriginBarcode  = OriginBarcode_aligned
+        CutBarcode     = CutBarcode_aligned
+        SubBarcode     = SubBarcode_aligned
+        Warm           = Warm_aligned
+
     # ======= 板号：NIMBUS 优先 Warm；否则 Starlet 用 TLabwareId 末尾数字 =======
     import re
 
@@ -568,6 +617,8 @@ def ProcessResult(request):
         else:
             # 无法从 TLabwareId 提取数字时，不设定位孔（维持空集合）
             locator_positions = set()
+    
+    ic(locator_positions)
 
     ###################### 抓取每日工作清单的主条码与实验号，并与扫码结果匹配 ###################### 
 
@@ -654,15 +705,42 @@ def ProcessResult(request):
                 DupBarcode.append("")
                 DupBarcodeSampleName.append("")
 
+
     ###################### 1 生成工作清单和报错表格 ######################
+    
+    rows, cols = 8, 12
+    TOTAL = rows * cols  # 96
+
+    def pad_to(seq, n, fill=""):
+        if len(seq) < n:
+            seq.extend([fill] * (n - len(seq)))
+
+    # 这些数组都补到 96for i in range(1, nrows):
+    pad_to(Position,    TOTAL, "")
+    pad_to(OriginBarcode, TOTAL, "NOTUBE")
+    pad_to(CutBarcode,    TOTAL, "")
+    pad_to(SubBarcode,    TOTAL, "")
+    pad_to(Warm,          TOTAL, "")
+    pad_to(Status,        TOTAL, "Not used")
+    pad_to(MatchSampleName, TOTAL, "")
+    pad_to(MatchResult,     TOTAL, "")
+    pad_to(DupBarcode,       TOTAL, "")
+    pad_to(DupBarcodeSampleName, TOTAL, "")
+
     letters = ["A","B","C","D","E","F","G","H"]
     nums = [str(i) for i in range(1, 13)]
-    rows, cols = 8, 12
+    
 
     # 抓取96孔板的排列顺序（纵向/横向）
     config = SamplingConfiguration.objects.get(id=project_id)
     project_name = config.project_name
     layout = config.layout
+
+    # 这里强制覆盖 layout，不再使用后台表配置
+    if platform == 'Starlet':
+        layout = 'horizontal'   # Starlet 固定横向
+    else:
+        layout = 'vertical'     # NIMBUS 固定纵向
 
     mapping_file_path = config.mapping_file.path
 

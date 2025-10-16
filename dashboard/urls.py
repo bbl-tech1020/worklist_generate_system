@@ -60,6 +60,7 @@ urlpatterns = [
 
     # 5 结果处理(适用于TECAN)
     path('dashboard/TecanIngest/', views_TecanIngest.tecaningest, name='TecanIngest'), # TECAN
+    path('dashboard/TecanIngest/resolve/', views_TecanIngest.tecan_resolve_duplicates, name='TecanIngestResolve'),
 
     path("dashboard/manual/", views.user_manual, name="user_manual"),
 ]

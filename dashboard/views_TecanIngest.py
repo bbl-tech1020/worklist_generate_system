@@ -132,7 +132,7 @@ def _write_processed_copy(df: pd.DataFrame, original_name: str) -> str:
 
 @login_required
 @csrf_protect
-def tecan_step1(request: HttpRequest) -> HttpResponse:
+def tecaningest(request: HttpRequest) -> HttpResponse:
     if request.method != "POST":
         return HttpResponseBadRequest("仅支持POST")
 

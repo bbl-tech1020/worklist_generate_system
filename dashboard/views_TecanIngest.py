@@ -11,6 +11,8 @@ from django.views.decorators.csrf import csrf_protect
 from django.utils.html import escape
 
 import pandas as pd
+import re
+from icecream import ic
 
 # ======== 工具函数 ========
 
@@ -35,35 +37,55 @@ def _save_upload_to_media(subdir: str, f) -> str:
 
 def _parse_tecan_csv_abs(path: str) -> pd.DataFrame:
     """
-    解析 Tecan 扫码 CSV（分号分隔），抽取：
-    RowID / SRCTubeID / MainBarcode / GridPos / TipNumber
+    解析无表头的 Tecan 扫码 CSV 文件。
+    逻辑与 R 版一致：
+      - 首行忽略（视为批次/板号信息）
+      - 每行以 ';' 分隔
+      - 第1列 -> GridPos
+      - 第3列 -> TipNumber（若不足3列则 NA）
+      - 最后一列 -> SRCTubeID
+      - MainBarcode = SRCTubeID.split('-')[0]
     """
-    df = pd.read_csv(path, sep=";", engine="python", dtype=str)
 
-    # 容错匹配列名（转小写去空格）
-    cols = {c.lower().strip(): c for c in df.columns}
+    with open(path, "r", encoding="utf-8", errors="ignore") as f:
+        lines = [ln.strip() for ln in f.read().splitlines() if ln.strip() != ""]
 
-    def pick(*cands):
-        for k in cands:
-            if k in cols:
-                return cols[k]
-        return None
+    if not lines:
+        raise ValueError("CSV为空")
 
-    col_src  = pick("srctubeid", "src_tube_id", "tubeid", "src")
-    col_grid = pick("gridpos", "grid_pos", "grid")
-    col_tip  = pick("tipnumber", "tip", "tpositionid", "tip_number")
+    # 跳过首行（批次号）
+    data_lines = lines[1:]
+    if not data_lines:
+        raise ValueError("CSV无数据行")
 
-    if not col_src or not col_grid or not col_tip:
-        raise ValueError("CSV缺少必要列：SRCTubeID / GridPos / TipNumber")
+    parsed_rows = []
+    for i, line in enumerate(data_lines, start=1):
+        parts = [p.strip() for p in line.split(";")]
+        if not parts:
+            continue
 
-    out = pd.DataFrame({
-        "RowID": range(1, len(df) + 1),
-        "SRCTubeID": df[col_src].astype(str).fillna(""),
-        "GridPos":   df[col_grid].astype(str).str.extract(r"(\d+)")[0].astype(int),
-        "TipNumber": df[col_tip].astype(str).str.extract(r"(\d+)")[0].astype(int),
-    })
-    out["MainBarcode"] = out["SRCTubeID"].astype(str).str.split("-", n=1).str[0]
-    return out
+        # 按 R 逻辑取列
+        gridpos_raw = parts[0] if len(parts) >= 1 else ""
+        tip_raw = parts[2] if len(parts) >= 3 else ""
+        src_raw = parts[-1] if len(parts) >= 1 else ""
+
+        # 从文本中提取数字
+        def extract_int(s):
+            m = re.search(r"(\d+)", str(s))
+            return int(m.group(1)) if m else None
+
+        parsed_rows.append({
+            "RowID": i,
+            "SRCTubeID": str(src_raw),
+            "MainBarcode": str(src_raw).split("-", 1)[0],
+            "GridPos": extract_int(gridpos_raw),
+            "TipNumber": extract_int(tip_raw),
+        })
+
+    if not parsed_rows:
+        raise ValueError("CSV无有效数据行")
+
+    return pd.DataFrame(parsed_rows)
 
 def _collect_history_mainbarcodes(processed_dir: str) -> Set[str]:
     """
@@ -130,7 +152,6 @@ def _write_processed_copy(df: pd.DataFrame, original_name: str) -> str:
 
 # ======== 视图函数（Step1：解析 + 去重） ========
 
-@login_required
 @csrf_protect
 def tecaningest(request: HttpRequest) -> HttpResponse:
     if request.method != "POST":
@@ -154,6 +175,8 @@ def tecaningest(request: HttpRequest) -> HttpResponse:
         df = _parse_tecan_csv_abs(saved_scan_abs)
     except Exception as e:
         return HttpResponseBadRequest(f"CSV解析失败：{e}")
+    
+    ic(df)
 
     # 2) 汇总历史 + 去重检测
     processed_dir = os.path.join(settings.MEDIA_ROOT, "tecan", "processed")

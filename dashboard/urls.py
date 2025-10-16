@@ -1,5 +1,6 @@
 from django.urls import path
 from . import views
+from . import views_tecan_step1
 from django.conf import settings
 from django.conf.urls.static import static
 
@@ -57,8 +58,8 @@ urlpatterns = [
     # 4 结果处理(适用于NIMBUS和Starlet)，用户在前端功能入口处选择项目，上传文件并点击提交按钮后的处理逻辑
     path('dashboard/ProcessResult/', views.ProcessResult, name='ProcessResult'), # NIMBUS和Starlet
 
-    # 5 结果处理(适用于TECAN)，用户在前端功能入口处选择项目，上传文件并点击提交按钮后的处理逻辑
-    path('dashboard/TecanIngest/', views.TecanIngest, name='TecanIngest'), # TECAN
+    # 5 结果处理(适用于TECAN)
+    path('dashboard/Tecan/step1/', views_tecan_step1.Tecan_step1, name='Tecan_step1'), # TECAN
 
 
     path("dashboard/manual/", views.user_manual, name="user_manual"),

@@ -15,7 +15,7 @@
 
     <!-- TECAN取样表单 -->
     <div id="Tecan-feature-group">
-      <form action="{% url 'TecanIngest' %}" method="post" enctype="multipart/form-data">
+      <form action="{% url 'Tecan_step1' %}" method="post" enctype="multipart/form-data">
         {% csrf_token %}
 
         <input type="hidden" name="platform" value="TECAN">

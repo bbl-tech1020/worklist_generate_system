@@ -21,7 +21,6 @@ urlpatterns = [
     path('dashboard/sample_search/', views.sample_search, name='sample_search'),  # 标本查找
     path("dashboard/sample_search_api/", views.sample_search_api, name="sample_search_api"),
 
-
     path('dashboard/file_download/', views.file_download, name='file_download'),  # 文件下载
     path(
         "dashboard/downloads/<str:platform>/<str:date_name>/<str:project>/<path:filename>",
@@ -55,8 +54,11 @@ urlpatterns = [
     path('dashboard/get_project_list/', views.get_project_list, name='get_project_list'),
     path('dashboard/frontend_entry/get_project_detail/<int:pk>/', views.get_project_detail, name='get_project_detail'),
 
-    # 结果处理，用户在前端功能入口处选择项目，上传文件并点击提交按钮后的处理逻辑
-    path('dashboard/ProcessResult/', views.ProcessResult, name='ProcessResult'), # NIMBUS
+    # 4 结果处理(适用于NIMBUS和Starlet)，用户在前端功能入口处选择项目，上传文件并点击提交按钮后的处理逻辑
+    path('dashboard/ProcessResult/', views.ProcessResult, name='ProcessResult'), # NIMBUS和Starlet
+
+    # 5 结果处理(适用于TECAN)，用户在前端功能入口处选择项目，上传文件并点击提交按钮后的处理逻辑
+    path('dashboard/TecanIngest/', views.TecanIngest, name='TecanIngest'), # TECAN
 
 
     path("dashboard/manual/", views.user_manual, name="user_manual"),

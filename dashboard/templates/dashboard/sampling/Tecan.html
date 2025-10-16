@@ -13,12 +13,12 @@
 
   <div class="card-body">
 
-    <!-- NIMBUS取样表单 -->
-    <div id="nimbus-feature-group">
-      <form action="{% url 'ProcessResult' %}" method="post" enctype="multipart/form-data">
+    <!-- TECAN取样表单 -->
+    <div id="Tecan-feature-group">
+      <form action="{% url 'TecanIngest' %}" method="post" enctype="multipart/form-data">
         {% csrf_token %}
 
-        <input type="hidden" name="platform" value="NIMBUS">
+        <input type="hidden" name="platform" value="TECAN">
         <div class="mb-3">
           <label class="form-label" name="project_id">项目名称</label>
           <select class="form-select" id="project-select" name="project_id" required>

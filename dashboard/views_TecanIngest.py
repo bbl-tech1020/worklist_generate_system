@@ -560,43 +560,25 @@ def _build_curve_and_qc_cells(curve_points: int, qc_groups: int, qc_levels: int,
 
 
 # 把“纵向填充”的线性序列 → 96 孔坐标（A1,B1,...H1,A2,...）
-def _build_clinical_cells_from_csv(csv_abs_path: str, start_offset: int, station_map: dict[str, str]) -> list[tuple[str,int,str]]:
-    """
-    返回 [(row_letter, col_num, sample_name), ...]
-    - area 映射：20->(4,5), 21->(6,7), 22->(8,9), 23->(10,11), 24->(12,13)
-    - 列整体偏移：每个列号 += (start_offset-1)
-    - pos 1..8 左列，9..16 右列；行号 6..13 （A..H）
-    """
-    base_area_map = {"20": (4,5), "21": (6,7), "22": (8,9), "23": (10,11), "24": (12,13)}
+_PLATE_ROWS = list("ABCDEFGH")  # 8
+_PLATE_COLS = list(range(1, 13))  # 1..12
 
-    rows = []
-    with open(csv_abs_path, "r", encoding="utf-8", errors="ignore") as f:
-        lines = [ln.strip() for ln in f.read().splitlines() if ln.strip() != ""]
-    if len(lines) <= 1:
-        return rows
-    for ln in lines[1:]:
-        parts = [p.strip() for p in ln.split(";")]
-        if not parts:
-            continue
-        area = parts[0] if len(parts) >= 1 else ""
-        pos  = int(re.search(r"(\d+)", parts[2]).group(1)) if len(parts) >= 3 and re.search(r"(\d+)", parts[2]) else None
-        srctube = parts[-1] if len(parts) >= 1 else ""
-        if not area or pos is None: 
-            continue
-        if "$" in srctube:  # 含 $ 忽略
-            continue
-        if area not in base_area_map:
-            continue
-        col_pair = base_area_map[area]
-        left_col, right_col = col_pair[0] + (start_offset-1), col_pair[1] + (start_offset-1)
-        use_col = left_col if pos <= 8 else right_col
-        # 行 A..H -> 6..13（Excel行号），但我们最后在网页渲染用 A..H + 1..12 逻辑，所以只要 A..H 座标
-        row_letter = _PLATE_ROWS[(pos-1) % 8]  # 1->A, 8->H, 9->A...
-        sample_name = station_map.get(srctube, "")
-        if not sample_name:
-            sample_name = ""  # 允许空（按 R）
-        rows.append((row_letter, use_col, sample_name))
-    return rows
+def _linear_fill_vertical_from_A1(n: int) -> list[tuple[str, int]]:
+    """
+    纵向：A1->B1->...->H1->A2->...->H2->... 生成前 n 个坐标
+    """
+    coords = []
+    col_idx = 0
+    row_idx = 0
+    for _ in range(n):
+        coords.append((_PLATE_ROWS[row_idx], _PLATE_COLS[col_idx]))
+        row_idx += 1
+        if row_idx >= len(_PLATE_ROWS):
+            row_idx = 0
+            col_idx += 1
+            if col_idx >= len(_PLATE_COLS):
+                break
+    return coords
 
 
 # 根据 CSV（processed 文件）+ station 映射，生成“临床样品”落位
@@ -637,6 +619,7 @@ def _build_clinical_cells_from_csv(csv_abs_path: str, start_offset: int, station
             sample_name = ""  # 允许空（按 R）
         rows.append((row_letter, use_col, sample_name))
     return rows
+
 
 # 组装“工作清单数据结构”并渲染页面
 def _render_tecan_process_result(request: HttpRequest, today: str, csv_abs_path: str, project_id: str) -> HttpResponse:

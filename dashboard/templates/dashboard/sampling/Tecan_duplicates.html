@@ -3,62 +3,64 @@
 
 {% block header %}
 <header class="navbar navbar-expand-md navbar-light d-print-none">
-  <div class="container-fluid">
-    <h1 class="navbar-brand">重复条码修正（当日 {{ today }}）</h1>
-  </div>
+    <div class="container-fluid">
+        <h1 class="navbar-brand">重复条码修正（当日 {{ today }}）</h1>
+    </div>
 </header>
 {% endblock %}
 
 {% block content %}
 <div class="card mt-4">
-  <div class="card-body">
-    <p class="mb-3">请为以下重复的 <code>SRCTubeID</code> 输入 “原 SRCTubeID” 与 “新 SRCTubeID”（新值须包含 <code>-</code>，且其 <b>MainBarcode</b> 不能与当前文件及当日历史重复）。</p>
+    <div class="card-body">
+        <p class="mb-3">请为以下重复的 <code>SRCTubeID</code> 输入 “原 SRCTubeID” 与 “新 SRCTubeID”（新值须包含 <code>-</code>，且其
+            <b>MainBarcode</b> 不能与当前文件及当日历史重复）。</p>
 
-    {% if cross_mains and cross_mains|length > 0 %}
-    <div class="alert alert-warning">
-      <b>提示：</b>以下主码与当日历史重复（仅供参考）：<br>
-      {{ cross_mains|join:", " }}
+        {% if cross_mains and cross_mains|length > 0 %}
+        <div class="alert alert-warning">
+            <b>提示：</b>以下主码与当日历史重复（仅供参考）：<br>
+            {{ cross_mains|join:", " }}
+        </div>
+        {% endif %}
+
+        <form method="post" action="{% url 'TecanIngestResolve' %}">
+            {% csrf_token %}
+
+            <table class="table table-sm table-bordered align-middle">
+                <thead>
+                    <tr>
+                        <th>#</th>
+                        <th>位置</th>
+                        <th>原 SRCTubeID（确认）</th>
+                        <th>新 SRCTubeID（需包含“-”）</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for r in dups %}
+                    <input type="hidden" name="rowid_{{ forloop.counter0 }}" value="{{ r.RowID }}">
+                    <tr>
+                        <td>{{ forloop.counter }}</td>
+                        <td>
+                            GridPos={{ r.GridPos|default:"-" }}, Tip={{ r.TipNumber|default:"-" }}
+                            <div class="text-muted small">Main={{ r.MainBarcode }}</div>
+                        </td>
+                        <td>
+                            <input type="text" name="old_{{ forloop.counter0 }}" class="form-control" required
+                                placeholder="请输入原 SRCTubeID 以确认" value="{{ r.SRCTubeID }}">
+                        </td>
+                        <td>
+                            <input type="text" name="new_{{ forloop.counter0 }}" class="form-control" required
+                                placeholder="请输入新的 SRCTubeID（含‘-’）">
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+
+            <div class="mt-3">
+                <button type="submit" class="btn btn-primary">确定并生成 _processed 文件</button>
+                <a href="javascript:history.back()" class="btn btn-secondary">返回</a>
+            </div>
+        </form>
     </div>
-    {% endif %}
-
-    <form method="post" action="{% url 'TecanIngestResolve' %}">
-      {% csrf_token %}
-
-      <table class="table table-sm table-bordered align-middle">
-        <thead>
-          <tr>
-            <th>#</th>
-            <th>位置</th>
-            <th>原 SRCTubeID（确认）</th>
-            <th>新 SRCTubeID（需包含“-”）</th>
-          </tr>
-        </thead>
-        <tbody>
-        {% for r in dups %}
-          <tr>
-            <td>{{ forloop.counter }}</td>
-            <td>
-              GridPos={{ r.GridPos|default:"-" }}, Tip={{ r.TipNumber|default:"-" }}
-              <div class="text-muted small">Main={{ r.MainBarcode }}</div>
-            </td>
-            <td>
-              <input type="text" name="old_{{ forloop.counter0 }}" class="form-control" required
-                     placeholder="请输入原 SRCTubeID 以确认" value="{{ r.SRCTubeID }}">
-            </td>
-            <td>
-              <input type="text" name="new_{{ forloop.counter0 }}" class="form-control" required
-                     placeholder="请输入新的 SRCTubeID（含‘-’）">
-            </td>
-          </tr>
-        {% endfor %}
-        </tbody>
-      </table>
-
-      <div class="mt-3">
-        <button type="submit" class="btn btn-primary">确定并生成 _processed 文件</button>
-        <a href="javascript:history.back()" class="btn btn-secondary">返回</a>
-      </div>
-    </form>
-  </div>
 </div>
 {% endblock %}

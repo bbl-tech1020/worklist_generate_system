@@ -1,0 +1,93 @@
+{% extends 'dashboard/index.html' %}
+{% load static %}
+
+{% block content %}
+<div class="container-xl mt-4">
+  <div class="card">
+    <div class="card-body">
+      <h4 class="mb-2">Tecan 工作清单（{{ today }}）</h4>
+      <div class="text-muted mb-3">
+        源文件：{{ file_name }}；板数：{{ plate_number }}；起始列偏移：{{ start_offset }}；
+        curve_points={{ curve_points }}，qc_groups={{ qc_groups }}，qc_levels={{ qc_levels }}
+      </div>
+
+      <div class="table-responsive">
+        <table class="table table-bordered text-center align-middle">
+          <thead class="table-light">
+            <tr>
+              <th style="width:52px">/</th>
+              {% for c in cols %}<th style="width:72px">{{ c }}</th>{% endfor %}
+            </tr>
+          </thead>
+          <tbody>
+          {% for r in rows %}
+            <tr>
+              <th class="table-light">{{ r }}</th>
+              {% for c in cols %}
+                {% with cell=grid|dictsort:"0"|last %}
+                {% endwith %}
+                {% with key=r|stringformat:"s"|add:","|add:c|stringformat:"s" %}
+                {% endwith %}
+                {% with cell=grid.r,c %}{% endwith %}
+              {% endfor %}
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+
+      <style>
+        .well {
+          min-height: 60px; font-size:12px; line-height:1.2;
+          padding: 4px 2px;
+        }
+        .tag {
+          display:inline-block; padding:2px 6px; border-radius: 6px; font-size: 11px;
+          background:#e7f1ff; color:#084298; margin-bottom:2px;
+        }
+        .sample { display:block; color:#222; font-size:12px; }
+      </style>
+
+      <div class="table-responsive">
+        <table class="table table-bordered text-center align-middle">
+          <thead class="table-light">
+            <tr>
+              <th style="width:52px">/</th>
+              {% for c in cols %}<th style="width:72px">{{ c }}</th>{% endfor %}
+            </tr>
+          </thead>
+          <tbody>
+          {% for r in rows %}
+            <tr>
+              <th class="table-light">{{ r }}</th>
+              {% for c in cols %}
+                {% with cell=grid.r.c %}
+                <td>
+                  <div class="well">
+                    {% if cell.std_qc %}
+                      <span class="tag">{{ cell.std_qc.text }}</span><br/>
+                    {% endif %}
+                    {% if cell.sample and cell.sample.text %}
+                      <span class="sample">{{ cell.sample.text }}</span>
+                    {% endif %}
+                  </div>
+                </td>
+                {% endwith %}
+              {% endfor %}
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+
+      <hr class="my-4"/>
+
+      <h5>报错信息表</h5>
+      <div class="text-muted">（暂留空）</div>
+
+      <h5 class="mt-4">上机列表</h5>
+      <div class="text-muted">（暂留空）</div>
+    </div>
+  </div>
+</div>
+{% endblock %}

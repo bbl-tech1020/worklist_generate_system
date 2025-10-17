@@ -9,6 +9,7 @@ from django.contrib.auth.decorators import login_required
 from django.http import HttpRequest, HttpResponse, HttpResponseBadRequest
 from django.views.decorators.csrf import csrf_protect
 from django.utils.html import escape
+from django.shortcuts import render
 
 import os
 import pandas as pd
@@ -36,6 +37,38 @@ def _save_upload_to_media(subdir: str, f) -> str:
             w.write(chunk)
     return abs_path
 
+def _save_station_first_only(today: str, f) -> str:
+    """
+    在 media/tecan/{today}/station 目录下：只保留当天“第一份”岗位清单。
+    - 若目录已有任意文件，则直接返回该文件路径，不再保存新的；
+    - 若目录为空，保存当前上传的文件；
+    - 文件名固定：station_{today}.<ext>（沿用上传扩展名，默认为 .xlsx）
+    返回：最终保留的绝对路径
+    """
+    base_dir = os.path.join(settings.MEDIA_ROOT, "tecan", today, "station")
+    _ensure_dir(base_dir)
+
+    # 目录已有文件 -> 保留第一份，直接返回
+    existing = [os.path.join(base_dir, name) for name in os.listdir(base_dir)
+                if os.path.isfile(os.path.join(base_dir, name))]
+    if existing:
+        # 返回第一份（按文件名排序保证稳定）
+        existing.sort()
+        return existing[0]
+
+    # 目录为空 -> 保存第一份
+    _, ext = os.path.splitext(getattr(f, "name", "") or "")
+    ext = ext if ext else ".xlsx"
+    filename = f"station_{today}{ext}"
+    abs_path = os.path.join(base_dir, filename)
+
+    with open(abs_path, "wb") as w:
+        for chunk in f.chunks():
+            w.write(chunk)
+
+    return abs_path
+
+
 def _read_raw_csv_lines(path: str) -> tuple[str, list[str], list[list[str]]]:
     """
     返回 (header_line, data_lines, parsed_rows)
@@ -51,6 +84,7 @@ def _read_raw_csv_lines(path: str) -> tuple[str, list[str], list[list[str]]]:
     data_lines = lines[1:]
     parsed_rows = [[p.strip() for p in ln.split(";")] for ln in data_lines]
     return header_line, data_lines, parsed_rows
+
 
 def _parse_tecan_csv_abs(path: str) -> pd.DataFrame:
     """
@@ -269,7 +303,7 @@ def tecaningest(request: HttpRequest) -> HttpResponse:
     # === 修改：保存到“当天/original|station” ===
     saved_scan_abs = _save_upload_to_media(f"tecan/{today}/original", scan_file)
     if station_file:
-        _save_upload_to_media(f"tecan/{today}/station", station_file)
+        _save_station_first_only(today, station_file)
 
     # 1) 解析 CSV
     try:
@@ -287,9 +321,12 @@ def tecaningest(request: HttpRequest) -> HttpResponse:
     # 跨文件重复：本次文件任何出现过的 MainBarcode 只要在当天 processed 中出现过就算重复
     mask_cross = df["MainBarcode"].isin(history)
 
+    # 去除含有'$'的MainBarcode
+    mask_dollar = df["MainBarcode"].astype(str).str.contains(r"\$")
+
     # 并集 + 对 SRCTubeID 去重 + 按位置信息排序（与 R 的 order(GridPos, TipNumber) 一致）
     need_fix_df = (
-        df[mask_infile | mask_cross]
+        df[(mask_infile | mask_cross) & (~mask_dollar)]              # ← 过滤掉含 $
         .drop_duplicates(subset=["SRCTubeID"])
         .sort_values(["GridPos", "TipNumber"], na_position="last")
     )
@@ -307,7 +344,9 @@ def tecaningest(request: HttpRequest) -> HttpResponse:
         } for _, r in need_fix_df.iterrows()]
 
         # 仅用于页面提示：哪些 MainBarcode 是“跨文件重复”
-        cross_mains = sorted(set(df.loc[mask_cross, "MainBarcode"].astype(str)))
+        cross_mains = sorted(set(
+            df.loc[mask_cross & (~mask_dollar), "MainBarcode"].astype(str)  # ← 提示也过滤
+        ))
 
         # 把“原始文件相对路径/当天日期”等存 Session（你原来的做法保持不变）
         rel_path = os.path.relpath(saved_scan_abs, settings.MEDIA_ROOT).replace(os.sep, "/")
@@ -315,7 +354,6 @@ def tecaningest(request: HttpRequest) -> HttpResponse:
         request.session["tecan_pending_date"] = today
         request.session.modified = True
 
-        from django.shortcuts import render
         return render(request, "dashboard/sampling/tecan_duplicates.html", {
             "dups": dups,                # 需要人工填写新 SRCTubeID 的那批行（= R 的 ordered_duplicates）
             "cross_mains": cross_mains,  # 跨文件重复主码，仅提示
@@ -326,15 +364,17 @@ def tecaningest(request: HttpRequest) -> HttpResponse:
     # === 修改：无冲突 → 原样复制到“当天/processed/”，保持原 CSV 格式 ===
     out_path = _write_processed_copy_from_original(saved_scan_abs, processed_dir)
 
-    rel = os.path.relpath(out_path, settings.MEDIA_ROOT).replace(os.sep, "/")
-    url = f"{getattr(settings, 'MEDIA_URL', '/media/')}{rel}"
+    return _render_tecan_process_result(request, today=today, csv_abs_path=out_path, project_id=project_id)
+    
+    # rel = os.path.relpath(out_path, settings.MEDIA_ROOT).replace(os.sep, "/")
+    # url = f"{getattr(settings, 'MEDIA_URL', '/media/')}{rel}"
 
-    return HttpResponse(
-        f"<div class='card'><div class='card-body'>"
-        f"<h5>Tecan Step1</h5><div class='alert alert-success'>未检测到重复条码，已写入 processed。</div>"
-        f"<p>文件：<a href='{url}' target='_blank'>{escape(os.path.basename(out_path))}</a></p>"
-        f"</div></div>"
-    )
+    # return HttpResponse(
+    #     f"<div class='card'><div class='card-body'>"
+    #     f"<h5>Tecan Step1</h5><div class='alert alert-success'>未检测到重复条码，已写入 processed。</div>"
+    #     f"<p>文件：<a href='{url}' target='_blank'>{escape(os.path.basename(out_path))}</a></p>"
+    #     f"</div></div>"
+    # )
 
 
 @csrf_protect
@@ -416,18 +456,256 @@ def tecan_resolve_duplicates(request: HttpRequest) -> HttpResponse:
         fix_map_by_rowid=fix_map_by_rowid,
     )
 
-    # 6) 返回成功页
-    rel = os.path.relpath(out_path, settings.MEDIA_ROOT).replace(os.sep, "/")
-    url = f"{getattr(settings, 'MEDIA_URL', '/media/')}{rel}"
-    # 清理 session（可选）
-    for k in ("tecan_pending_file", "tecan_pending_date"):
-        if k in request.session: del request.session[k]
-    request.session.modified = True
+    return _render_tecan_process_result(request, today=today, csv_abs_path=out_path, project_id=project_id)
 
-    return HttpResponse(
-        f"<div class='card'><div class='card-body'>"
-        f"<h5>Tecan Step1 - 冲突修正完成</h5>"
-        f"<div class='alert alert-success'>已生成处理后的文件（只改最后一列 SRCTubeID）：</div>"
-        f"<p>文件：<a href='{url}' target='_blank'>{escape(os.path.basename(out_path))}</a></p>"
-        f"</div></div>"
-    )
+    # # 6) 返回成功页
+    # rel = os.path.relpath(out_path, settings.MEDIA_ROOT).replace(os.sep, "/")
+    # url = f"{getattr(settings, 'MEDIA_URL', '/media/')}{rel}"
+    # # 清理 session（可选）
+    # for k in ("tecan_pending_file", "tecan_pending_date"):
+    #     if k in request.session: del request.session[k]
+    # request.session.modified = True
+
+    # return HttpResponse(
+    #     f"<div class='card'><div class='card-body'>"
+    #     f"<h5>Tecan Step1 - 冲突修正完成</h5>"
+    #     f"<div class='alert alert-success'>已生成处理后的文件（只改最后一列 SRCTubeID）：</div>"
+    #     f"<p>文件：<a href='{url}' target='_blank'>{escape(os.path.basename(out_path))}</a></p>"
+    #     f"</div></div>"
+    # )
+
+
+# 读取当天 station（岗位清单）映射（子条码→实验号）
+def _load_station_map_for_today(today: str) -> dict[str, str]:
+    """
+    读取 media/tecan/{today}/station 下“第一份”岗位清单，提取 子条码->实验号 映射。
+    要求表头包含：'子条码', '实验号'
+    """
+    base_dir = os.path.join(settings.MEDIA_ROOT, "tecan", today, "station")
+    if not os.path.isdir(base_dir):
+        return {}
+    candidates = [os.path.join(base_dir, n) for n in os.listdir(base_dir)
+                  if os.path.isfile(os.path.join(base_dir, n)) and n.lower().endswith((".xlsx", ".xls"))]
+    if not candidates:
+        return {}
+    candidates.sort()
+    try:
+        df = pd.read_excel(candidates[0])
+        cols = {c.strip(): c for c in df.columns if isinstance(c, str)}
+        if "子条码" in cols and "实验号" in cols:
+            sub = df[[cols["子条码"], cols["实验号"]]].dropna()
+            sub.columns = ["barcode", "exp"]
+            mp = {}
+            for _, r in sub.iterrows():
+                b = str(r["barcode"]).strip()
+                e = str(r["exp"]).strip()
+                if b and e:
+                    mp[b] = e
+            return mp
+    except Exception:
+        pass
+    return {}
+
+# 根据文件名解析 plate_number 与 start_offset
+def _parse_plate_meta_by_filename(filename: str) -> tuple[int, int]:
+    """
+    由文件名的 Plate(\d+)_(\d+) 得到 (plate_number, start_offset)
+    """
+    m = TECAN_FILENAME_RE.search(filename or "")
+    if not m:
+        return 1, 1
+    plate_number = int(m.group(1))
+    start_offset = int(m.group(2))
+    return max(1, plate_number), max(1, start_offset)
+
+
+# 获取 QC 名称表（不再读 mapping_file）
+def _get_qc_name_table(file_basename: str) -> list[str]:
+    """
+    返回按“层级顺序”排列的 QC 名称表，例如：
+    - CA 默认: ["QC00001663","QC00001664","QC00001665"]
+    - ZMNs 默认: ["QC00005101","QC00005102"]  # 示例
+    你可以按项目再细分；这里只做最小可用。
+    """
+    name = file_basename.upper()
+    if "ZMN" in name:   # ZMNs
+        return ["QC00001663", "QC00001665"]  # 示例，可按你提供的图3替换
+    # CA/其他
+    return ["QC00001663", "QC00001664", "QC00001665"]
+
+
+# 生成“STD/QC”列表（纵向从 A1 开始）
+def _build_curve_and_qc_cells(curve_points: int, qc_groups: int, qc_levels: int, file_basename: str) -> list[dict]:
+    """
+    生成一个顺序列表，每个元素包含：
+    { 'label': 显示文本, 'kind': 'STD'|'QC' }
+    - STD: STD0 ~ STD{curve_points-1}
+    - QC:  按 qc_groups * qc_levels 生成，名称来自 _get_qc_name_table
+           示例：QC1_1 -> 'QC00001663'（显示“名称字段”，不是 code）
+    """
+    items = []
+    # STD
+    for i in range(curve_points):
+        items.append({"label": f"STD{i}", "kind": "STD"})
+    # QC
+    qc_names_pool = _get_qc_name_table(file_basename)
+    if not qc_names_pool:
+        qc_names_pool = ["QC"] * max(1, qc_levels)
+    for g in range(1, qc_groups + 1):
+        for lv in range(1, qc_levels + 1):
+            # 名称取“第 lv 个”QC 名
+            name_idx = (lv - 1) % len(qc_names_pool)
+            items.append({"label": qc_names_pool[name_idx], "kind": "QC", "group": g, "level": lv})
+    return items
+
+
+# 把“纵向填充”的线性序列 → 96 孔坐标（A1,B1,...H1,A2,...）
+def _build_clinical_cells_from_csv(csv_abs_path: str, start_offset: int, station_map: dict[str, str]) -> list[tuple[str,int,str]]:
+    """
+    返回 [(row_letter, col_num, sample_name), ...]
+    - area 映射：20->(4,5), 21->(6,7), 22->(8,9), 23->(10,11), 24->(12,13)
+    - 列整体偏移：每个列号 += (start_offset-1)
+    - pos 1..8 左列，9..16 右列；行号 6..13 （A..H）
+    """
+    base_area_map = {"20": (4,5), "21": (6,7), "22": (8,9), "23": (10,11), "24": (12,13)}
+
+    rows = []
+    with open(csv_abs_path, "r", encoding="utf-8", errors="ignore") as f:
+        lines = [ln.strip() for ln in f.read().splitlines() if ln.strip() != ""]
+    if len(lines) <= 1:
+        return rows
+    for ln in lines[1:]:
+        parts = [p.strip() for p in ln.split(";")]
+        if not parts:
+            continue
+        area = parts[0] if len(parts) >= 1 else ""
+        pos  = int(re.search(r"(\d+)", parts[2]).group(1)) if len(parts) >= 3 and re.search(r"(\d+)", parts[2]) else None
+        srctube = parts[-1] if len(parts) >= 1 else ""
+        if not area or pos is None: 
+            continue
+        if "$" in srctube:  # 含 $ 忽略
+            continue
+        if area not in base_area_map:
+            continue
+        col_pair = base_area_map[area]
+        left_col, right_col = col_pair[0] + (start_offset-1), col_pair[1] + (start_offset-1)
+        use_col = left_col if pos <= 8 else right_col
+        # 行 A..H -> 6..13（Excel行号），但我们最后在网页渲染用 A..H + 1..12 逻辑，所以只要 A..H 座标
+        row_letter = _PLATE_ROWS[(pos-1) % 8]  # 1->A, 8->H, 9->A...
+        sample_name = station_map.get(srctube, "")
+        if not sample_name:
+            sample_name = ""  # 允许空（按 R）
+        rows.append((row_letter, use_col, sample_name))
+    return rows
+
+
+# 根据 CSV（processed 文件）+ station 映射，生成“临床样品”落位
+def _build_clinical_cells_from_csv(csv_abs_path: str, start_offset: int, station_map: dict[str, str]) -> list[tuple[str,int,str]]:
+    """
+    返回 [(row_letter, col_num, sample_name), ...]
+    - area 映射：20->(4,5), 21->(6,7), 22->(8,9), 23->(10,11), 24->(12,13)
+    - 列整体偏移：每个列号 += (start_offset-1)
+    - pos 1..8 左列，9..16 右列；行号 6..13 （A..H）
+    """
+    base_area_map = {"20": (4,5), "21": (6,7), "22": (8,9), "23": (10,11), "24": (12,13)}
+
+    rows = []
+    with open(csv_abs_path, "r", encoding="utf-8", errors="ignore") as f:
+        lines = [ln.strip() for ln in f.read().splitlines() if ln.strip() != ""]
+    if len(lines) <= 1:
+        return rows
+    for ln in lines[1:]:
+        parts = [p.strip() for p in ln.split(";")]
+        if not parts:
+            continue
+        area = parts[0] if len(parts) >= 1 else ""
+        pos  = int(re.search(r"(\d+)", parts[2]).group(1)) if len(parts) >= 3 and re.search(r"(\d+)", parts[2]) else None
+        srctube = parts[-1] if len(parts) >= 1 else ""
+        if not area or pos is None: 
+            continue
+        if "$" in srctube:  # 含 $ 忽略
+            continue
+        if area not in base_area_map:
+            continue
+        col_pair = base_area_map[area]
+        left_col, right_col = col_pair[0] + (start_offset-1), col_pair[1] + (start_offset-1)
+        use_col = left_col if pos <= 8 else right_col
+        # 行 A..H -> 6..13（Excel行号），但我们最后在网页渲染用 A..H + 1..12 逻辑，所以只要 A..H 座标
+        row_letter = _PLATE_ROWS[(pos-1) % 8]  # 1->A, 8->H, 9->A...
+        sample_name = station_map.get(srctube, "")
+        if not sample_name:
+            sample_name = ""  # 允许空（按 R）
+        rows.append((row_letter, use_col, sample_name))
+    return rows
+
+# 组装“工作清单数据结构”并渲染页面
+def _render_tecan_process_result(request: HttpRequest, today: str, csv_abs_path: str, project_id: str) -> HttpResponse:
+    """
+    生成页面所需的 96 孔板数据：
+    - STD/QC：从 SamplingConfiguration 读取 curve_points / qc_groups / qc_levels
+    - 临床样品：读取 csv + station_map，按 R 逻辑定位
+    """
+    # 1) 读项目参数（你项目里的 SamplingConfiguration 具体字段名如不同，请在此处改一行）
+    curve_points = qc_groups = qc_levels = None
+    try:
+        # 示例：ProjectConfig.objects.get(pk=project_id).sampling_config   （举例）
+        from .models import Project  # 按你仓库的模型改
+        proj = Project.objects.filter(pk=project_id).first()
+        sc = getattr(proj, "sampling_config", {}) or {}
+        curve_points = int(sc.get("curve_points", 8))
+        qc_groups    = int(sc.get("qc_groups", 3))
+        qc_levels    = int(sc.get("qc_levels", 2))
+    except Exception:
+        curve_points, qc_groups, qc_levels = 8, 3, 2  # 兜底
+
+    # 2) 解析文件名得到 plate_number/offset
+    file_basename = os.path.basename(csv_abs_path)
+    plate_number, start_offset = _parse_plate_meta_by_filename(file_basename)
+
+    # 3) 构建 STD/QC 单元
+    std_qc_items = _build_curve_and_qc_cells(curve_points, qc_groups, qc_levels, file_basename)
+    std_qc_coords = _linear_fill_vertical_from_A1(len(std_qc_items))  # [(row, col),...]
+    std_qc_cells = [
+        {"row": r, "col": c, "text": it["label"], "kind": it["kind"]}
+        for it, (r, c) in zip(std_qc_items, std_qc_coords)
+    ]
+
+    # 4) 临床样品（H2 起始在“R 逻辑布局”下自然满足；如需强制从 H2 连续填充，另加规则——等你确认）
+    station_map = _load_station_map_for_today(today)
+    clinical_cells = []
+    try:
+        clinical_cells = _build_clinical_cells_from_csv(csv_abs_path, start_offset, station_map)
+        # clinical_cells: [(row_letter, col_num, sample_name)]
+        clinical_cells = [{"row": r, "col": c, "text": s or ""} for (r, c, s) in clinical_cells]
+    except Exception:
+        clinical_cells = []
+
+    # 5) 组装 96 孔板矩阵 -> 二级字典 grid[row][col]
+    grid: dict[str, dict[int, dict]] = {r: {c: {"std_qc": None, "sample": None} for c in _PLATE_COLS} for r in _PLATE_ROWS}
+    for cell in std_qc_cells:
+        grid[cell["row"]][cell["col"]]["std_qc"] = cell
+    for cell in clinical_cells:
+        grid[cell["row"]][cell["col"]]["sample"] = cell
+
+    # 6) 渲染
+    context = {
+        "today": today,
+        "file_name": file_basename,
+        "plate_number": plate_number,
+        "start_offset": start_offset,
+        "curve_points": curve_points,
+        "qc_groups": qc_groups,
+        "qc_levels": qc_levels,
+        "rows": _PLATE_ROWS,
+        "cols": _PLATE_COLS,
+        "grid": grid,           # dict[(row,col)] -> {"std_qc": {...} | None, "sample": {...} | None}
+        "errors": [],           # 暂留空
+        "upload_list": [],      # 暂留空
+    }
+    return render(request, "dashboard/ProcessResult_TECAN.html", context)
+
+
+
+
+
+

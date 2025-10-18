@@ -737,7 +737,6 @@ def ProcessResult(request):
     letters = ["A","B","C","D","E","F","G","H"]
     nums = [str(i) for i in range(1, 13)]
     
-
     # 抓取96孔板的排列顺序（纵向/横向）
     config = SamplingConfiguration.objects.get(id=project_id)
     project_name = config.project_name
@@ -866,6 +865,7 @@ def ProcessResult(request):
 
     # 最终用于模板的二维表：严格按 A~H 为行，1~12 为列的顺序输出
     worksheet_table = [[worksheet_grid[r][c] for c in range(cols)] for r in range(rows)]
+    ic(worksheet_table)
 
     ###################### 2 生成上机列表 ######################
 

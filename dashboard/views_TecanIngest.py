@@ -665,7 +665,6 @@ def _render_tecan_process_result(request: HttpRequest, today: str, csv_abs_path:
 
     # 5) 组装 96 孔板矩阵 -> 二级字典 grid[row][col]
     grid: dict[str, dict[int, dict]] = {r: {c: {"std_qc": None, "sample": None} for c in _PLATE_COLS} for r in _PLATE_ROWS}
-    ic(clinical_cells)
 
     for cell in std_qc_cells:
         grid[cell["row"]][cell["col"]]["std_qc"] = cell
@@ -673,21 +672,78 @@ def _render_tecan_process_result(request: HttpRequest, today: str, csv_abs_path:
         grid[cell["row"]][cell["col"]]["sample"] = cell
 
     # 6) 渲染
-    context = {
-        "today": today,
-        "file_name": file_basename,
-        "plate_number": plate_number,
-        "start_offset": start_offset,
-        "curve_points": curve_points,
-        "qc_groups": qc_groups,
-        "qc_levels": qc_levels,
-        "rows": _PLATE_ROWS,
-        "cols": _PLATE_COLS,
-        "grid": grid,           # dict[(row,col)] -> {"std_qc": {...} | None, "sample": {...} | None}
-        "errors": [],           # 暂留空
-        "upload_list": [],      # 暂留空
-    }
-    return render(request, "dashboard/ProcessResult_TECAN.html", context)
+    # —— 新增：TECAN 适配版 builder，与 views.ProcessResult 的字段命名/语义对齐 ——
+    def build_well_dict_tecan(row_letter, col_num, row_idx, col_idx, well_index, cell):
+        cell = cell or {}
+        std_qc = (cell or {}).get("std_qc") or {}
+        sample = (cell or {}).get("sample") or {}
+
+        # 统一字段（与通用版模板/导出对齐）
+        d = {
+            "letter": row_letter,       # A..H
+            "num": col_num,         # 1..12
+            "well_str": f"{row_letter}{col_num}",
+            "index":  well_index,              # 1..96（固定计算）
+
+            "match_sample": "STD0",
+
+            # 兼容通用版的常用键（先留空/占位，后续若接入可补齐）
+            "origin_barcode": "",
+            "barcode": "",
+            "status": "",
+            "is_locator": False,            # TECAN 目前无定位孔概念，先 False
+            "flags": [],                    # 预留：重复/一对多等
+            "meta": {},
+
+            # 你可能在通用版用到的若干扩展键，先给默认值，避免模板/导出报错
+            "MatchResult": "",
+            "MatchSampleName": sample.get("text") or "",
+            "DupBarcode": "",
+            "DupBarcodeSampleName": "",
+            "Warm": "",
+        }
+
+        # 为了跟通用版“孔内多行”展示兼容，额外带上 TECAN 的两条文本
+        d["std_qc_text"]   = std_qc.get("text") or ""
+        d["sample_text"]   = sample.get("text") or ""
+
+        return d
+
+    letters = ["A","B","C","D","E","F","G","H"]
+    nums = [str(i) for i in range(1, 13)]
+
+    rows_letters = letters    # ['A','B',...,'H']
+    cols_numbers = nums    # [1,2,...,12]
+
+    worksheet_grid = [[None for _ in cols_numbers] for __ in rows_letters]
+
+    for col_idx, col_num in enumerate(cols_numbers):
+        for row_idx, row_letter in enumerate(rows_letters):
+            # 通用版固定 well_index（与布局无关）
+            well_index = row_idx * len(cols_numbers) + col_idx + 1
+
+            # 从 TECAN 的 grid[r][c] 取单元
+            cell = (grid.get(row_letter, {}) or {}).get(col_num, {}) or {}
+
+            # 用 TECAN 适配 builder 产出与通用版一致的单元字典
+            well = build_well_dict_tecan(
+                row_letter=row_letter,
+                col_num=col_num,
+                row_idx=row_idx,
+                col_idx=col_idx,
+                well_index=well_index,
+                cell=cell
+            )
+
+            # 关键：按“行(row_idx)、列(col_idx)”写入
+            worksheet_grid[row_idx][col_idx] = well
+
+    # 8×12 二维表
+    worksheet_table = worksheet_grid
+
+    ic(worksheet_table)
+
+    return render(request, "dashboard/ProcessResult_TECAN.html",locals())
 
 
 

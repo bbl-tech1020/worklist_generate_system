@@ -1,110 +1,180 @@
 {% extends 'dashboard/index.html' %}
 {% load static custom_tags %}
 
+
+{% block extrastyle %}
+    <style>
+        .print-page {
+            page-break-inside: avoid;
+            page-break-after: always;
+        }
+        
+        .Table1{
+            margin: 10px;
+            table-layout: fixed; /*table表格宽度固定，同时td内容过长也不会被撑开*/      
+            word-break: break-all;
+            border-collapse: collapse; /* 关键属性：合并表格内外边框(其实表格边框有2px，外面1px，里面还有1px) */
+            width: 1550px;
+        }
+
+        thead{
+            height: 150px;
+            font-size: 20px;
+        }
+
+        tfoot{
+            height: 75px;
+            font-size: 20px;
+        }
+
+        .maintext th{
+            width: 135px;
+        }
+
+        .title,.Nums,.letters,.locator{
+            text-align: center;
+            font-weight: bold;
+        }
+
+        .locator{
+            font-weight: bold;
+            font-size: 50px;
+        }
+
+        .hole{
+            font-size: 14px;
+        }
+
+        .SampleName{
+            font-size: 24px;
+            font-weight: bolder;
+        }
+
+        .Barcode{
+            font-size: 18px;
+            /* font-weight: bolder; */
+        }
+
+        .A,.B,.C,.D,.E,.F,.G,.H{
+            text-align: left;
+            vertical-align: top;
+        }
+
+        .letters{
+            width: 50px;
+            height: 148px;
+        }
+
+        .cubes,.flag{
+            font-size: 20px;
+        }
+
+        @page{
+            size: auto;
+        }
+
+        th,td{
+            border: 3px solid #000;
+        }
+
+        button{
+            margin-left: 100px;
+        }
+
+        #errortable,#worklist{
+            text-align: center;
+        }
+
+        .uptosysterm{
+            display: none;
+        }
+
+        /* .container-xl {
+            max-width: 100% !important;
+            padding-left: 1000 !important;
+            padding-right: 100 !important;
+        } */
+
+    </style>
+{% endblock %}
+
 {% block content %}
-<div class="container-xl mt-4">
-    <div class="card">
-        <div class="card-body">
-            <h4 class="mb-2">Tecan 工作清单（{{ today }}）</h4>
-            <div class="text-muted mb-3">
-                源文件：{{ file_name }}；板数：{{ plate_number }}；起始列偏移：{{ start_offset }}；
-                curve_points={{ curve_points }}，qc_groups={{ qc_groups }}，qc_levels={{ qc_levels }}
-            </div>
 
-            <div class="table-responsive">
-                <table class="table table-bordered text-center align-middle">
-                    <thead class="table-light">
-                        <tr>
-                            <th style="width:52px">/</th>
-                            {% for c in cols %}<th style="width:72px">{{ c }}</th>{% endfor %}
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {% for r in rows %}
-                        <tr>
-                            <th class="table-light">{{ r }}</th>
-                            {% for c in cols %}
-                            {% with rowdict=grid|get_item:r %}
-                            {% with cell=rowdict|get_item:c %}
-                            <td>
-                                {% if cell.sample %}
-                                {{ cell.sample.text }}
+    <!-- 96孔板工作清单 -->
+    <table class="Table1" id="worksheet" cellpadding="4" cellspacing="4" border="1"> 
+        <thead>
+            <tr>
+                <th colspan="13" class="title">{{project_name}}前处理样品工作单（Testing Worksheet）
+                    <!-- <span class="spacing">表号：KM-SOP0314.311.02</span>  -->
+                </th>
+            </tr>
+            <tr>
+                <th colspan="2">检测日期</th>
+                <th colspan="2">{{ localtime }}</th>
+                <th colspan="2">板号：X{{ index }}</th>
+                <th colspan="3">检测仪器编号：FXS-YZ___ </th>
+                <th colspan="2">上机盘号:</th>
+                <th colspan="2"></th>
+            </tr>
+            <tr class="maintext">
+                <th style="width: 20px"></th>
+                {% for n in nums %}
+                    <th class="Nums">{{ n }}</th>
+                {% endfor %}
+            </tr>
+        </thead>
+        <tbody>
+            {% for row_idx in worksheet_table %}
+            <tr>
+                <td class="letters">{{ row_idx.0.letter }}</td>
+                {% for cell in row_idx %}
+                    <td class="{{ cell.letter }}">
+                        {% if cell.locator %}
+                            <div class="locator">{{cell.locator_warm}}</div>
+                        {% else %}
+                            <div class="hole">{{ cell.letter }}{{ cell.num }}({{ cell.index }})</div>
+                            {% if cell.warm == "1" or cell.warm == "4" or cell.warm == "16384" or cell.status == "Pipetting error" %}
+                                <span><i class="fa fa-flag flag" aria-hidden="true"></i></span>
+                            {% endif %}
+                            {% if cell.dup_barcode == "TRUE" %}
+                                <span><i class="fa fa-cubes cubes" aria-hidden="true" style="font-size: 20px;"></i></span>
+                            {% endif %}
+                            {% if cell.dup_barcode_sample == "TRUE" %}
+                                <span><i class="fas fa-star fa-star" aria-hidden="true" style="font-size: 20px;"></i></span>
+                            {% endif %}
+
+                            {% if platform == 'Starlet' %}
+                                {% if cell.cut_barcode == "NOTUBE" %}
+
+                                {% else %}
+                                    <div class="SampleName">{{ cell.match_sample }}</div>
+                                    <div class="Barcode">{{ cell.cut_barcode }}</div>
+                                    <div class="Barcode">{{ cell.sub_barcode }}</div>
                                 {% endif %}
-                            </td>
-                            {% endwith %}
-                            {% endwith %}
-                            {% endfor %}
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-            </div>
+                            {% else %}
+                                <div class="SampleName">{{ cell.match_sample }}</div>
+                                <div class="Barcode">{{ cell.cut_barcode }}</div>
+                                <div class="Barcode">{{ cell.sub_barcode }}</div>
+                            {% endif %}
+                        {% endif %}          
+                    </td>
+                {% endfor %}
+            </tr>
+            {% endfor %}
+        </tbody>
+        <tfoot>
+            <tr class="maintext">
+                <th colspan="3">加样枪：FXS-YY</th>
+                <th colspan="2">手工加样人员：</th>
+                <th colspan="3">加样情况审核人员：</th>
+                <th colspan="5">备注：
+                    <i class="fa fa-flag" aria-hidden="true"> 表示移液有问题；</i>
+                    <i class="fa fa-cubes" aria-hidden="true"> 表示该条码有多个实验号。</i>
+                    <i class="fa fa-star" aria-hidden="true"> 表示该条码在移液清单中有重复,同时该条码对应多个实验号。</i>
+                </th>
+            </tr>
+        </tfoot>
+    </table>
 
-            <style>
-                .well {
-                    min-height: 60px;
-                    font-size: 12px;
-                    line-height: 1.2;
-                    padding: 4px 2px;
-                }
 
-                .tag {
-                    display: inline-block;
-                    padding: 2px 6px;
-                    border-radius: 6px;
-                    font-size: 11px;
-                    background: #e7f1ff;
-                    color: #084298;
-                    margin-bottom: 2px;
-                }
-
-                .sample {
-                    display: block;
-                    color: #222;
-                    font-size: 12px;
-                }
-            </style>
-
-            <div class="table-responsive">
-                <table class="table table-bordered text-center align-middle">
-                    <thead class="table-light">
-                        <tr>
-                            <th style="width:52px">/</th>
-                            {% for c in cols %}<th style="width:72px">{{ c }}</th>{% endfor %}
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {% for r in rows %}
-                        <tr>
-                            <th class="table-light">{{ r }}</th>
-                            {% for c in cols %}
-                            {% with cell=grid.r.c %}
-                            <td>
-                                <div class="well">
-                                    {% if cell.std_qc %}
-                                    <span class="tag">{{ cell.std_qc.text }}</span><br />
-                                    {% endif %}
-                                    {% if cell.sample and cell.sample.text %}
-                                    <span class="sample">{{ cell.sample.text }}</span>
-                                    {% endif %}
-                                </div>
-                            </td>
-                            {% endwith %}
-                            {% endfor %}
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-            </div>
-
-            <hr class="my-4" />
-
-            <h5>报错信息表</h5>
-            <div class="text-muted">（暂留空）</div>
-
-            <h5 class="mt-4">上机列表</h5>
-            <div class="text-muted">（暂留空）</div>
-        </div>
-    </div>
-</div>
 {% endblock %}

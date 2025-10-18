@@ -913,8 +913,19 @@ def ProcessResult(request):
     # 获取SampleName列的内容
     # 第一步：获取OriginBarcode中的内容，并在此基础上去除df_mapping["Barcode"]中的内容(为曲线和质控)
     barcode_list = [str(x) for x in df_mapping["Barcode"].tolist()]
-    ClinicalSample = [x for x in OriginBarcode if x not in barcode_list]
-    
+
+    ClinicalSample = []
+
+    for i, ob in enumerate(OriginBarcode):
+        if ob not in barcode_list:  # 只处理未匹配条码
+            warm_val = str(Warm[i]).strip()  # 转成字符串，去掉空格
+            # 如果 Warm 值含 'X'（定位孔标记），则替换
+            if 'X' in warm_val.upper():
+                ClinicalSample.append(warm_val)
+            else:
+                ClinicalSample.append(ob)
+
+
     # 第二步：添加DB1和Test(获取用户后台设置的Test个数)
     test_count = config.test_count
     test_list = ["DB1"] + [f"Test{i}" for i in range(test_count)]
@@ -1016,29 +1027,55 @@ def ProcessResult(request):
                     continue
                 if col in ("VialPos", "Vial position", "样品瓶"):  
                     # 特殊处理 VialPos
+                    ROWS = ["A", "B", "C", "D", "E", "F", "G", "H"]
+
+                    def _well_number_rowwise(row_idx: int, col: int) -> int:
+                        """
+                        计算孔号：按行(A..H)横向编号（A1=1, A2=2, ..., A12=12, B1=13, ...）
+                        row_idx: 0..7 -> A..H
+                        col: 1..12
+                        """
+                        return row_idx * 12 + col
+
                     def resolve_vialpos(sample_name_value):
                            
                         # Case 2: 定位孔 "----------"
-                        if str(sample_name_value).count("-") > 3:
-                            dash_rows = worklist_table[first_col].str.count("-") > 3
-                            dash_indices = worklist_table[dash_rows].index.tolist()
+                        s = str(sample_name_value).strip().upper()
 
-                            if dash_indices and sample_name_value == worklist_table.at[dash_indices[0], first_col]:
-                                # ✅ 第一次出现的 ---------- → 用 well_list 里的定位孔替换
-                                locator_well = next((w for w in well_list if w["locator"]), None)
-                                if locator_well:
-                                    # 替换 SampleName 为实际孔位名 (A1, B3...)
-                                    worklist_table.at[dash_indices[0], first_col] = locator_well["locator_warm"]
+                        m = re.fullmatch(r"X(\d+)", s)
+                        if m:
+                            k = int(m.group(1))           # 第 k 个定位点（从 1 开始）
+                            k0 = k - 1
 
-                                    # 替换 VialPos
-                                    if val == "{{Well_Number}}":
-                                        return int(locator_well["index"])
-                                    elif val == "{{Well_Position}}":
-                                        return locator_well["well_str"]
-                                return None
-                            else:
-                                # 后续 ---------- 删除
-                                return None
+                            if platform == "NIMBUS":
+                                # 列从 3 开始；每列 8 个（A..H），纵向走完 8 个后换到下一列
+                                col = 3 + (k0 // 8)               # 3,4,5,...
+                                row_idx = k0 % 8                  # 0..7 -> A..H
+                                row_letter = ROWS[row_idx]
+                                well_pos = f"{row_letter}{col}"   # 例如 A3, B3, ...
+                                well_num = _well_number_rowwise(row_idx, col)  # 例如 A3=3, B3=15, ...
+                                if val == "{{Well_Number}}":
+                                    return int(well_num)
+                                elif val == "{{Well_Position}}":
+                                    return well_pos
+                                else:
+                                    return val
+
+                            elif platform == "Starlet":
+                                # 行从 B(=index 1) 开始；每行 12 个（1..12），横向走完 12 个后换到下一行
+                                row_idx = 1 + (k0 // 12)          # 1(B),2(C),...,最多到 7(H)
+                                col = 1 + (k0 % 12)               # 1..12
+                                if not (0 <= row_idx < len(ROWS)) or not (1 <= col <= 12):
+                                    return None  # 超出 96 孔范围则不返回（可按需处理）
+                                row_letter = ROWS[row_idx]
+                                well_pos = f"{row_letter}{col}"   # 例如 B1,B2,...,B12, C1, ...
+                                well_num = _well_number_rowwise(row_idx, col)  # 例如 B1=13, B2=14, ...
+                                if val == "{{Well_Number}}":
+                                    return int(well_num)
+                                elif val == "{{Well_Position}}":
+                                    return well_pos
+                                else:
+                                    return val
 
                         # case 3: QC/STD/曲线（worklist_table里存 Name，需要映射到 barcode）
                         if val in ["{{Well_Number}}", "{{Well_Position}}"]:
@@ -1202,7 +1239,7 @@ def export_files(request):
 
     # 7) 生成PDF
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    pdf_path = os.path.join(target_dir, f"工作清单_{timestamp}.pdf")
+    pdf_path = os.path.join(target_dir, f"WorkSheet_{timestamp}.pdf")
     
     try:
         # 使用WeasyPrint生成PDF
@@ -1235,7 +1272,7 @@ def export_files(request):
 
     if instrument_name.lower() == "sciex":
         # Sciex：导出制表符分隔的 .txt
-        txt_fname = f"上机列表_{timestamp}.txt"
+        txt_fname = f"OnboardingList_{timestamp}.txt"
         txt_path = os.path.join(target_dir, txt_fname)
         df.to_csv(txt_path, sep="\t", index=False, encoding="utf-8")
         worklist_url_key = "txt_url"
@@ -1243,7 +1280,7 @@ def export_files(request):
 
     else:
         # 其它厂家：维持原有 .xlsx
-        xlsx_fname = f"上机列表_{timestamp}.xlsx"
+        xlsx_fname = f"OnboardingList_{timestamp}.xlsx"
         xlsx_path = os.path.join(target_dir, xlsx_fname)
         with pd.ExcelWriter(xlsx_path, engine="xlsxwriter") as writer:
             df.to_excel(writer, sheet_name="Worklist", index=False)

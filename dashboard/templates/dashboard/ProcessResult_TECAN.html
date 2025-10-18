@@ -177,4 +177,25 @@
     </table>
 
 
+    <!-- 上机列表 -->
+    <table class="Table1" id="worklist" cellpadding="4" cellspacing="4" border="1">
+        <thead>
+            <tr>
+                {% for col in txt_headers %}
+                    <th>{{ col }}</th>
+                {% endfor %}
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in worklist_records %}
+                <tr>
+                    {% for col in txt_headers %}
+                        <td>{{ row|get_item:col }}</td>
+                    {% endfor %}
+                </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+
 {% endblock %}

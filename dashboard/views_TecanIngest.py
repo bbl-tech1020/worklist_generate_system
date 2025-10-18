@@ -354,10 +354,11 @@ def tecaningest(request: HttpRequest) -> HttpResponse:
         request.session["tecan_pending_date"] = today
         request.session.modified = True
 
-        return render(request, "dashboard/sampling/tecan_duplicates.html", {
+        return render(request, "dashboard/sampling/Tecan_duplicates.html", {
             "dups": dups,                # 需要人工填写新 SRCTubeID 的那批行（= R 的 ordered_duplicates）
             "cross_mains": cross_mains,  # 跨文件重复主码，仅提示
             "today": today,
+            "project_id": project_id,
             "original_filename": os.path.basename(saved_scan_abs),
         })
 
@@ -382,6 +383,10 @@ def tecan_resolve_duplicates(request: HttpRequest) -> HttpResponse:
     if request.method != "POST":
         return HttpResponseBadRequest("仅支持POST")
 
+    # 先从 POST 取；取不到再从 session 兜底
+    project_id = (request.POST.get("project_id")
+                  or request.session.get("tecan_project_id"))
+    
     rel_path = request.session.get("tecan_pending_file")
     today    = request.session.get("tecan_pending_date")
     if not rel_path or not today:
@@ -635,6 +640,8 @@ def _render_tecan_process_result(request: HttpRequest, today: str, csv_abs_path:
         from .models import Project  # 按你仓库的模型改
         proj = Project.objects.filter(pk=project_id).first()
         sc = getattr(proj, "sampling_config", {}) or {}
+        
+        project_name = sc.get("curve_points")
         curve_points = int(sc.get("curve_points", 8))
         qc_groups    = int(sc.get("qc_groups", 3))
         qc_levels    = int(sc.get("qc_levels", 2))
@@ -658,7 +665,6 @@ def _render_tecan_process_result(request: HttpRequest, today: str, csv_abs_path:
     clinical_cells = []
     try:
         clinical_cells = _build_clinical_cells_from_csv(csv_abs_path, start_offset, station_map)
-        # clinical_cells: [(row_letter, col_num, sample_name)]
         clinical_cells = [{"row": r, "col": c, "text": s or ""} for (r, c, s) in clinical_cells]
     except Exception:
         clinical_cells = []
@@ -670,6 +676,7 @@ def _render_tecan_process_result(request: HttpRequest, today: str, csv_abs_path:
         grid[cell["row"]][cell["col"]]["std_qc"] = cell
     for cell in clinical_cells:
         grid[cell["row"]][cell["col"]]["sample"] = cell
+    
 
     # 6) 渲染
     # —— 新增：TECAN 适配版 builder，与 views.ProcessResult 的字段命名/语义对齐 ——
@@ -685,8 +692,6 @@ def _render_tecan_process_result(request: HttpRequest, today: str, csv_abs_path:
             "well_str": f"{row_letter}{col_num}",
             "index":  well_index,              # 1..96（固定计算）
 
-            "match_sample": "STD0",
-
             # 兼容通用版的常用键（先留空/占位，后续若接入可补齐）
             "origin_barcode": "",
             "barcode": "",
@@ -697,7 +702,7 @@ def _render_tecan_process_result(request: HttpRequest, today: str, csv_abs_path:
 
             # 你可能在通用版用到的若干扩展键，先给默认值，避免模板/导出报错
             "MatchResult": "",
-            "MatchSampleName": sample.get("text") or "",
+            "match_sample": sample.get("text") or "",
             "DupBarcode": "",
             "DupBarcodeSampleName": "",
             "Warm": "",
@@ -706,11 +711,15 @@ def _render_tecan_process_result(request: HttpRequest, today: str, csv_abs_path:
         # 为了跟通用版“孔内多行”展示兼容，额外带上 TECAN 的两条文本
         d["std_qc_text"]   = std_qc.get("text") or ""
         d["sample_text"]   = sample.get("text") or ""
+        
+        if d["match_sample"] == "" and d["std_qc_text"]:
+            d["match_sample"] = d["std_qc_text"]
+            d["flags"].append("std_qc")  # 可选：给下游一个标记
 
         return d
 
     letters = ["A","B","C","D","E","F","G","H"]
-    nums = [str(i) for i in range(1, 13)]
+    nums = list(range(1, 13))
 
     rows_letters = letters    # ['A','B',...,'H']
     cols_numbers = nums    # [1,2,...,12]

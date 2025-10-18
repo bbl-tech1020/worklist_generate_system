@@ -388,6 +388,7 @@ def project_config_edit(request, pk):
         'config': config,
     })
 
+
 def project_config_delete(request, pk):
     if request.method == "POST":
         config = get_object_or_404(SamplingConfiguration, pk=pk)
@@ -424,7 +425,8 @@ def vendor_config_delete(request, pk):
             return JsonResponse({"success": True})
         return redirect('vendor_config')
     return JsonResponse({"success": False, "error": "Only POST allowed"})
-    
+
+# 进样体积设置   
 def injection_volume_config(request):
     injection_volume_configs = InjectionVolumeConfiguration.objects.all().order_by('-created_at')
     return render(request, 'dashboard/config/injection_volume_config.html', {
@@ -452,6 +454,7 @@ def injection_volume_config_delete(request, pk):
             return JsonResponse({"success": True})
         return redirect('config_preview')
     return JsonResponse({"success": False, "error": "Only POST allowed"})
+
 
 # 结果处理，用户在前端功能入口处选择项目，上传文件并点击提交按钮后的处理逻辑
 def ProcessResult(request):
@@ -802,12 +805,15 @@ def ProcessResult(request):
             "num": col_num,
             "well_str": well_pos_str,
             "index": well_index,                      # 显示用序号（随布局：列优先/行优先）
+
             "locator": is_locator,
             "locator_warm": locator_label, 
+
             "match_sample": match_sample,
             "cut_barcode": CutBarcode[data_idx],
             "sub_barcode": SubBarcode[data_idx],
             "origin_barcode": OriginBarcode[data_idx],
+            
             "warm": Warm[data_idx],
             "status": Status[data_idx],
             "dup_barcode": DupBarcode[data_idx],

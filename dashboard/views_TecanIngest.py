@@ -506,7 +506,7 @@ def _load_station_map_for_today(today: str) -> dict[str, str]:
         pass
     return {}
 
-# 根据文件名解析 plate_number 与 start_offset
+# 根据文件名解析 plate_number 与 start_offset  
 def _parse_plate_meta_by_filename(filename: str) -> tuple[int, int]:
     """
     由文件名的 Plate(\d+)_(\d+) 得到 (plate_number, start_offset)
@@ -589,7 +589,7 @@ def _build_clinical_cells_from_csv(csv_abs_path: str, start_offset: int, station
     - 列整体偏移：每个列号 += (start_offset-1)
     - pos 1..8 左列，9..16 右列；行号 6..13 （A..H）
     """
-    base_area_map = {"20": (4,5), "21": (6,7), "22": (8,9), "23": (10,11), "24": (12,13)}
+    base_area_map = {"20": (3,4), "21": (5,6), "22": (7,8), "23": (9,10), "24": (11,12)}
 
     rows = []
     with open(csv_abs_path, "r", encoding="utf-8", errors="ignore") as f:
@@ -665,6 +665,8 @@ def _render_tecan_process_result(request: HttpRequest, today: str, csv_abs_path:
 
     # 5) 组装 96 孔板矩阵 -> 二级字典 grid[row][col]
     grid: dict[str, dict[int, dict]] = {r: {c: {"std_qc": None, "sample": None} for c in _PLATE_COLS} for r in _PLATE_ROWS}
+    ic(clinical_cells)
+
     for cell in std_qc_cells:
         grid[cell["row"]][cell["col"]]["std_qc"] = cell
     for cell in clinical_cells:

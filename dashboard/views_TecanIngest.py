@@ -763,8 +763,8 @@ def _render_tecan_process_result(request: HttpRequest, today: str, csv_abs_path:
 
     def _name_to_barcodes_from_grid(grid):
         """
-        用 grid/std_qc 解析出来的清单，构建 name->barcodes（队列，保持出现顺序）
-        约定：TECAN 下采用“名称即条码”的策略。
+        用 grid/std_qc 解析出来的清单，构建 name->barcodes（队列，保持顺序）
+        TECAN：名称即条码
         """
         buckets = defaultdict(list)
         for row_letter, cols in (grid or {}).items():
@@ -772,9 +772,13 @@ def _render_tecan_process_result(request: HttpRequest, today: str, csv_abs_path:
                 std_qc = (cell or {}).get("std_qc") or {}
                 name = (std_qc.get("text") or "").strip()
                 if name:
-                    # “名称即条码”
-                    buckets[name].append(name)
-        # 转为 deque，便于“队列式消费”
+                    buckets[name].append(name)  # 名称即条码
+                # 临床样本
+                sample = (cell or {}).get("sample") or {}
+                sname = (sample.get("text") or "").strip()
+                if sname:
+                    # 临床样本条码也要记录，便于 barcode->well 反查
+                    buckets.setdefault(sname, [])
         return {k: deque(v) for k, v in buckets.items()}
 
     def _barcode_to_well_from_table(worksheet_table):
@@ -901,6 +905,7 @@ def _render_tecan_process_result(request: HttpRequest, today: str, csv_abs_path:
 
         return df, errors
 
+
     # 1) 基于 grid 的 std_qc，构建 name->barcodes（TECAN：名称即条码）
     name_to_barcodes = _name_to_barcodes_from_grid(grid)
 
@@ -923,9 +928,10 @@ def _render_tecan_process_result(request: HttpRequest, today: str, csv_abs_path:
             break
 
     # 4) 读取 TECAN 的上机列表模板（DataFrame）
-    #    - 你如果已有 DataFrame（例如前面就叫 worklist_table），直接用它；
-    #    - 若模板来自 Excel/TXT，请在这一步读入为 DataFrame，列名即为 txt_headers。
-    worklist_table = tecan_worklist_df  # ← 用你真实变量名替换
+    config = SamplingConfiguration.objects.get(id=project_id)
+    mapping_file_path = config.mapping_file.path
+    worklist_mapping = pd.read_excel(mapping_file_path, sheet_name="上机列表")
+    worklist_table = pd.DataFrame(columns=df.columns)
 
     # 5) 按 NIMBUS 的四类规则批量替换
     worklist_table_resolved, wl_errors = _resolve_tecan_worklist(

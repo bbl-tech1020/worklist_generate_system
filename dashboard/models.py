@@ -61,6 +61,12 @@ class InjectionVolumeConfiguration(models.Model):
     injection_volume = models.IntegerField()
     created_at = models.DateTimeField(auto_now_add=True)
 
+class InjectionPlateConfiguration(models.Model):
+    project_name = models.CharField(max_length=200)
+    instrument_num = models.CharField(max_length=200)
+    injection_plate = models.CharField(max_length=200)
+    created_at = models.DateTimeField(auto_now_add=True)
+
 # 记录每一板样本信息，用于标本查找
 class SampleRecord(models.Model):
     project_name = models.CharField(max_length=100)   # 项目名称

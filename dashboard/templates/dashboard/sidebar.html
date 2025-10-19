@@ -141,7 +141,7 @@
                         </a>
 
                         <div id="backendConfigCollapse"
-                            class="collapse sidebar-submenu{% if name == 'project_config' or name == 'vendor_config' or name == 'injection_volume_config' %} show{% endif %}">
+                            class="collapse sidebar-submenu{% if name == 'project_config' or name == 'vendor_config' or name == 'injection_volume_config' or name == 'injection_plate_config' %} show{% endif %}">
                             <a class="nav-link {% if name == 'project_config' %}active{% endif %}" href="{% url 'project_config' %}">
                                 <span class="submenu-dot"></span>项目参数配置
                             </a>
@@ -151,9 +151,9 @@
                             <a class="nav-link {% if name == 'injection_volume_config' %}active{% endif %}" href="{% url 'injection_volume_config' %}">
                                 <span class="submenu-dot"></span>进样体积配置
                             </a>
-                            <!-- <a class="nav-link {% if name == 'injection_volume_config' %}active{% endif %}" href="{% url 'injection_volume_config' %}">
+                            <a class="nav-link {% if name == 'injection_plate_config' %}active{% endif %}" href="{% url 'injection_plate_config' %}">
                                 <span class="submenu-dot"></span>进样盘号配置
-                            </a> -->
+                            </a>
                         </div>
                         </li>
                     {% endwith %}

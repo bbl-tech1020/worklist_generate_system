@@ -51,6 +51,10 @@ urlpatterns = [
     path('dashboard/injection_volume_config_create/', views.injection_volume_config_create, name='injection_volume_config_create'),  # 进样体积配置——新建
     path('dashboard/injection_volume_config_delete/<int:pk>/', views.injection_volume_config_delete, name='injection_volume_config_delete'),  # 仪器厂家参数配置——删除
 
+
+    path('dashboard/injection_plate_config/', views.injection_plate_config, name='injection_plate_config'),  # 进样体积配置
+    path('dashboard/injection_plate_config_create/', views.injection_plate_config_create, name='injection_plate_config_create'),  # 进样体积配置——新建
+
     # 获取后台配置的项目信息
     path('dashboard/get_project_list/', views.get_project_list, name='get_project_list'),
     path('dashboard/frontend_entry/get_project_detail/<int:pk>/', views.get_project_detail, name='get_project_detail'),

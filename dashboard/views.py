@@ -455,6 +455,26 @@ def injection_volume_config_delete(request, pk):
         return redirect('config_preview')
     return JsonResponse({"success": False, "error": "Only POST allowed"})
 
+# 进样盘设置   
+def injection_plate_config(request):
+    injection_plate_configs = InjectionPlateConfiguration.objects.all().order_by('-created_at')
+    return render(request, 'dashboard/config/injection_plate_config.html', {
+        'injection_plate_configs': injection_plate_configs
+    })
+
+def injection_plate_config_create(request):
+    if request.method == 'POST':
+        instance = InjectionPlateConfiguration(
+            project_name=request.POST.get('project_name'),
+            instrument_num=request.POST.get('instrument_num'),
+            injection_plate=request.POST.get('injection_plate'),
+        )
+
+        instance.save()
+        return redirect('injection_plate_config')
+    else:
+        return render(request, 'dashboard/config/injection_plate_config_create.html')
+
 
 # 结果处理，用户在前端功能入口处选择项目，上传文件并点击提交按钮后的处理逻辑
 def ProcessResult(request):
@@ -627,8 +647,6 @@ def ProcessResult(request):
         else:
             # 无法从 TLabwareId 提取数字时，不设定位孔（维持空集合）
             locator_positions = set()
-    
-    ic(locator_positions)
 
     ###################### 抓取每日工作清单的主条码与实验号，并与扫码结果匹配 ###################### 
 
@@ -999,8 +1017,11 @@ def ProcessResult(request):
     # 3 若worklist_mapping第一列的元素为*，则将worklist_table中除上述已填充的行以外（注意这里）的行的第2至最后一列的内容按照worklist_mapping中内容进行填充
 
     # 20251011新增规则：
-    # 4 无论worklist_mapping中第一列的元素的什么，若worklist_table中某一列的列名为‘SetName’，则该列的内容按照下述形式填充：'仪器编号-项目名称-日期'，即{instrument_num}-{project_name}-日期，其中日期精确到天（如20251011）。例如：FXS-YZ38-25OHD-20251011
-    # 5 无论worklist_mapping中第一列的元素的什么，若worklist_table中某一列的列名为‘OutputFile’，则该列的内容按照下述形式填充：'年\年月\Data{instrument_num}-{project_name}-日期'，其中日期精确到天（如20251011）。例如：2025\202510\DataFXS-YZ38-25OHD-20251011
+    # 1 无论worklist_mapping中第一列的元素的什么，若worklist_table中某一列的列名为‘SetName’，则该列的内容按照下述形式填充：'仪器编号-项目名称-日期'，即{instrument_num}-{project_name}-日期，其中日期精确到天（如20251011）。例如：FXS-YZ38-25OHD-20251011
+    # 2 无论worklist_mapping中第一列的元素的什么，若worklist_table中某一列的列名为‘OutputFile’，则该列的内容按照下述形式填充：'年\年月\Data{instrument_num}-{project_name}-日期'，其中日期精确到天（如20251011）。例如：2025\202510\DataFXS-YZ38-25OHD-20251011
+
+    # 20251019新增规则：
+    # 1 若worklist_mapping第一列的元素中包含‘STD’，则将worklist_table中对应列元素与worklist_mapping第一列的元素内容完全相同的行的第2至最后一列的内容按照worklist_mapping中内容进行填充
 
     for _, row in worklist_mapping.iterrows():
         sample_name = row.iloc[0]   # 用 iloc 显式取第一列
@@ -1022,6 +1043,16 @@ def ProcessResult(request):
             mask = worklist_table.iloc[:, 0].str.startswith("Test")
             for col, val in zip(worklist_table.columns[1:], fill_values.values):
                 if col == "SmplInjVol":  
+                    continue
+                worklist_table.loc[mask, col] = val
+
+        # —— 新增规则：STD 精确匹配 —— 
+        elif "STD" in str(sample_name):
+            # 只填充与 worklist_mapping 第一列中该 STD 名称“完全相同”的行
+            mask = worklist_table.iloc[:, 0] == str(sample_name)
+            for col, val in zip(worklist_table.columns[1:], fill_values.values):
+                # 与其它规则保持一致：进样体积列在上面已统一处理
+                if col == "SmplInjVol" or col == "Injection volume":
                     continue
                 worklist_table.loc[mask, col] = val
 
@@ -1145,6 +1176,7 @@ def ProcessResult(request):
 
     request.session["export_payload"] = {
         "project_name": project_name,           # 如 VD / CSA
+        "platform": platform, 
         "worksheet_table": worksheet_table,     # 你生成的 96 孔板展示数据（列表套字典）
         "error_rows": error_rows,               # 报错信息
         "txt_headers": txt_headers,             # 上机列表表头
@@ -1191,8 +1223,9 @@ def export_files(request):
     # 1) 目录设置
     today_str = datetime.today().strftime("%Y-%m-%d")
     project = str(payload.get("project_name", "PROJECT"))
+    platform = str(payload.get("platform", "NewPlatform"))
     base_dir = settings.DOWNLOAD_ROOT
-    target_dir = os.path.join(base_dir, "NIMBUS", today_str, project)
+    target_dir = os.path.join(base_dir, platform, today_str, project)
     os.makedirs(target_dir, exist_ok=True)
 
     # 2) 字体路径设置

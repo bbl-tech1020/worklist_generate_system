@@ -1,5 +1,5 @@
 
-from django.views.decorators.http import require_POST
+from django.views.decorators.http import require_POST,require_GET
 from django.views.decorators.csrf import csrf_exempt
 from django.shortcuts import render, redirect, get_object_or_404
 from .models import *
@@ -62,6 +62,35 @@ def get_project_detail(request, pk):
         'default_upload_instrument': configs.default_upload_instrument
     }
     return JsonResponse(data)
+
+@require_GET
+def get_injection_plates(request):
+    """
+    根据项目名称(project_name)与仪器编号(instrument_num)返回配置的进样盘号列表。
+    兼容 CharField/JSONField 两种历史存储格式。
+    """
+    project_name = request.GET.get("project_name", "").strip()
+    instrument_num = request.GET.get("instrument_num", "").strip()
+
+    plates = []
+    if project_name and instrument_num:
+        try:
+            cfg = InjectionPlateConfiguration.objects.get(
+                project_name=project_name,
+                instrument_num=instrument_num,
+            )
+            raw = cfg.injection_plate
+            # 兼容：字符串（逗号分隔）或 JSON list
+            if isinstance(raw, str):
+                plates = [s.strip() for s in raw.split(",") if s.strip()]
+            elif isinstance(raw, (list, tuple)):
+                plates = list(raw)
+            else:
+                plates = []
+        except InjectionPlateConfiguration.DoesNotExist:
+            plates = []
+
+    return JsonResponse({"plates": plates})
 
 # NIMBUS
 def NIMBUS_sampling(request):

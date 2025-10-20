@@ -54,8 +54,9 @@ urlpatterns = [
     path('dashboard/injection_plate_config_delete/<int:pk>/', views.injection_plate_config_delete, name='injection_plate_config_delete'),  # 进样盘号配置——删除
 
     # 获取后台配置的项目信息
-    path('dashboard/get_project_list/', views.get_project_list, name='get_project_list'),
+    path('dashboard/frontend_entry/get_project_list/', views.get_project_list, name='get_project_list'),
     path('dashboard/frontend_entry/get_project_detail/<int:pk>/', views.get_project_detail, name='get_project_detail'),
+    path('dashboard/frontend_entry/get_injection_plates/', views.get_injection_plates, name='get_injection_plates'),
 
     # 4 结果处理(适用于NIMBUS和Starlet)，用户在前端功能入口处选择项目，上传文件并点击提交按钮后的处理逻辑
     path('dashboard/ProcessResult/', views.ProcessResult, name='ProcessResult'), # NIMBUS和Starlet

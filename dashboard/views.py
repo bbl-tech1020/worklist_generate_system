@@ -455,25 +455,46 @@ def injection_volume_config_delete(request, pk):
         return redirect('config_preview')
     return JsonResponse({"success": False, "error": "Only POST allowed"})
 
-# 进样盘设置   
+# 进样盘号设置   
 def injection_plate_config(request):
-    injection_plate_configs = InjectionPlateConfiguration.objects.all().order_by('-created_at')
+    configs = InjectionPlateConfiguration.objects.all().order_by('-created_at')
     return render(request, 'dashboard/config/injection_plate_config.html', {
-        'injection_plate_configs': injection_plate_configs
+        'configs': configs
     })
 
+# 进样盘号配置 —— 新建
 def injection_plate_config_create(request):
     if request.method == 'POST':
-        instance = InjectionPlateConfiguration(
-            project_name=request.POST.get('project_name'),
-            instrument_num=request.POST.get('instrument_num'),
-            injection_plate=request.POST.get('injection_plate'),
-        )
+        # 前端以 JSON 字符串传入 injection_plate_json，例如 ["X1","X2"]
+        import json
+        raw = request.POST.get('injection_plate_json', '[]')
+        try:
+            plate_list = json.loads(raw)
+            # 简单清洗：去空、去重、全部转为字符串
+            plate_list = list(dict.fromkeys([str(x).strip() for x in plate_list if str(x).strip()]))
+        except Exception:
+            plate_list = []
 
+        instance = InjectionPlateConfiguration(
+            project_name=request.POST.get('project_name', '').strip(),
+            instrument_num=request.POST.get('instrument_num', '').strip(),
+            injection_plate=plate_list,
+        )
         instance.save()
         return redirect('injection_plate_config')
     else:
         return render(request, 'dashboard/config/injection_plate_config_create.html')
+
+
+# 进样盘号配置 —— 删除
+def injection_plate_config_delete(request, pk):
+    if request.method == "POST":
+        config = get_object_or_404(InjectionPlateConfiguration, pk=pk)
+        config.delete()
+        if request.headers.get('x-requested-with') == 'XMLHttpRequest':
+            return JsonResponse({"success": True})
+        return redirect('injection_plate_config')
+    return JsonResponse({"success": False, "error": "Only POST allowed"})
 
 
 # 结果处理，用户在前端功能入口处选择项目，上传文件并点击提交按钮后的处理逻辑

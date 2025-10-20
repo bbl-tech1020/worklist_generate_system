@@ -64,7 +64,7 @@ class InjectionVolumeConfiguration(models.Model):
 class InjectionPlateConfiguration(models.Model):
     project_name = models.CharField(max_length=200)
     instrument_num = models.CharField(max_length=200)
-    injection_plate = models.CharField(max_length=200)
+    injection_plate = models.JSONField(default=list, help_text="保存为字符串列表，例如 ['Plate1','Plate2','Plate3'] ")
     created_at = models.DateTimeField(auto_now_add=True)
 
 # 记录每一板样本信息，用于标本查找

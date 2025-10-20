@@ -1,0 +1,128 @@
+{% extends 'dashboard/index.html' %}
+{% load static %}
+
+{% block header %}
+<header class="navbar navbar-expand-md navbar-light d-print-none">
+  <div class="container-fluid">
+    <h1 class="navbar-brand">后台参数配置</h1>
+  </div>
+</header>
+<style>
+  /* 修改进样盘号标签样式 */
+  #plate-tags .badge {
+    color: #000 !important;
+    /* 文字黑色 */
+    font-weight: 700 !important;
+    /* 加粗 */
+    background-color: #e0e7ff !important;
+    /* 可选：浅蓝背景，依然与主色调协调 */
+    border: 1px solid #b6c0ff;
+    /* 可选：让标签更清晰 */
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="card mt-4">
+  <div class="card-header">
+    <h3 class="card-title">进样盘号参数配置</h3>
+  </div>
+
+  <div class="card-body">
+    <form method="post">
+      {% csrf_token %}
+
+      <!-- 项目名称 -->
+      <div class="mb-3">
+        <label class="form-label">项目名称</label>
+        <input type="text" class="form-control" name="project_name" placeholder="请输入项目名称">
+      </div>
+
+      <!-- 仪器编号 -->
+      <div class="mb-3">
+        <label class="form-label">仪器编号</label>
+        <input type="text" class="form-control" name="instrument_num" placeholder="请输入仪器编号">
+      </div>
+
+      <!-- 进样盘号：可添加任意个值 -->
+      <div class="mb-3">
+        <label class="form-label">进样盘号</label>
+        <div class="d-flex gap-2">
+          <input id="plate-input" type="text" class="form-control" placeholder="例如：Plate1，回车或点击添加">
+          <button id="add-plate" class="btn btn-secondary" type="button">添加</button>
+        </div>
+        <small class="text-muted">可添加多个，例如 Plate1、Plate2、Plate3 ...</small>
+
+        <!-- tag 列表 -->
+        <div id="plate-tags" class="mt-2" style="display:flex;flex-wrap:wrap;gap:8px;"></div>
+
+        <!-- 隐藏域：以 JSON 形式提交 -->
+        <input type="hidden" name="injection_plate_json" id="injection_plate_json" value="[]">
+      </div>
+
+      <div class="mt-4">
+        <button class="btn btn-primary">保存设置</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+  (function () {
+    const input = document.getElementById('plate-input');
+    const addBtn = document.getElementById('add-plate');
+    const tags = document.getElementById('plate-tags');
+    const hidden = document.getElementById('injection_plate_json');
+
+    let values = [];
+
+    function render() {
+      tags.innerHTML = '';
+      values.forEach((v, idx) => {
+        const chip = document.createElement('span');
+        chip.className = 'badge bg-primary';
+        chip.style.fontSize = '1rem';
+        chip.style.padding = '8px 10px';
+        chip.textContent = v;
+
+        const close = document.createElement('button');
+        close.type = 'button';
+        close.className = 'btn btn-sm btn-light ms-2';
+        close.textContent = '删除';
+        close.onclick = () => {
+          values.splice(idx, 1);
+          hidden.value = JSON.stringify(values);
+          render();
+        };
+
+        const wrap = document.createElement('div');
+        wrap.className = 'd-inline-flex align-items-center';
+        wrap.style.gap = '6px';
+        wrap.appendChild(chip);
+        wrap.appendChild(close);
+        tags.appendChild(wrap);
+      });
+      hidden.value = JSON.stringify(values);
+    }
+
+    function addCurrent() {
+      const v = (input.value || '').trim();
+      if (!v) return;
+      if (!values.includes(v)) {
+        values.push(v);
+        render();
+      }
+      input.value = '';
+      input.focus();
+    }
+
+    addBtn.addEventListener('click', addCurrent);
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        addCurrent();
+      }
+    });
+  })();
+</script>
+{% endblock %}

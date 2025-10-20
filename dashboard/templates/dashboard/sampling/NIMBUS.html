@@ -48,7 +48,7 @@
           <select class="form-select" id="injection-plate-select" name="injection_plate">
             <option value="">请选择进样盘号</option>
           </select>
-          <div class="form-text">当该项目与仪器在“进样盘号配置”中存在记录时，此项会自动出现。</div>
+          <div class="form-text">当该项目与仪器在“进样盘号配置”中存在记录时，此项才会出现。</div>
         </div>
 
         <div class="mt-4">
@@ -95,9 +95,9 @@
         .then(res => res.json())
         .then(data => {
           instrumentInput.value = data.default_upload_instrument || '';
+          refreshPlateDropdown();
         });
     });
-
 
   });
 

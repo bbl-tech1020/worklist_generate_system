@@ -43,7 +43,8 @@
         }
 
         .hole{
-            font-size: 14px;
+            font-size: 16px;
+            font-weight: 800;
         }
 
         .SampleName{
@@ -118,11 +119,11 @@
             </tr>
             <tr>
                 <th colspan="2">检测日期</th>
-                <th colspan="2">{{ localtime }}</th>
-                <th colspan="2">板号：X{{ index }}</th>
+                <th colspan="2">{{ today_str }}</th>
+                <th colspan="2">板号：X{{ plate_no }}</th>
                 <th colspan="3">检测仪器编号：FXS-YZ___ </th>
                 <th colspan="2">上机盘号:</th>
-                <th colspan="2"></th>
+                <th colspan="2">{{injection_plate}}</th>
             </tr>
             <tr class="maintext">
                 <th style="width: 20px"></th>

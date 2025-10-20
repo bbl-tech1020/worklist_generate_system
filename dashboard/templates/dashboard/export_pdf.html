@@ -82,8 +82,9 @@
         }
 
         .hole {
-            font-size: 7pt;
+            font-size: 9pt;
             color: #333;
+            font-weight: 800;
         }
 
         /* 定位孔显示（字号适中） */
@@ -160,14 +161,14 @@
                 <!-- ✅ 第二行：检测日期 / 板号 / 仪器编号 / 上机盘号 -->
                 <tr class="meta-row">
                     <th colspan="2" style="text-align:left;">检测日期</th>
-                    <th colspan="2" style="text-align:left;">{{ header.test_date }}</th>
+                    <th colspan="2" style="text-align:left;">{{ header.today_str }}</th>
 
                     <th colspan="2" style="text-align:left;">板号：{{ header.plate_no }}</th>
 
                     <th colspan="3" style="text-align:left;">检测仪器编号：{{ header.instrument_num }}</th>
 
                     <th colspan="2" style="text-align:left;">上机盘号：</th>
-                    <th colspan="2" style="text-align:left;">{{ header.tray_no }}</th>
+                    <th colspan="2" style="text-align:left;">{{ header.injection_plate }}</th>
                 </tr>
                 <tr class="maintext">
                     <th style="width: 28px;"></th>

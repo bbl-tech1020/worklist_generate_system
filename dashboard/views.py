@@ -494,7 +494,7 @@ def injection_plate_config(request):
 # 进样盘号配置 —— 新建
 def injection_plate_config_create(request):
     if request.method == 'POST':
-        # 前端以 JSON 字符串传入 injection_plate_json，例如 ["X1","X2"]
+        # 前端以 JSON 字符串传入 injection_plate_json，例如 ["Plate1","Plate2"]
         import json
         raw = request.POST.get('injection_plate_json', '[]')
         try:
@@ -531,6 +531,7 @@ def ProcessResult(request):
     # 获取项目类型和取样平台 layout
     project_id = request.POST.get("project_id")
     platform = request.POST.get('platform')
+    injection_plate = request.POST.get('injection_plate') if 'injection_plate' in request.POST else None
     
     # 获取上传的文件对象
     Stationlist = request.FILES.get('station_list')  # 每日操作清单
@@ -1144,7 +1145,7 @@ def ProcessResult(request):
                                 if val == "{{Well_Number}}":
                                     return int(well_num)
                                 elif val == "{{Well_Position}}":
-                                    return well_pos
+                                    return f"{injection_plate}-{well_pos}" if injection_plate else well_pos
                                 else:
                                     return val
 
@@ -1160,7 +1161,7 @@ def ProcessResult(request):
                                 if val == "{{Well_Number}}":
                                     return int(well_num)
                                 elif val == "{{Well_Position}}":
-                                    return well_pos
+                                    return f"{injection_plate}-{well_pos}" if injection_plate else well_pos
                                 else:
                                     return val
 
@@ -1173,14 +1174,20 @@ def ProcessResult(request):
                                 # 再用 barcode 去查 barcode_to_well
                                 if barcode in barcode_to_well:
                                     well_pos, well_num = barcode_to_well[barcode]
-                                    return int(well_num) if val == "{{Well_Number}}" else well_pos
+                                    if val == "{{Well_Number}}":
+                                        return int(well_num)
+                                    else:
+                                        return f"{injection_plate}-{well_pos}" if injection_plate else well_pos
                                 else:
                                     return None
                                 
                             # case 4: 临床样品（worklist_table里就是条码本身）
                             elif sample_name_value in barcode_to_well:
                                 well_pos, well_num = barcode_to_well[sample_name_value]
-                                return int(well_num) if val == "{{Well_Number}}" else well_pos 
+                                if val == "{{Well_Number}}":
+                                    return int(well_num)
+                                else:
+                                    return f"{injection_plate}-{well_pos}" if injection_plate else well_pos 
 
                             else:
                                 return None
@@ -1227,17 +1234,22 @@ def ProcessResult(request):
     request.session["export_payload"] = {
         "project_name": project_name,           # 如 VD / CSA
         "platform": platform, 
+        "injection_plate": injection_plate, 
         "worksheet_table": worksheet_table,     # 你生成的 96 孔板展示数据（列表套字典）
         "error_rows": error_rows,               # 报错信息
         "txt_headers": txt_headers,             # 上机列表表头
         "worklist_records": worklist_records,   # 上机列表数据（DataFrame -> to_dict('records') 的结果）
+        "today_str": today_str,
+        "plate_no": plate_no,     
+        "instrument_num": instrument_num,    
 
         # ✅ 新增：导出 PDF 页眉需要的元信息（按你 ProcessResult.html 的第二行设计）
         "header": {
             "test_date": timezone.localtime().strftime("%Y-%m-%d"),  # 检测日期
             "plate_no": plate_no,                # 例如 "X2"（你已从 Scanresult Warm 提取）
             "instrument_num": instrument_num,    # 例如 FXS-YZ___（你已有 POST 获取）
-            "tray_no": request.POST.get("tray_no", ""),  # 上机盘号（如果表单没这个字段就给空）
+            "injection_plate": injection_plate,  # 上机盘号（如果表单没这个字段就给空）
+            "today_str": today_str,  
         },
     }
     request.session.modified = True
@@ -1254,6 +1266,7 @@ def preview_export(request):
         return HttpResponseBadRequest("没有可预览的数据，请先生成结果页面。")
 
     nums = [str(i) for i in range(1, 13)]
+
     # 传 preview=True，让模板走浏览器用的字体加载方式
     return render(request, "dashboard/export_pdf.html", {
         "worksheet_table": payload["worksheet_table"],
@@ -1261,6 +1274,14 @@ def preview_export(request):
         "nums": nums,
         "project": payload["project_name"],
         "preview": True,
+
+        # ✅ 新增：导出 PDF 页眉需要的元信息（按你 ProcessResult.html 的第二行设计）
+        "header": {
+            "plate_no": payload["plate_no"],              # 例如 "X2"（你已从 Scanresult Warm 提取）
+            "instrument_num": payload["instrument_num"],    # 例如 FXS-YZ___（你已有 POST 获取）
+            "injection_plate": payload["injection_plate"],  # 上机盘号（如果表单没这个字段就给空）
+            "today_str": payload["today_str"], 
+        },
     })
 
 # 导出pdf和excel

@@ -82,7 +82,7 @@
         }
 
         .hole {
-            font-size: 9pt;
+            font-size: 7pt;
             color: #333;
             font-weight: 800;
         }
@@ -196,8 +196,8 @@
                         <!-- 条码一对多：◆ -->
                         {% if cell.dup_barcode == "TRUE" %}
                             <span class="icon-cubes">◆</span>
-                        {% elif cell.dup_barcode == "Likely" %}
-                            <span class="icon-cubes">◇</span>
+                        {% else %}
+                            <span class="icon-cubes"><br></span>
                         {% endif %}
 
                         <!-- 条码在移液清单中重复且一对多：★  -->

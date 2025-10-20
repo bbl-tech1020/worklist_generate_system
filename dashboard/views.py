@@ -810,6 +810,8 @@ def ProcessResult(request):
     nums = [str(i) for i in range(1, 13)]
     
     # 抓取96孔板的排列顺序（纵向/横向）
+    ic(project_id)
+
     config = SamplingConfiguration.objects.get(id=project_id)
     project_name = config.project_name
     layout = config.layout
@@ -1035,6 +1037,11 @@ def ProcessResult(request):
     # 拼接上述列表
     SampleName_list = test_list + curve_list + qc_list1 + ClinicalSample + qc_list2
 
+    SampleName_list = [
+        name for name in SampleName_list
+        if isinstance(name, str) and name.count('-') <= 3
+    ]
+
     ic(SampleName_list)
 
     worklist_mapping = pd.read_excel(mapping_file_path, sheet_name="上机列表")
@@ -1217,7 +1224,7 @@ def ProcessResult(request):
     yearmonth = today_str[:6]  # 202510
     
     # e.g. FXS-YZ38-25OHD-20251011
-    setname_value = f"{instrument_num}-{project_name}-{today_str}-{plate_no}"
+    setname_value = f"{instrument_num}-{project_name}-{today_str}-X{plate_no}"
 
     # e.g. 2025\202510\DataFXS-YZ38-25OHD-20251011
     output_value = f"{year}\\{yearmonth}\\Data{setname_value}"

@@ -11,6 +11,7 @@ from django.http import HttpRequest, HttpResponse, HttpResponseBadRequest
 from django.views.decorators.csrf import csrf_protect
 from django.utils.html import escape
 from django.shortcuts import render
+from .models import *
 
 import os
 import pandas as pd
@@ -931,7 +932,7 @@ def _render_tecan_process_result(request: HttpRequest, today: str, csv_abs_path:
     config = SamplingConfiguration.objects.get(id=project_id)
     mapping_file_path = config.mapping_file.path
     worklist_mapping = pd.read_excel(mapping_file_path, sheet_name="上机列表")
-    worklist_table = pd.DataFrame(columns=df.columns)
+    worklist_table = pd.DataFrame(columns=worklist_mapping.columns)
 
     # 5) 按 NIMBUS 的四类规则批量替换
     worklist_table_resolved, wl_errors = _resolve_tecan_worklist(

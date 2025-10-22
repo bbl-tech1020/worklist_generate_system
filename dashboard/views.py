@@ -256,11 +256,21 @@ def Starlet_qyzl(request):
         output.save(output_stream)
         output_stream.seek(0)
         today_str = datetime.now().strftime("%Y%m%d")
-
         file_name = f"qyzl-{today_str}-plate_{AreaStartNum}_{AreaStartNum+AreaNum-1}.xls"
-        response = HttpResponse(output_stream.getvalue(), content_type='application/vnd.ms-excel')
-        response['Content-Disposition'] = f'attachment; filename={file_name}'
-        return response
+
+        # 构造保存路径：Starlet/取样指令/YYYY-MM-DD/
+        save_dir = os.path.join(settings.DOWNLOAD_ROOT, "Starlet", "取样指令", today_str)
+        os.makedirs(save_dir, exist_ok=True)
+
+        # 写入文件
+        save_path = os.path.join(save_dir, file_name)
+        with open(save_path, "wb") as f:
+            f.write(output_stream.getvalue())
+
+        # 返回渲染模板而非文件下载
+        return render(request, 'dashboard/sampling/Starlet_qyzl.html', {
+            "message": f"文件已生成并保存至文件下载页面：Starlet/取样指令/{today_str}/"
+        })
 
     return render(request, 'dashboard/sampling/Starlet_qyzl.html')
 
@@ -942,7 +952,6 @@ def ProcessResult(request):
 
     # 最终用于模板的二维表：严格按 A~H 为行，1~12 为列的顺序输出
     worksheet_table = [[worksheet_grid[r][c] for c in range(cols)] for r in range(rows)]
-    ic(worksheet_table)
 
     ###################### 2 生成上机列表 ######################
 
@@ -1002,6 +1011,7 @@ def ProcessResult(request):
             else:
                 ClinicalSample.append(ob)
 
+    ic(ClinicalSample)
 
     # 第二步：添加DB1和Test(获取用户后台设置的Test个数)
     test_count = config.test_count

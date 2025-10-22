@@ -1,3 +1,4 @@
+{# dashboard/templates/dashboard/file_download.html #}
 {% extends 'dashboard/index.html' %}
 {% load static %}
 
@@ -32,10 +33,15 @@
     display: none
   }
 
-  /* 仅放大最外层（平台级：NIMBUS、Starlet）之间的间距 */
-  #fileTree>ul>li {
-    margin: 30px 0;
-    /* 想要多大就写多大 */
+  /* ✅ 新增：加大顶级平台间距 */
+  #fileTree > ul > li { margin-top: 25px; }
+
+  /* ✅ 仅加大 Starlet 内部一级目录之间的间距（工作清单和上机列表、取样指令） */
+  #fileTree > ul > li:nth-child(2) > ul > li { 
+    margin-top: 18px;  /* 可调大，比如 24px */
+  }
+  #fileTree > ul > li:nth-child(2) > ul > li:first-child { 
+    margin-top: 0;     /* 第一个（工作清单和上机列表）不加额外间距 */
   }
 </style>
 {% endblock %}
@@ -47,6 +53,60 @@
     <li>
       <span class="folder">📁 {{ g.group }}</span>
       <ul class="hidden">
+
+        {# —— Starlet（有 categories）—— #}
+        {% if g.categories %}
+        {% for cat in g.categories %}
+        <li>
+          <span class="folder">📁 {{ cat.category }}</span>
+          <ul class="hidden">
+            {% for day in cat.days %}
+            <li>
+              <span class="folder">📁 {{ day.date }}</span>
+              <ul class="hidden">
+
+                {# 取样指令：日期下直接是文件 #}
+                {% if day.files %}
+                {% for f in day.files %}
+                {% if f.is_pdf %}
+                <li><a class="file" href="{{ f.url }}" download="{{ f.name }}">📄 {{ f.name }}</a></li>
+                {% else %}
+                <li><a class="file" href="{{ f.url }}" target="_blank">📄 {{ f.name }}</a></li>
+                {% endif %}
+                {% empty %}
+                <li class="file">（暂无文件）</li>
+                {% endfor %}
+                {% else %}
+                {# 工作清单和上机列表：日期下有项目层 #}
+                {% for proj in day.projects %}
+                <li>
+                  <span class="folder">📁 {{ proj.name }}</span>
+                  <ul class="hidden">
+                    {% for f in proj.files %}
+                    {% if f.is_pdf %}
+                    <li><a class="file" href="{{ f.url }}" download="{{ f.name }}">📄 {{ f.name }}</a></li>
+                    {% else %}
+                    <li><a class="file" href="{{ f.url }}" target="_blank">📄 {{ f.name }}</a></li>
+                    {% endif %}
+                    {% empty %}
+                    <li class="file">（暂无文件）</li>
+                    {% endfor %}
+                  </ul>
+                </li>
+                {% endfor %}
+                {% endif %}
+
+              </ul>
+            </li>
+            {% empty %}
+            <li class="file">（暂无文件）</li>
+            {% endfor %}
+          </ul>
+        </li>
+        {% endfor %}
+
+        {% else %}
+        {# —— 其他平台（旧三层）—— #}
         {% for day in g.days %}
         <li>
           <span class="folder">📁 {{ day.date }}</span>
@@ -72,6 +132,8 @@
         {% empty %}
         <li class="file">（暂无文件）</li>
         {% endfor %}
+        {% endif %}
+
       </ul>
     </li>
     {% empty %}

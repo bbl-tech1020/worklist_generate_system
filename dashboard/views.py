@@ -255,8 +255,9 @@ def Starlet_qyzl(request):
         output_stream = BytesIO()
         output.save(output_stream)
         output_stream.seek(0)
-        today_str = datetime.now().strftime("%Y%m%d")
-        file_name = f"qyzl-{today_str}-plate_{AreaStartNum}_{AreaStartNum+AreaNum-1}.xls"
+        today_str = datetime.today().strftime("%Y-%m-%d")
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        file_name = f"qyzl_plate_{AreaStartNum}_{AreaStartNum+AreaNum-1}_{timestamp}.xls"
 
         # 构造保存路径：Starlet/取样指令/YYYY-MM-DD/
         save_dir = os.path.join(settings.DOWNLOAD_ROOT, "Starlet", "取样指令", today_str)
@@ -267,9 +268,22 @@ def Starlet_qyzl(request):
         with open(save_path, "wb") as f:
             f.write(output_stream.getvalue())
 
-        # 返回渲染模板而非文件下载
-        return render(request, 'dashboard/sampling/Starlet_qyzl.html', {
-            "message": f"文件已生成并保存至文件下载页面：Starlet/取样指令/{today_str}/"
+        # 生成“文件下载”页 URL（若你的 urls.py 没给这个路由起名，可直接用硬编码 '/dashboard/file_download/'）
+        try:
+            download_page_url = reverse("file_download")
+        except Exception:
+            download_page_url = "/dashboard/file_download/"
+
+        # 直接文件 URL（静态暴露目录 + 平台/类别/日期/文件名）
+        download_file_url = f"{settings.DOWNLOAD_URL}Starlet/取样指令/{today_str}/{file_name}"
+
+        # 弹窗要显示的提示语
+        popup_message = f"取样指令已生成：{file_name}（已保存至：Starlet/取样指令/{today_str}/）"
+
+        return render(request, "dashboard/sampling/Starlet_qyzl.html", {
+            "popup_message": popup_message,
+            "download_page_url": download_page_url,
+            "download_file_url": download_file_url,
         })
 
     return render(request, 'dashboard/sampling/Starlet_qyzl.html')
@@ -315,35 +329,90 @@ def download_export(request, platform, date_name, project, filename):
 
 def file_download(request):
     """
-    展示 downloads 目录下的真实目录结构：
-    downloads/
-    └── 平台名/
-      └── YYYY-MM-DD/
-          └── 项目名/
-              ├── 工作清单.pdf
-              └── 上机列表.xlsx
+    展示 downloads 目录结构。
+    - 通用：平台 / 日期 / 项目 / 文件
+    - Starlet：平台 / {工作清单和上机列表 | 取样指令} / 日期 / (项目?) / 文件
     """
     root = settings.DOWNLOAD_ROOT
-    ic(root)
+    os.makedirs(root, exist_ok=True)
 
-    groups = []   # [{group:"NIMBUS", days:[{date:"2025-09-20", projects:[{name, files:[{name,url,is_pdf}]}]}]}]
+    groups = []  # 输出给模板
 
-    if not os.path.exists(root):
-        os.makedirs(root)
-
-    for platform in sorted(os.listdir(root)):     # 平台层
+    for platform in sorted(os.listdir(root)):  # 平台层
         p_path = os.path.join(root, platform)
         if not os.path.isdir(p_path):
             continue
 
+        # —— Starlet：多一层“类别”（工作清单和上机列表 / 取样指令）——
+        if platform == "Starlet":
+            category_names = ["工作清单和上机列表", "取样指令"]
+            categories = []
+
+            for cat in category_names:
+                c_path = os.path.join(p_path, cat)
+                if not os.path.isdir(c_path):
+                    continue
+
+                days = []
+                # 日期倒序
+                for date_name in sorted(os.listdir(c_path), reverse=True):
+                    d_path = os.path.join(c_path, date_name)
+                    if not (DATE_RE.match(date_name) and os.path.isdir(d_path)):
+                        continue
+
+                    # 判断“日期目录”下面是否还有项目层
+                    proj_dirs = sorted([
+                        s for s in os.listdir(d_path)
+                        if os.path.isdir(os.path.join(d_path, s))
+                    ])
+
+                    if proj_dirs:
+                        # 有项目层：平台 / 类别 / 日期 / 项目 / 文件
+                        projects = []
+                        for proj in proj_dirs:
+                            proj_path = os.path.join(d_path, proj)
+                            files = []
+                            for fname in sorted(os.listdir(proj_path)):
+                                fpath = os.path.join(proj_path, fname)
+                                if not os.path.isfile(fpath):
+                                    continue
+                                files.append({
+                                    "name": fname,
+                                    "url": f"{settings.DOWNLOAD_URL}{platform}/{cat}/{date_name}/{proj}/{fname}",
+                                    "is_pdf": fname.lower().endswith(".pdf"),
+                                })
+                            projects.append({"name": proj, "files": files})
+
+                        days.append({"date": date_name, "projects": projects})
+
+                    else:
+                        # 无项目层：平台 / 类别 / 日期 / 文件（用于“取样指令”）
+                        files = []
+                        for fname in sorted(os.listdir(d_path)):
+                            fpath = os.path.join(d_path, fname)
+                            if not os.path.isfile(fpath):
+                                continue
+                            files.append({
+                                "name": fname,
+                                "url": f"{settings.DOWNLOAD_URL}{platform}/{cat}/{date_name}/{fname}",
+                                "is_pdf": fname.lower().endswith(".pdf"),
+                            })
+                        days.append({"date": date_name, "files": files})
+
+                categories.append({"category": cat, "days": days})
+
+            groups.append({"group": platform, "categories": categories})
+            continue  # Starlet 处理完，跳到下一个平台
+
+        # —— 其他平台（沿用旧三层）：平台 / 日期 / 项目 / 文件 ——
         days = []
-        for date_name in sorted(os.listdir(p_path), reverse=True):  # 日期倒序
-            if not (DATE_RE.match(date_name) and os.path.isdir(os.path.join(p_path, date_name))):
-                continue
+        for date_name in sorted(os.listdir(p_path), reverse=True):
             d_path = os.path.join(p_path, date_name)
+            if not (DATE_RE.match(date_name) and os.path.isdir(d_path)):
+                continue
 
             projects = []
-            for proj in sorted(os.listdir(d_path)):        # 项目层
+            for proj in sorted(os.listdir(d_path)):
                 proj_path = os.path.join(d_path, proj)
                 if not os.path.isdir(proj_path):
                     continue
@@ -355,7 +424,7 @@ def file_download(request):
                         continue
                     files.append({
                         "name": fname,
-                        "url": reverse("download_export", args=[platform, date_name, proj, fname]),
+                        "url": f"{settings.DOWNLOAD_URL}{platform}/{date_name}/{proj}/{fname}",
                         "is_pdf": fname.lower().endswith(".pdf"),
                     })
 
@@ -366,6 +435,8 @@ def file_download(request):
         groups.append({"group": platform, "days": days})
 
     return render(request, "dashboard/file_download.html", {"groups": groups})
+
+
 
 # 3 后台参数配置
 def project_config(request):
@@ -1343,7 +1414,12 @@ def export_files(request):
     project = str(payload.get("project_name", "PROJECT"))
     platform = str(payload.get("platform", "NewPlatform"))
     base_dir = settings.DOWNLOAD_ROOT
-    target_dir = os.path.join(base_dir, platform, today_str, project)
+
+    if platform == 'NIMBUS':
+        target_dir = os.path.join(base_dir, platform, today_str, project)
+    else:
+        target_dir = os.path.join(base_dir, platform,'工作清单和上机列表',today_str, project)
+
     os.makedirs(target_dir, exist_ok=True)
 
     # 2) 字体路径设置

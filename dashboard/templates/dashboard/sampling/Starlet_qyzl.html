@@ -12,15 +12,7 @@
 <div class="card mt-4">
 
   <div class="card-body">
-      <!-- <div class="mb-3">
-        <label class="form-label" name="project_id">项目名称</label>
-        <select class="form-select" id="project-select" name="project_id" required>
-          <option value="">请选择项目</option>
-          
-        </select>
-      </div> -->
 
-      <!-- NIMBUS取样表单 -->
       <div id="starlet-instruction-div">
           <!-- 在这里写“取样指令生成”需要的内容 -->
           <div class="mb-3">
@@ -49,10 +41,46 @@
             </div>
           </div>
 
-        </div>
+      </div>
 
   </div>
 </div>
 
+{% if popup_message %}
+  <!-- Modal -->
+  <div class="modal fade" id="genSuccessModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+      <div class="modal-content">
+        <div class="modal-header bg-success text-white">
+          <h5 class="modal-title">生成成功</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+        </div>
+        <div class="modal-body">
+          {{ popup_message }}
+        </div>
+        <div class="modal-footer">
+          <a class="btn btn-outline-secondary" href="{{ download_page_url }}">去文件下载</a>
+          <a class="btn btn-success" href="{{ download_file_url }}" target="_blank">直接打开文件</a>
+          <button type="button" class="btn btn-link" data-bs-dismiss="modal">知道了</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      // 若页面已加载 Bootstrap JS（window.bootstrap 存在），用 Modal；否则退化到 alert()
+      function onReady(fn){ if (document.readyState!=="loading"){ fn(); } else { document.addEventListener("DOMContentLoaded", fn); } }
+      onReady(function () {
+        if (window.bootstrap && window.bootstrap.Modal) {
+          var m = new bootstrap.Modal(document.getElementById('genSuccessModal'));
+          m.show();
+        } else {
+          alert({{ popup_message|escapejs }});
+        }
+      });
+    })();
+  </script>
+{% endif %}
 
 {% endblock %}

@@ -620,6 +620,7 @@ def ProcessResult(request):
                 locator_positions.add(pos)
 
 
+    # ---------- Starlet 专区：96孔对齐 & 缺行定位孔补齐 ----------
     if platform == 'Starlet':
         # 预期 96 孔的顺序（Starlet 固定横排：A1..A12, B1..B12, ...）
         letters_fix = ["A","B","C","D","E","F","G","H"]
@@ -636,18 +637,50 @@ def ProcessResult(request):
                 "Warm":          ""  # Starlet 无 Warm
             }
 
-        # 把上面你已经 append 完成的数组，替换成『按 expected_positions 对齐后的新数组』
+        # —— 本地“板号提示”仅供对齐阶段使用（不改动最终 plate_no 的生成规则）——
+        # 1) 若有 Warm，则优先按 Warm 的 Xn 解析为整数；（与后续最终 plate_no 规则一致）
+        # 2) 否则尝试从 TLabwareId 末尾取数字 n 作为提示。
+        plate_no_hint = None
+        if Warmindex is not None:
+            import re as _re_hint
+            for _w in Warm:
+                _ws = str(_w)
+                if _ws.startswith("X"):
+                    _m = _re_hint.search(r"X(\d+)", _ws)
+                    if _m:
+                        plate_no_hint = int(_m.group(1))
+                        break
+        if plate_no_hint is None and Labwareindex is not None:
+            import re as _re_hint2
+            first_non_empty = next((s for s in labware_ids if s), "")
+            _m2 = _re_hint2.search(r"(\d+)$", first_non_empty)
+            if _m2:
+                plate_no_hint = int(_m2.group(1))
+
+        # 把上面已经 append 完成的数组，替换成『按 expected_positions 对齐后的新数组』
         Position_aligned, Status_aligned, OriginBarcode_aligned = [], [], []
         CutBarcode_aligned, SubBarcode_aligned, Warm_aligned     = [], [], []
 
         for pos in expected_positions:
             if pos in row_by_pos:
-                status  = row_by_pos[pos]["Status"]
-                bc      = row_by_pos[pos]["OriginBarcode"]
-                warm    = row_by_pos[pos]["Warm"]
+                status = row_by_pos[pos]["Status"]
+                bc     = row_by_pos[pos]["OriginBarcode"]
+                warm   = row_by_pos[pos]["Warm"]
             else:
                 # 关键：缺行用占位，不前移
                 status, bc, warm = "Not used", "NOTUBE", ""
+
+                # === 根据板号“提示”调整缺行孔位为定位孔 Xn（仅当命中目标孔位时） ===
+                # Starlet 定位孔规则：
+                # 1-12  → B1..B12；13-24 → C1..C12；以此类推（B..H，每 12 块换一行）
+                if isinstance(plate_no_hint, int) and plate_no_hint > 0:
+                    row_letters = ["B","C","D","E","F","G","H"]
+                    row_index   = (plate_no_hint - 1) // 12        # 每 12 块换一行
+                    col_num     = ((plate_no_hint - 1) % 12) + 1   # 余数决定列号
+                    if row_index < len(row_letters):
+                        target_pos = f"{row_letters[row_index]}{col_num}"
+                        if pos == target_pos:
+                            bc = f"X{plate_no_hint}"  # 将缺行孔位补齐为定位孔条码
 
             Position_aligned.append(pos)
             Status_aligned.append(status)
@@ -659,19 +692,20 @@ def ProcessResult(request):
             CutBarcode_aligned.append(parts[0])
             SubBarcode_aligned.append("-" + parts[1] if len(parts) == 2 else "")
 
-        # 用对齐后的数组覆盖原数组
-        Position       = Position_aligned
-        Status         = Status_aligned
-        OriginBarcode  = OriginBarcode_aligned
-        CutBarcode     = CutBarcode_aligned
-        SubBarcode     = SubBarcode_aligned
-        Warm           = Warm_aligned
+        # 用对齐后的数组覆盖原数组（保持下游逻辑一致）
+        Position      = Position_aligned
+        Status        = Status_aligned
+        OriginBarcode = OriginBarcode_aligned
+        CutBarcode    = CutBarcode_aligned
+        SubBarcode    = SubBarcode_aligned
+        Warm          = Warm_aligned
 
-    # ======= 板号：NIMBUS 优先 Warm；否则 Starlet 用 TLabwareId 末尾数字 =======
+    # ---------- 最终板号与定位孔（保持原有生成规则与类型） ----------
     import re
 
     plate_no = None
     if Warmindex is not None:
+        # NIMBUS 优先：从 Warm 中解析 Xn → plate_no = int(n)
         for w in Warm:
             w_str = str(w)
             if w_str.startswith("X"):
@@ -680,31 +714,25 @@ def ProcessResult(request):
                 break
 
     if plate_no is None:
-        # Starlet：从 TLabwareId 末尾数字得 n → plate_no = "X{n}"
-        labware_ids = []
-        if Labwareindex is not None:
-            for i in range(1, nrows):
-                labware_ids.append(str(scan_data.row_values(i)[Labwareindex]).strip())
+        # Starlet：从 TLabwareId 末尾数字得 n → plate_no = "X{n}"（字符串）
         first_non_empty = next((s for s in labware_ids if s), "")
         m = re.search(r"(\d+)$", first_non_empty)
         plate_no = f"X{int(m.group(1))}" if m else "X1"
 
-    # ======= Starlet 的定位孔：按 TLabwareId 末尾数字 n -> B/C/.../H + 列号 =======
+    # Starlet 的定位孔：按 TLabwareId 末尾数字 n -> B/C/.../H + 列号（保持原逻辑）
     if Warmindex is None:
-        # 取用于定位映射的 n（TLabwareId 末尾数字）
         first_non_empty = next((s for s in labware_ids if s), "")
         m = re.search(r"(\d+)$", first_non_empty)
         if m:
             n = int(m.group(1))  # 1-based
             # 将 n 映射到 96 孔板从 B 行开始的 12 列栅格（B..H 共 7 行可覆盖到 84）
-            # 若 n > 84，则按 84 回绕（可根据业务需要改为报错或其他规则）
-            base = max(1, n)
-            i0 = (base - 1) % 84           # 0..83
-            row_block = i0 // 12           # 0..6 -> B..H
-            col = (i0 % 12) + 1            # 1..12
+            base      = max(1, n)
+            i0        = (base - 1) % 84           # 0..83
+            row_block = i0 // 12                   # 0..6 -> B..H
+            col       = (i0 % 12) + 1              # 1..12
             row_letters = ["B", "C", "D", "E", "F", "G", "H"]
             row = row_letters[row_block]
-            locator_positions = {f"{row}{col}"}  # 覆盖为 Starlet 的单一定位孔
+            locator_positions = {f"{row}{col}"}    # 覆盖为 Starlet 的单一定位孔
         else:
             # 无法从 TLabwareId 提取数字时，不设定位孔（维持空集合）
             locator_positions = set()
@@ -1002,8 +1030,10 @@ def ProcessResult(request):
 
     ClinicalSample = []
 
+    ic(OriginBarcode)
+
     for i, ob in enumerate(OriginBarcode):
-        if ob not in barcode_list:  # 只处理未匹配条码
+        if ob not in barcode_list:  # 只添加不在对应关系表中出现的条码
             warm_val = str(Warm[i]).strip()  # 转成字符串，去掉空格
             # 如果 Warm 值含 'X'（定位孔标记），则替换
             if 'X' in warm_val.upper():

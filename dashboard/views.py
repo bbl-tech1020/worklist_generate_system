@@ -607,772 +607,577 @@ def injection_plate_config_delete(request, pk):
     return JsonResponse({"success": False, "error": "Only POST allowed"})
 
 
-# 结果处理，用户在前端功能入口处选择项目，上传文件并点击提交按钮后的处理逻辑
-def ProcessResult(request):
-    # 获取项目类型和取样平台 layout
-    project_id = request.POST.get("project_id")
-    platform = request.POST.get('platform')
-    injection_plate = request.POST.get('injection_plate') if 'injection_plate' in request.POST else None
-    
-    # 获取上传的文件对象
-    Stationlist = request.FILES.get('station_list')  # 每日操作清单
-    Scanresult = request.FILES.get('scan_result')  # 扫码结果
+###################### Starlet专用函数 ###################### 
+def _tail_number(s: str):
+    """提取字符串末尾的连续数字；失败则返回 None"""
+    import re
+    if not s:
+        return None
+    m = re.search(r'(\d+)$', str(s).strip())
+    return int(m.group(1)) if m else None
 
-    # 文件读取
-    Stationtable = xlrd.open_workbook(filename=None, file_contents=Stationlist.read())  # 每日工作清单
-    Scantable = xlrd.open_workbook(filename=None, file_contents=Scanresult.read())  # 扫码结果
+def _starlet_split_plates(scan_sheet, index_map):
+    """
+    将 Starlet 的扫码 sheet,按 TLabwareId 的末尾数字 分为多块板。
+    返回 plate_groups = [(plate_no_int, row_indexes), ...]
+    - plate_no_int: 1,2,3...
+    - row_indexes: 属于该板的行下标列表（从 1 开始，不含表头）
+    """
+    labware_idx = index_map.get("TLabwareId")
+    pos_idx     = index_map.get("TPositionId", 0)
 
-    ###################### 处理扫码结果，处理索引，提取关键几个字段信息 ###################### 
+    # 兜底：若缺 TLabwareId，退化为通过孔位序列回退分板（A1..H12 每 96 个一板）
+    if labware_idx is None:
+        nrows = scan_sheet.nrows
+        all_rows = list(range(1, nrows))
+        # 简单分块：每 96 行一板
+        groups = [all_rows[i:i+96] for i in range(0, len(all_rows), 96)]
+        return [(i+1, g) for i, g in enumerate(groups)]
 
-    # 抓取Scantable中孔位、标本状态、条码和Warm四列
-    scan_data = Scantable.sheets()[0]
-    nrows = scan_data.nrows
-    ncols = scan_data.ncols
-
-    # 读取首行作为表头，一次性查找列索引
-    header = [str(scan_data.row_values(0)[i]).strip() for i in range(ncols)]
-    index_map = {col: idx for idx, col in enumerate(header)}
-
-    Positionindex = index_map.get("TPositionId", 0)
-    Statusindex = index_map.get("TSumStateDescription", 0)
-    Barcodeindex = index_map.get("SPositionBC", 0)
-
-    # ✅ 兼容：Starlet 的扫码结果没有 Warm 列，新增 TLabwareId 取板号
-    Warmindex    = index_map.get("Warm")             # None 表示没有 Warm 列（Starlet）
-    Labwareindex = index_map.get("TLabwareId")       # Starlet 会有
-
-    # 批量读取数据
-    Position = []
-    Status = []
-    OriginBarcode = []  # 原始条码
-    CutBarcode = []     # 以“-”切割后的主条码
-    SubBarcode = []     # 以“-”切割后的子条码
-    Warm = []
-    labware_ids   = []   # Starlet: 记录 TLabwareId
-
-    # 两种来源的定位孔集合（NIMBUS: Warm；Starlet: TLabwareId 映射）
-    locator_positions = set()
-
+    # 主规则：取 TLabwareId 的末尾数字做板号
+    bucket = {}
+    nrows  = scan_sheet.nrows
     for i in range(1, nrows):
-        pos = scan_data.row_values(i)[Positionindex]
-        status = scan_data.row_values(i)[Statusindex]
-        barcode = scan_data.row_values(i)[Barcodeindex]
+        lab_str = str(scan_sheet.row_values(i)[labware_idx]).strip()
+        k = _tail_number(lab_str)
+        # 若无法提取，使用回退：按孔位序号（A1..H12）分组
+        if k is None:
+            # 根据 TPositionId 转序号（A1=1, A2=2, ... H12=96），超过 96 继续分块
+            pos = str(scan_sheet.row_values(i)[pos_idx]).strip()
+            if len(pos) >= 2 and pos[0].isalpha():
+                row = "ABCDEFGH".find(pos[0].upper())
+                try:
+                    col = int(pos[1:])
+                except:
+                    col = 1
+                if 0 <= row <= 7 and 1 <= col <= 12:
+                    seq = row * 12 + col         # 1..96
+                    k = ((seq-1) // 96) + 1      # 退化逻辑：一起视为第1板
+                else:
+                    k = 1
+            else:
+                k = 1
+        bucket.setdefault(k, []).append(i)
 
-        # Warm 兼容：Starlet 场景下为空串
-        warm = ""
-        if Warmindex is not None and Warmindex < ncols:
-            warm = scan_data.row_values(i)[Warmindex] if Warmindex is not None else ""
+    plate_groups = sorted(bucket.items(), key=lambda x: x[0])  # [(n, [rows...]), ...]
+    return plate_groups
 
-        # Starlet 用于定位和板号
-        labware_id = ""
-        if Labwareindex is not None and Labwareindex < ncols:
-            labware_id = str(scan_data.row_values(i)[Labwareindex]).strip()
-        labware_ids.append(labware_id)
+# 把原先 Starlet 单板的 96 孔对齐 与 定位孔补齐 逻辑封装进来
+def _process_one_starlet_plate(scan_sheet, index_map, row_indexes, plate_no_int):
+    """
+    传入某一板对应的行下标 row_indexes，完成：
+      1) 读出 Status/Barcode
+      2) 96 孔对齐（A1..A12, B1..B12, ... H12）
+      3) 定位孔补齐：第 1~12 板用 B1..B12；第 13~24 用 C1..C12；以此类推
+    返回字典：
+      {
+        "Position": [...], "Status": [...], "OriginBarcode": [...],
+        "CutBarcode": [...], "SubBarcode": [...], "Warm": [...],
+        "plate_no_str": "X{n}"      # 导出/展示用
+      }
+    """
+    # 列索引
+    p_idx = index_map.get("TPositionId", 0)
+    s_idx = index_map.get("TSumStateDescription", 0)
+    b_idx = index_map.get("SPositionBC", 0)
+
+    # 先按 position -> row 信息字典
+    row_by_pos = {}
+    for i in row_indexes:
+        pos = str(scan_sheet.row_values(i)[p_idx]).strip()
+        row_by_pos[pos] = {
+            "Status":        scan_sheet.row_values(i)[s_idx],
+            "OriginBarcode": scan_sheet.row_values(i)[b_idx],
+            "Warm":          ""   # Starlet 无 Warm
+        }
+
+    # 预期 96 孔顺序
+    letters_fix = list("ABCDEFGH")
+    nums_fix    = [str(i) for i in range(1, 13)]
+    expected_positions = [f"{r}{c}" for r in letters_fix for c in nums_fix]
+
+    # 对齐并在缺行时补齐
+    Position, Status, OriginBarcode = [], [], []
+    CutBarcode, SubBarcode, Warm    = [], [], []
+
+    # 定位孔规则：第 1~12 板 -> B1..B12；13~24 -> C1..C12；……
+    locator_rows = ["B","C","D","E","F","G","H"]  # 最多 7*12 = 84 块板可直接映射
+    row_index = (plate_no_int - 1) // 12         # 第几行
+    col_num   = ((plate_no_int - 1) % 12) + 1    # 第几列
+    locator_target = None
+    if row_index < len(locator_rows):
+        locator_target = f"{locator_rows[row_index]}{col_num}"  # 如 B1, B2, ... C1, ...
+
+    for pos in expected_positions:
+        if pos in row_by_pos:
+            status = row_by_pos[pos]["Status"]
+            bc     = row_by_pos[pos]["OriginBarcode"]
+            warm   = row_by_pos[pos]["Warm"]
+        else:
+            status, bc, warm = "Not used", "NOTUBE", ""
+            # 缺行但命中定位孔位置时，用 X{n}
+            if locator_target and pos == locator_target:
+                bc = f"X{plate_no_int}"
 
         Position.append(pos)
         Status.append(status)
-        OriginBarcode.append(barcode)
-
-        # 切割主/子条码，保证即使barcode为非字符串也能处理
-        barcode_str = str(barcode)
-        parts = barcode_str.split("-", 1)
-        CutBarcode.append(parts[0])
-        if len(parts) == 2:
-            SubBarcode.append("-" + parts[1])
-        else:
-            SubBarcode.append("")
-
         Warm.append(warm)
 
-        # 添加定位孔标识
-        # ======= NIMBUS：Warm 含 'X' 的孔即定位孔（保持原逻辑） =======
-        if Warmindex is not None:
-            if isinstance(warm, str) and ("X" in warm):
-                locator_positions.add(pos)
+        bc_str = str(bc)
+        parts  = bc_str.split("-", 1)
+        OriginBarcode.append(bc_str)
+        CutBarcode.append(parts[0])
+        SubBarcode.append("-" + parts[1] if len(parts) == 2 else "")
+
+    return {
+        "Position": Position,
+        "Status": Status,
+        "OriginBarcode": OriginBarcode,
+        "CutBarcode": CutBarcode,
+        "SubBarcode": SubBarcode,
+        "Warm": Warm,
+        "plate_no_str": f"X{plate_no_int}",
+    }
 
 
-    # ---------- Starlet 专区：96孔对齐 & 缺行定位孔补齐 ----------
-    if platform == 'Starlet':
-        # 预期 96 孔的顺序（Starlet 固定横排：A1..A12, B1..B12, ...）
-        letters_fix = ["A","B","C","D","E","F","G","H"]
-        nums_fix    = [str(i) for i in range(1, 13)]
-        expected_positions = [f"{r}{c}" for r in letters_fix for c in nums_fix]
+# 结果处理，用户在前端功能入口处选择项目，上传文件并点击提交按钮后的处理逻辑
+def ProcessResult(request):
+    """
+    同时支持：
+      - NIMBUS：单板
+      - Starlet：单板/多板（按 TLabwareId 末尾数字分组）
+    """
+    from collections import defaultdict, Counter, deque
+    import os, re
+    import xlrd
+    import pandas as pd
+    from io import StringIO
+    from django.utils import timezone
+    from django.http import HttpResponse, HttpResponseBadRequest
+    from django.shortcuts import get_object_or_404, render
+    from datetime import date
 
-        # 先把『读到的』行按 TPositionId 做成字典，便于精准落位
-        row_by_pos = {}
-        for i in range(1, nrows):
-            pos = str(scan_data.row_values(i)[Positionindex]).strip()
-            row_by_pos[pos] = {
-                "Status":        scan_data.row_values(i)[Statusindex],
-                "OriginBarcode": scan_data.row_values(i)[Barcodeindex],
-                "Warm":          ""  # Starlet 无 Warm
-            }
+    # ========== 1. 入参与上传文件 ==========
+    project_id      = request.POST.get("project_id")
+    platform        = request.POST.get("platform")                # 'NIMBUS' | 'Starlet'
+    injection_plate = request.POST.get("injection_plate") if 'injection_plate' in request.POST else None
+    instrument_num  = request.POST.get("instrument_num")
 
-        # —— 本地“板号提示”仅供对齐阶段使用（不改动最终 plate_no 的生成规则）——
-        # 1) 若有 Warm，则优先按 Warm 的 Xn 解析为整数；（与后续最终 plate_no 规则一致）
-        # 2) 否则尝试从 TLabwareId 末尾取数字 n 作为提示。
-        plate_no_hint = None
-        if Warmindex is not None:
-            import re as _re_hint
-            for _w in Warm:
-                _ws = str(_w)
-                if _ws.startswith("X"):
-                    _m = _re_hint.search(r"X(\d+)", _ws)
-                    if _m:
-                        plate_no_hint = int(_m.group(1))
-                        break
-        if plate_no_hint is None and Labwareindex is not None:
-            import re as _re_hint2
-            first_non_empty = next((s for s in labware_ids if s), "")
-            _m2 = _re_hint2.search(r"(\d+)$", first_non_empty)
-            if _m2:
-                plate_no_hint = int(_m2.group(1))
+    Stationlist = request.FILES.get('station_list')               # 每日操作清单
+    Scanresult  = request.FILES.get('scan_result')                # 扫码结果
+    if not (Stationlist and Scanresult and project_id and platform and instrument_num):
+        return HttpResponseBadRequest("缺少必要参数或文件。")
 
-        # 把上面已经 append 完成的数组，替换成『按 expected_positions 对齐后的新数组』
-        Position_aligned, Status_aligned, OriginBarcode_aligned = [], [], []
-        CutBarcode_aligned, SubBarcode_aligned, Warm_aligned     = [], [], []
+    Stationtable = xlrd.open_workbook(filename=None, file_contents=Stationlist.read())
+    Scantable    = xlrd.open_workbook(filename=None, file_contents=Scanresult.read())
+    scan_sheet   = Scantable.sheets()[0]
 
-        for pos in expected_positions:
-            if pos in row_by_pos:
-                status = row_by_pos[pos]["Status"]
-                bc     = row_by_pos[pos]["OriginBarcode"]
-                warm   = row_by_pos[pos]["Warm"]
-            else:
-                # 关键：缺行用占位，不前移
-                status, bc, warm = "Not used", "NOTUBE", ""
+    # 扫码表头索引
+    nrows = scan_sheet.nrows
+    ncols = scan_sheet.ncols
+    scan_header = [str(scan_sheet.row_values(0)[i]).strip() for i in range(ncols)]
+    scan_index  = {col: idx for idx, col in enumerate(scan_header)}
 
-                # === 根据板号“提示”调整缺行孔位为定位孔 Xn（仅当命中目标孔位时） ===
-                # Starlet 定位孔规则：
-                # 1-12  → B1..B12；13-24 → C1..C12；以此类推（B..H，每 12 块换一行）
-                if isinstance(plate_no_hint, int) and plate_no_hint > 0:
-                    row_letters = ["B","C","D","E","F","G","H"]
-                    row_index   = (plate_no_hint - 1) // 12        # 每 12 块换一行
-                    col_num     = ((plate_no_hint - 1) % 12) + 1   # 余数决定列号
-                    if row_index < len(row_letters):
-                        target_pos = f"{row_letters[row_index]}{col_num}"
-                        if pos == target_pos:
-                            bc = f"X{plate_no_hint}"  # 将缺行孔位补齐为定位孔条码
+    # 关键列索引（容错：缺失时给默认 0）
+    POS_IDX   = scan_index.get("TPositionId", 0)
+    STAT_IDX  = scan_index.get("TSumStateDescription", 0)
+    BC_IDX    = scan_index.get("SPositionBC", 0)
+    WARM_IDX  = scan_index.get("Warm")               # NIMBUS有；Starlet通常无
+    LABW_IDX  = scan_index.get("TLabwareId")        # Starlet有
 
-            Position_aligned.append(pos)
-            Status_aligned.append(status)
-            Warm_aligned.append(warm)
+    # ========== 2. 基础配置与映射（整次仅读一次） ==========
+    config         = SamplingConfiguration.objects.get(id=project_id)
+    project_name   = config.project_name
+    mapping_path   = config.mapping_file.path
+    df_mapping_wc  = pd.read_excel(mapping_path, sheet_name="工作清单")   # for worksheet
+    df_worklistmap = pd.read_excel(mapping_path, sheet_name="上机列表")    # worklist mapping 模板
 
-            bc_str = str(bc)
-            parts  = bc_str.split("-", 1)
-            OriginBarcode_aligned.append(bc_str)
-            CutBarcode_aligned.append(parts[0])
-            SubBarcode_aligned.append("-" + parts[1] if len(parts) == 2 else "")
-
-        # 用对齐后的数组覆盖原数组（保持下游逻辑一致）
-        Position      = Position_aligned
-        Status        = Status_aligned
-        OriginBarcode = OriginBarcode_aligned
-        CutBarcode    = CutBarcode_aligned
-        SubBarcode    = SubBarcode_aligned
-        Warm          = Warm_aligned
-
-    # ---------- 最终板号与定位孔（保持原有生成规则与类型） ----------
-    import re
-
-    plate_no = None
-    if Warmindex is not None:
-        # NIMBUS 优先：从 Warm 中解析 Xn → plate_no = int(n)
-        for w in Warm:
-            w_str = str(w)
-            if w_str.startswith("X"):
-                m = re.search(r"X(\d+)", w_str)
-                plate_no = int(m.group(1)) if m else 1
-                break
-
-    if plate_no is None:
-        # Starlet：从 TLabwareId 末尾数字得 n → plate_no = "X{n}"（字符串）
-        first_non_empty = next((s for s in labware_ids if s), "")
-        m = re.search(r"(\d+)$", first_non_empty)
-        plate_no = f"X{int(m.group(1))}" if m else "X1"
-
-    # Starlet 的定位孔：按 TLabwareId 末尾数字 n -> B/C/.../H + 列号（保持原逻辑）
-    if Warmindex is None:
-        first_non_empty = next((s for s in labware_ids if s), "")
-        m = re.search(r"(\d+)$", first_non_empty)
-        if m:
-            n = int(m.group(1))  # 1-based
-            # 将 n 映射到 96 孔板从 B 行开始的 12 列栅格（B..H 共 7 行可覆盖到 84）
-            base      = max(1, n)
-            i0        = (base - 1) % 84           # 0..83
-            row_block = i0 // 12                   # 0..6 -> B..H
-            col       = (i0 % 12) + 1              # 1..12
-            row_letters = ["B", "C", "D", "E", "F", "G", "H"]
-            row = row_letters[row_block]
-            locator_positions = {f"{row}{col}"}    # 覆盖为 Starlet 的单一定位孔
-        else:
-            # 无法从 TLabwareId 提取数字时，不设定位孔（维持空集合）
-            locator_positions = set()
-
-    ###################### 抓取每日工作清单的主条码与实验号，并与扫码结果匹配 ###################### 
-
-    # 抓取Stationtable中的主条码、实验号
-    station_data = Stationtable.sheets()[0]
-    nrows = station_data.nrows
-    ncols = station_data.ncols
-
-    # 一次性获取表头索引，容错顺序
-    header = [str(station_data.row_values(0)[i]).strip() for i in range(ncols)]
-    index_map = {col: idx for idx, col in enumerate(header)}
-    MainBarcodeindex = index_map.get("主条码", 0)
-    SampleNameindex = index_map.get("实验号", 0)
-
-    # 主条码与实验号列表批量读取
-    MainBarcode = [station_data.row_values(i)[MainBarcodeindex] for i in range(1, nrows)]
-    SampleName = [station_data.row_values(i)[SampleNameindex] for i in range(1, nrows)]
-
-    # 用字典加速查找，支持一对多
-    from collections import defaultdict, Counter
-
-    barcode_to_names = defaultdict(list)
-    for bc, sn in zip(MainBarcode, SampleName):
-        barcode_to_names[str(bc)].append(str(sn))
-
-    cutbarcode_counter = Counter(CutBarcode)  # 统计每个cutbarcode出现次数（用于后续标记）
-
-    MatchSampleName = [] # 匹配到的样本名称
-    MatchResult = [] # 匹配结果，用于判断是否要匹配曲线质控
-
-    DupBarcode = [] # 条码在岗位清单中出现多次，且实验号可能不同
-    DupBarcodeSampleName = [] # 条码在移液/岗位清单出现多次，且实验号也不同
-
-    for cb in CutBarcode:
-        cb_str = str(cb)
-        matched_names = barcode_to_names.get(cb_str, [])
-        cb_count = cutbarcode_counter[cb_str]
-
-        if len(matched_names) == 1:
-            MatchResult.append("TRUE")
-            MatchSampleName.append(matched_names[0])
-            DupBarcode.append("")
-            DupBarcodeSampleName.append("")
-        elif len(matched_names) == 0:
-            MatchResult.append("FALSE")
-            if cb_str != "":
-                MatchSampleName.append(cb_str)
-                DupBarcode.append("")
-                DupBarcodeSampleName.append("")
-            else:
-                MatchSampleName.append("")
-                DupBarcode.append("")
-                DupBarcodeSampleName.append("")
-        elif len(matched_names) == 2:
-            MatchResult.append("TRUE")
-            if matched_names[0] == matched_names[1]:
-                DupBarcode.append("Likely")
-                MatchSampleName.append(matched_names[0])
-                DupBarcodeSampleName.append("")
-            else:
-                DupBarcode.append("TRUE")
-                MatchSampleName.append(matched_names[0] + "-" + matched_names[1])
-                DupBarcodeSampleName.append("TRUE" if cb_count >= 2 else "")      
-        else:
-            MatchResult.append("TRUE")
-            # 三个及以上
-            # 只保留唯一实验号并排序
-            unique_Middlelist = list(dict.fromkeys(matched_names))
-            order = {'VF': 1, 'AE': 2, 'VD': 3, 'V': 4, 'VK': 5, 'WV': 6}
-            def sort_key(x):
-                for prefix_length in (2, 1):
-                    prefix = x[:prefix_length]
-                    if prefix in order:
-                        return order[prefix]
-                return len(order) + 1
-
-            sorted_lis = sorted(unique_Middlelist, key=sort_key)
-            if len(unique_Middlelist) >= 2:
-                MatchSampleName.append('-'.join(sorted_lis))
-                DupBarcode.append("TRUE")
-                DupBarcodeSampleName.append("TRUE" if cb_count >= 2 else "")
-            else:
-                MatchSampleName.append(matched_names[0])
-                DupBarcode.append("")
-                DupBarcodeSampleName.append("")
-
-
-    ###################### 1 生成工作清单和报错表格 ######################
-    
-    rows, cols = 8, 12
-    TOTAL = rows * cols  # 96
-
-    def pad_to(seq, n, fill=""):
-        if len(seq) < n:
-            seq.extend([fill] * (n - len(seq)))
-
-    # 这些数组都补到 96for i in range(1, nrows):
-    pad_to(Position,    TOTAL, "")
-    pad_to(OriginBarcode, TOTAL, "NOTUBE")
-    pad_to(CutBarcode,    TOTAL, "")
-    pad_to(SubBarcode,    TOTAL, "")
-    pad_to(Warm,          TOTAL, "")
-    pad_to(Status,        TOTAL, "Not used")
-    pad_to(MatchSampleName, TOTAL, "")
-    pad_to(MatchResult,     TOTAL, "")
-    pad_to(DupBarcode,       TOTAL, "")
-    pad_to(DupBarcodeSampleName, TOTAL, "")
-
-    letters = ["A","B","C","D","E","F","G","H"]
-    nums = [str(i) for i in range(1, 13)]
-    
-    # 抓取96孔板的排列顺序（纵向/横向）
-    ic(project_id)
-
-    config = SamplingConfiguration.objects.get(id=project_id)
-    project_name = config.project_name
-    layout = config.layout
-
-    # 这里强制覆盖 layout，不再使用后台表配置
-    if platform == 'Starlet':
-        layout = 'horizontal'   # Starlet 固定横向
-    else:
-        layout = 'vertical'     # NIMBUS 固定纵向
-
-    mapping_file_path = config.mapping_file.path
-
-    # 匹配曲线质控
-    df_mapping = pd.read_excel(mapping_file_path, sheet_name="工作清单")
-
-    # 建立字典方便查找
-    barcode_to_name = dict(zip(df_mapping["Barcode"].astype(str), df_mapping["Name"]))
-
-    # 组装渲染数据
-    well_list = []
-
-    error_rows = []   # 存放错误信息行
-
-    # 建立映射字典： OriginBarcode -> (Well_Position, Well_Number)，方便后续生成上机列表
-    barcode_to_well = {}
-    index_counter = 1  # 从1开始编号
-
-    # 清理旧数据：限定 project_name + record_date + plate_no
-    SampleRecord.objects.filter(
-        project_name=project_name,
-        record_date=date.today(),
-        plate_no=plate_no
-    ).delete()
-
-    # 显示网格：8 行 (A~H) × 12 列 (1~12)，按坐标写入，避免被遍历顺序影响
-    worksheet_grid = [[None for _ in nums] for _ in letters]
-
-    def build_well_dict(row_letter, col_num, row_idx, col_idx, data_idx, well_index):
-        well_pos_str = f"{row_letter}{col_num}"
-        origin_barcode = str(OriginBarcode[data_idx])
-
-        # 建立条码 -> (孔位, 序号) 的映射（供后续 VialPos / Well_Number 使用）
-        if origin_barcode not in ("", "nan"):
-            barcode_to_well[origin_barcode] = (well_pos_str, well_index)
-
-        # 样本名匹配
-        value = str(MatchSampleName[data_idx])
-        if MatchResult[data_idx] == "TRUE":
-            match_sample = value
-        else:
-            match_sample = "" if value == "" else barcode_to_name.get(value, "No match")
-
-        is_locator = well_pos_str in locator_positions
-
-        locator_label = Warm[data_idx] if is_locator else ""
-
-        if is_locator and (not locator_label):   # Starlet 没 Warm
-            locator_label = plate_no             # 例如 "X7"
-
-        well = {
-            "letter": row_letter,
-            "num": col_num,
-            "well_str": well_pos_str,
-            "index": well_index,                      # 显示用序号（随布局：列优先/行优先）
-
-            "locator": is_locator,
-            "locator_warm": locator_label, 
-
-            "match_sample": match_sample,
-            "cut_barcode": CutBarcode[data_idx],
-            "sub_barcode": SubBarcode[data_idx],
-            "origin_barcode": OriginBarcode[data_idx],
-            
-            "warm": Warm[data_idx],
-            "status": Status[data_idx],
-            "dup_barcode": DupBarcode[data_idx],
-            "dup_barcode_sample": DupBarcodeSampleName[data_idx],
-        }
-
-        # 报错信息表
-
-        # Starlet的添加逻辑
-        status_text = str(Status[data_idx]).strip().lower()
-        is_pipetting_error = ("pipetting error" in status_text)
-
-        if (str(Warm[data_idx]) in ["1", "4", "16384"]) \
-            or is_pipetting_error \
-            or (match_sample == "No match"):
-                error_rows.append({
-                    "sample_name": match_sample,
-                    "origin_barcode": OriginBarcode[data_idx],
-                    "plate_no": plate_no,
-                    "well_str": well_pos_str,
-                    "warn_level": Warm[data_idx] if Warm[data_idx] != "" else ("PIPETTING_ERROR" if is_pipetting_error else ""),
-                    "warn_info": Status[data_idx],
-                })
-
-        # 写数据库（与遍历顺序无关）
-        SampleRecord.objects.create(
-            project_name=project_name,
-            plate_no=plate_no,
-            well_str=well_pos_str,
-            sample_name=match_sample,
-            barcode=origin_barcode,
-        )
-
-        return well
-
-
-    if layout == 'vertical':
-        # 列优先：A1, B1, ... H1 → A2, B2, ... → ... → H12
-        for col_idx, col_num in enumerate(nums):
-            for row_idx, row_letter in enumerate(letters):
-                data_idx   = col_idx * rows + row_idx           # 列优先取数索引（已有逻辑）
-                well_index = row_idx * cols + col_idx + 1       # well_index不随LAYOUT_CHOICES的选择而变化
-                well = build_well_dict(row_letter, col_num, row_idx, col_idx, data_idx, well_index)
-                # 关键：按“行(row_idx)、列(col_idx)”坐标放进网格
-                worksheet_grid[row_idx][col_idx] = well
-
-    else:
-        # 行优先：A1~A12 → B1~B12 → ... → H1~H12（与原来一致）
-        for row_idx, row_letter in enumerate(letters):
-            for col_idx, col_num in enumerate(nums):
-                data_idx   = row_idx * cols + col_idx           # 行优先取数索引（已有逻辑）
-                well_index = row_idx * cols + col_idx + 1       # well_index不随LAYOUT_CHOICES的选择而变化
-                well = build_well_dict(row_letter, col_num, row_idx, col_idx, data_idx, well_index)
-                worksheet_grid[row_idx][col_idx] = well
-
-    # 最终用于模板的二维表：严格按 A~H 为行，1~12 为列的顺序输出
-    worksheet_table = [[worksheet_grid[r][c] for c in range(cols)] for r in range(rows)]
-
-    ###################### 2 生成上机列表 ######################
-
-    # 获取仪器编号对应的上机模板
-
-    # 获取上机仪器
-    instrument_num = request.POST.get("instrument_num")
-
-    # 获取上机仪器对应的上机模板,并转化为pandas数据框
+    # 上机模板（txt/csv）→ DataFrame（只需列名 / txt_headers）
     instrument_config = get_object_or_404(InstrumentConfiguration, instrument_num=instrument_num)
-
     if not instrument_config.upload_file:
         return HttpResponse("未设置该上机仪器对应的上机模板,请设置后再试", status=404)
-    
-    # 解析并读取上机模板
-    # 只支持 .txt / .csv
+
     ext = os.path.splitext(instrument_config.upload_file.name)[1].lower()
     if ext not in (".txt", ".csv"):
         return HttpResponse(f"仅支持 .txt 或 .csv 模板，当前为：{ext}", status=400)
 
-    # 读取二进制，再做“编码回退”解码
     with instrument_config.upload_file.open("rb") as f:
         raw = f.read()
-
-    text = None
-    last_err = None
+    text, last_err = None, None
     for enc in ("utf-8", "utf-8-sig", "gb18030"):
         try:
             text = raw.decode(enc)
             break
         except UnicodeDecodeError as e:
             last_err = e
-
     if text is None:
-        # 所有候选编码都失败
         raise last_err or UnicodeDecodeError("unknown", b"", 0, 1, "unable to decode upload_file")
-    
-    # 用 pandas 自动嗅探分隔符（支持逗号/制表符等）
-    # 注意：必须指定 engine="python" 才能启用 Sniffer；dtype=str 保持后续逻辑不变
-    df = pd.read_csv(StringIO(text), sep=None, engine="python", dtype=str)
+    df_template = pd.read_csv(StringIO(text), sep=None, engine="python", dtype=str)
+    txt_headers = df_template.columns.tolist()
 
-    # 提取表头
-    txt_headers = df.columns.tolist()
+    # 岗位清单主条码 ↔ 实验号
+    st_sheet   = Stationtable.sheets()[0]
+    st_nrows   = st_sheet.nrows
+    st_ncols   = st_sheet.ncols
+    st_header  = [str(st_sheet.row_values(0)[i]).strip() for i in range(st_ncols)]
+    st_index   = {col: idx for idx, col in enumerate(st_header)}
+    MB_IDX     = st_index.get("主条码", 0)
+    SN_IDX     = st_index.get("实验号", 0)
+    MainBarcode = [str(st_sheet.row_values(i)[MB_IDX]) for i in range(1, st_nrows)]
+    SampleName  = [str(st_sheet.row_values(i)[SN_IDX]) for i in range(1, st_nrows)]
+    barcode_to_names = defaultdict(list)
+    for bc, sn in zip(MainBarcode, SampleName):
+        barcode_to_names[str(bc)].append(str(sn))
 
-    # 获取SampleName列的内容
-    # 第一步：获取OriginBarcode中的内容，并在此基础上去除df_mapping["Barcode"]中的内容(为曲线和质控)
-    barcode_list = [str(x) for x in df_mapping["Barcode"].tolist()]
+    # 曲线/质控映射（供后续识别非临床样本）
+    barcode_to_name = dict(zip(df_mapping_wc["Barcode"].astype(str), df_mapping_wc["Name"]))
 
-    ClinicalSample = []
-
-    ic(OriginBarcode)
-
-    for i, ob in enumerate(OriginBarcode):
-        if ob not in barcode_list:  # 只添加不在对应关系表中出现的条码
-            warm_val = str(Warm[i]).strip()  # 转成字符串，去掉空格
-            # 如果 Warm 值含 'X'（定位孔标记），则替换
-            if 'X' in warm_val.upper():
-                ClinicalSample.append(warm_val)
-            else:
-                ClinicalSample.append(ob)
-
-    ic(ClinicalSample)
-
-    # 第二步：添加DB1和Test(获取用户后台设置的Test个数)
-    test_count = config.test_count
-    test_list = ["DB1"] + [f"Test{i}" for i in range(test_count)]
-
-    # 第三步：添加曲线(获取用户后台设置的STD个数)
-    curve_points = config.curve_points
-
-    # 从“工作清单”表中提取 Code=STD* 对应的 Name，按 STD 序号排序后取前 curve_points+1 个
-    df_std = df_mapping.copy()
+    # 用于构建曲线/QC/Test/DB 序列
+    test_count    = config.test_count
+    curve_points  = config.curve_points
+    df_std = df_mapping_wc.copy()
     df_std["Code"] = df_std["Code"].astype(str)
-
-    # 仅保留形如 STD0/STD1/... 的行，并提取数字序号用于排序
     df_std = df_std[df_std["Code"].str.match(r"^STD\d+$", na=False)].copy()
     df_std["__std_idx"] = df_std["Code"].str.replace("STD", "", regex=False).astype(int)
     df_std = df_std.sort_values("__std_idx")
-
-    # 取 Name 列作为曲线名称列表
     std_names = df_std["Name"].head(curve_points + 1).tolist()
-
-    # 兜底：如果映射里缺失，退回旧逻辑，避免列表为空导致后续失败
     if not std_names or len(std_names) < (curve_points + 1):
         std_names = [f"STD{i}" for i in range(curve_points + 1)]
+    qc_names = df_mapping_wc.loc[df_mapping_wc["Code"].astype(str).str.startswith("QC"), "Name"].unique().tolist()
 
-    curve_list = ["DB2"] + std_names
-
-    # 第四步：添加QC(获取对应关系表模板中设置的QC名称)
-    qc_list1 = ["DB3"] + df_mapping.loc[df_mapping["Code"].str.startswith("QC"), "Name"].unique().tolist() + ["DB4"]
-
-    # 添加封尾质控和DB
-    qc_list2 = df_mapping.loc[df_mapping["Code"].str.startswith("QC"), "Name"].unique().tolist() + ["DB5"]
-
-    # 拼接上述列表
-    SampleName_list = test_list + curve_list + qc_list1 + ClinicalSample + qc_list2
-
-    SampleName_list = [
-        name for name in SampleName_list
-        if isinstance(name, str) and name.count('-') <= 3
-    ]
-
-    ic(SampleName_list)
-
-    worklist_mapping = pd.read_excel(mapping_file_path, sheet_name="上机列表")
-    
-    # 生成上机列表
-    # 获取后台设置的进样体积
+    # 进样体积
     try:
-        injectionvolume_config = get_object_or_404(InjectionVolumeConfiguration, instrument_num=instrument_num, project_name=project_name)
-        injection_volume = injectionvolume_config.injection_volume
+        injection_cfg  = get_object_or_404(InjectionVolumeConfiguration, instrument_num=instrument_num, project_name=project_name)
+        injection_vol  = injection_cfg.injection_volume
     except InstrumentConfiguration.DoesNotExist:
-        injection_volume = ""
+        injection_vol  = ""
 
-    # 1. 构建 value -> queue of barcodes 的映射
-    name_to_barcodes = defaultdict(deque)
-    for barcode, name in barcode_to_name.items():
-        name_to_barcodes[name].append(barcode)
+    # ====== 工具：把“对齐后的单板数据” → 构建（工作清单 + 上机列表）并返回一个 plate payload ======
+    def build_one_plate_payload(aligned: dict, layout: str, plate_no_str: str):
+        """
+        aligned: 由 _process_one_starlet_plate()（Starlet）或 NIMBUS 构造出的：
+          Position/Status/OriginBarcode/CutBarcode/SubBarcode/Warm
+        layout: 'horizontal' | 'vertical'
+        plate_no_str: "X{n}"
+        """
+        Position       = aligned["Position"]
+        Status         = aligned["Status"]
+        OriginBarcode  = aligned["OriginBarcode"]
+        CutBarcode     = aligned["CutBarcode"]
+        SubBarcode     = aligned["SubBarcode"]
+        Warm           = aligned["Warm"]
 
-    # 1. 创建一个空表，列名与 df 相同
-    worklist_table = pd.DataFrame(columns=df.columns)
+        # 96 补齐
+        rows, cols = 8, 12
+        TOTAL = rows * cols
+        def pad_to(seq, n, fill=""):
+            if len(seq) < n: seq.extend([fill] * (n - len(seq)))
+        pad_to(Position, TOTAL, "")
+        pad_to(OriginBarcode, TOTAL, "NOTUBE")
+        pad_to(CutBarcode, TOTAL, "")
+        pad_to(SubBarcode, TOTAL, "")
+        pad_to(Warm, TOTAL, "")
+        pad_to(Status, TOTAL, "Not used")
 
-    # 2. 填充第一列
-    worklist_table[worklist_mapping.columns[0]] = SampleName_list
+        # —— 与岗位清单匹配（按原来的规则）——
+        cut_counter = Counter(CutBarcode)
+        MatchSampleName, MatchResult = [], []
+        DupBarcode, DupBarcodeSampleName = [], []
+        for cb in CutBarcode:
+            cb_str = str(cb)
+            matched_names = barcode_to_names.get(cb_str, [])
+            cb_count = cut_counter[cb_str]
+            if len(matched_names) == 1:
+                MatchResult.append("TRUE")
+                MatchSampleName.append(matched_names[0]); DupBarcode.append(""); DupBarcodeSampleName.append("")
+            elif len(matched_names) == 0:
+                MatchResult.append("FALSE")
+                if cb_str != "":
+                    MatchSampleName.append(cb_str); DupBarcode.append(""); DupBarcodeSampleName.append("")
+                else:
+                    MatchSampleName.append("");    DupBarcode.append(""); DupBarcodeSampleName.append("")
+            elif len(matched_names) == 2:
+                MatchResult.append("TRUE")
+                if matched_names[0] == matched_names[1]:
+                    DupBarcode.append("Likely"); MatchSampleName.append(matched_names[0]); DupBarcodeSampleName.append("")
+                else:
+                    DupBarcode.append("TRUE");   MatchSampleName.append(matched_names[0] + "-" + matched_names[1])
+                    DupBarcodeSampleName.append("TRUE" if cb_count >= 2 else "")
+            else:
+                MatchResult.append("TRUE")
+                unique_Middlelist = list(dict.fromkeys(matched_names))
+                order = {'VF': 1, 'AE': 2, 'VD': 3, 'V': 4, 'VK': 5, 'WV': 6}
+                def sort_key(x):
+                    for prefix_length in (2, 1):
+                        prefix = x[:prefix_length]
+                        if prefix in order: return order[prefix]
+                    return len(order) + 1
+                sorted_lis = sorted(unique_Middlelist, key=sort_key)
+                if len(unique_Middlelist) >= 2:
+                    MatchSampleName.append('-'.join(sorted_lis)); DupBarcode.append("TRUE")
+                    DupBarcodeSampleName.append("TRUE" if cb_count >= 2 else "")
+                else:
+                    MatchSampleName.append(matched_names[0]); DupBarcode.append(""); DupBarcodeSampleName.append("")
 
-    first_col = worklist_table.columns[0]  # 动态获取第一列列名
+        # —— 构建 96 孔工作清单网格（保持原渲染结构）——
+        letters = list("ABCDEFGH"); nums = [str(i) for i in range(1, 13)]
+        # 定位孔集合（NIMBUS: Warm 含 X；Starlet: _process_one_starlet_plate 已把 Xn 放在 OriginBarcode 且 Warm 为空）
+        locator_positions = set()
+        if platform == "NIMBUS":
+            for idx, w in enumerate(Warm):
+                if isinstance(w, str) and "X" in w:
+                    locator_positions.add(Position[idx])
 
-    # 3. 遍历 worklist_mapping 按规则填充
+        barcode_to_well = {}   # OriginBarcode -> (well_str, well_number)
+        worksheet_grid  = [[None for _ in nums] for _ in letters]
+        error_rows      = []
 
-    # 填充规则：
-    # 1 若worklist_mapping第一列的元素为DB1，则将worklist_table中对应列元素为DB1的行的第2至最后一列的内容按照worklist_mapping中内容进行填充
-    # 2 若worklist_mapping第一列的元素为Test，则将worklist_table中对应列元素为Test开头（注意这里）的行的第2至最后一列的内容按照worklist_mapping中内容进行填充
-    # 3 若worklist_mapping第一列的元素为*，则将worklist_table中除上述已填充的行以外（注意这里）的行的第2至最后一列的内容按照worklist_mapping中内容进行填充
+        def _well_number_rowwise(row_idx: int, col: int) -> int:
+            return row_idx * 12 + col
 
-    # 20251011新增规则：
-    # 1 无论worklist_mapping中第一列的元素的什么，若worklist_table中某一列的列名为‘SetName’，则该列的内容按照下述形式填充：'仪器编号-项目名称-日期'，即{instrument_num}-{project_name}-日期，其中日期精确到天（如20251011）。例如：FXS-YZ38-25OHD-20251011
-    # 2 无论worklist_mapping中第一列的元素的什么，若worklist_table中某一列的列名为‘OutputFile’，则该列的内容按照下述形式填充：'年\年月\Data{instrument_num}-{project_name}-日期'，其中日期精确到天（如20251011）。例如：2025\202510\DataFXS-YZ38-25OHD-20251011
+        def build_well(row_letter, col_num, row_idx, col_idx, data_idx, well_index):
+            well_pos_str = f"{row_letter}{col_num}"
+            origin_barcode = str(OriginBarcode[data_idx])
 
-    # 20251019新增规则：
-    # 1 若worklist_mapping第一列的元素中包含‘STD’，则将worklist_table中对应列元素与worklist_mapping第一列的元素内容完全相同的行的第2至最后一列的内容按照worklist_mapping中内容进行填充
+            if origin_barcode not in ("", "nan"):
+                barcode_to_well[origin_barcode] = (well_pos_str, well_index)
 
-    for _, row in worklist_mapping.iterrows():
-        sample_name = row.iloc[0]   # 用 iloc 显式取第一列
-        fill_values = row.iloc[1:]  # 用 iloc 显式取剩余列
+            value = str(MatchSampleName[data_idx])
+            match_sample = value if MatchResult[data_idx] == "TRUE" else ("" if value == "" else barcode_to_name.get(value, "No match"))
 
-        # --- 规则 1: 进样体积单独处理 ---
+            is_locator    = (well_pos_str in locator_positions) or (str(OriginBarcode[data_idx]).upper().startswith("X"))
+            locator_label = Warm[data_idx] if is_locator else ""
+            if is_locator and (not locator_label):
+                locator_label = plate_no_str
+
+            well = {
+                "letter": row_letter, "num": col_num, "well_str": well_pos_str, "index": well_index,
+                "locator": is_locator, "locator_warm": locator_label,
+                "match_sample": match_sample,
+                "cut_barcode": CutBarcode[data_idx], "sub_barcode": SubBarcode[data_idx],
+                "origin_barcode": OriginBarcode[data_idx],
+                "warm": Warm[data_idx], "status": Status[data_idx],
+                "dup_barcode": DupBarcode[data_idx], "dup_barcode_sample": DupBarcodeSampleName[data_idx],
+            }
+
+            status_text = str(Status[data_idx]).strip().lower()
+            is_pipetting_error = ("pipetting error" in status_text)
+            if (str(Warm[data_idx]) in ["1", "4", "16384"]) or is_pipetting_error or (match_sample == "No match"):
+                error_rows.append({
+                    "sample_name": match_sample,
+                    "origin_barcode": OriginBarcode[data_idx],
+                    "plate_no": plate_no_str,
+                    "well_str": well_pos_str,
+                    "warn_level": Warm[data_idx] if Warm[data_idx] != "" else ("PIPETTING_ERROR" if is_pipetting_error else ""),
+                    "warn_info": Status[data_idx],
+                })
+
+            # 落库（以“同日-同项目-同板号-孔位”为粒度）
+            SampleRecord.objects.update_or_create(
+                project_name=project_name,
+                record_date=date.today(),
+                plate_no=plate_no_str,
+                well_str=well_pos_str,
+                defaults={
+                    "sample_name": match_sample,
+                    "barcode": origin_barcode,
+                }
+            )
+            return well
+
+        # 清理同日同项目同板号旧记录（避免重复）
+        SampleRecord.objects.filter(project_name=project_name, record_date=date.today(), plate_no=plate_no_str).delete()
+
+        if layout == 'vertical':   # NIMBUS（列优先）
+            for col_idx, col_num in enumerate(nums):
+                for row_idx, row_letter in enumerate(letters):
+                    data_idx   = col_idx * 8 + row_idx
+                    well_index = _well_number_rowwise(row_idx, int(col_num))
+                    worksheet_grid[row_idx][col_idx] = build_well(row_letter, col_num, row_idx, col_idx, data_idx, well_index)
+        else:                      # Starlet（行优先）
+            for row_idx, row_letter in enumerate(letters):
+                for col_idx, col_num in enumerate(nums):
+                    data_idx   = row_idx * 12 + col_idx
+                    well_index = _well_number_rowwise(row_idx, int(col_num))
+                    worksheet_grid[row_idx][col_idx] = build_well(row_letter, col_num, row_idx, col_idx, data_idx, well_index)
+
+        worksheet_table = [[worksheet_grid[r][c] for c in range(12)] for r in range(8)]
+
+        # —— 生成上机列表 —— #
+        # ClinicalSample：OriginBarcode 中不在映射表“Barcode”里的条码（若 Warm 含 X 则以 Xn 记名）
+        mapping_barcodes = set(str(x) for x in df_mapping_wc["Barcode"].tolist())
+        ClinicalSample = []
+        for i, ob in enumerate(OriginBarcode):
+            ob_str   = str(ob)
+            warm_val = str(Warm[i]).strip().upper()
+            if ob_str not in mapping_barcodes:
+                if 'X' in warm_val: ClinicalSample.append(warm_val)  # 定位孔
+                else:               ClinicalSample.append(ob_str)
+
+        test_list   = ["DB1"] + [f"Test{i}" for i in range(test_count)]
+        curve_list  = ["DB2"] + std_names
+        qc_list1    = ["DB3"] + qc_names + ["DB4"]
+        qc_list2    = qc_names + ["DB5"]
+        SampleName_list = test_list + curve_list + qc_list1 + ClinicalSample + qc_list2
+        SampleName_list = [name for name in SampleName_list if isinstance(name, str) and name.count('-') <= 3]
+
+        # worklist 空表
+        worklist_table = pd.DataFrame(columns=df_template.columns)
+        worklist_table[worklist_table.columns[0]] = SampleName_list
+
+        # value 队列：Name -> [barcodes...]
+        name_to_barcodes = defaultdict(deque)
+        for barcode, name in barcode_to_name.items():
+            name_to_barcodes[name].append(barcode)
+
+        # 规则：SmplInjVol 单独处理
         if "SmplInjVol" in worklist_table.columns:
-            worklist_table["SmplInjVol"] = injection_volume
+            worklist_table["SmplInjVol"] = injection_vol
 
-        # --- 规则 2: 按 sample_name 分类处理 --- 
-        if str(sample_name).startswith("DB"):  # 规则1
-            mask = worklist_table.iloc[:, 0].str.startswith("DB")
-            for col, val in zip(worklist_table.columns[1:], fill_values.values):
-                if col == "SmplInjVol":  
-                    continue  # 已经在上面统一处理
-                worklist_table.loc[mask, col] = val
+        first_col = worklist_table.columns[0]
 
-        elif str(sample_name).startswith("Test"): # 规则2
-            mask = worklist_table.iloc[:, 0].str.startswith("Test")
-            for col, val in zip(worklist_table.columns[1:], fill_values.values):
-                if col == "SmplInjVol":  
-                    continue
-                worklist_table.loc[mask, col] = val
+        for _, row in df_worklistmap.iterrows():
+            sample_key = row.iloc[0]
+            fill_vals  = row.iloc[1:]
 
-        # —— 新增规则：STD 精确匹配 —— 
-        elif "STD" in str(sample_name):
-            # 只填充与 worklist_mapping 第一列中该 STD 名称“完全相同”的行
-            mask = worklist_table.iloc[:, 0] == str(sample_name)
-            for col, val in zip(worklist_table.columns[1:], fill_values.values):
-                # 与其它规则保持一致：进样体积列在上面已统一处理
-                if col == "SmplInjVol" or col == "Injection volume":
-                    continue
-                worklist_table.loc[mask, col] = val
-
-        elif sample_name == "*":  # 规则3
-            # 找到还没填充的行（即第2列为空的行）
-            mask = worklist_table.iloc[:, 1].isna()
-            for col, val in zip(worklist_table.columns[1:], fill_values.values):
-                if col == "SmplInjVol" or col == "Injection volume":  
-                    continue
-                if col in ("VialPos", "Vial position", "样品瓶"):  
-                    # 特殊处理 VialPos
-                    ROWS = ["A", "B", "C", "D", "E", "F", "G", "H"]
-
-                    def _well_number_rowwise(row_idx: int, col: int) -> int:
-                        """
-                        计算孔号：按行(A..H)横向编号（A1=1, A2=2, ..., A12=12, B1=13, ...）
-                        row_idx: 0..7 -> A..H
-                        col: 1..12
-                        """
-                        return row_idx * 12 + col
-
-                    def resolve_vialpos(sample_name_value):
-                           
-                        # Case 2: 定位孔 "----------"
-                        s = str(sample_name_value).strip().upper()
-
-                        m = re.fullmatch(r"X(\d+)", s)
-                        if m:
-                            k = int(m.group(1))           # 第 k 个定位点（从 1 开始）
-                            k0 = k - 1
-
-                            if platform == "NIMBUS":
-                                # 列从 3 开始；每列 8 个（A..H），纵向走完 8 个后换到下一列
-                                col = 3 + (k0 // 8)               # 3,4,5,...
-                                row_idx = k0 % 8                  # 0..7 -> A..H
-                                row_letter = ROWS[row_idx]
-                                well_pos = f"{row_letter}{col}"   # 例如 A3, B3, ...
-                                well_num = _well_number_rowwise(row_idx, col)  # 例如 A3=3, B3=15, ...
-                                if val == "{{Well_Number}}":
-                                    return int(well_num)
-                                elif val == "{{Well_Position}}":
-                                    return f"{injection_plate}-{well_pos}" if injection_plate else well_pos
-                                else:
-                                    return val
-
-                            elif platform == "Starlet":
-                                # 行从 B(=index 1) 开始；每行 12 个（1..12），横向走完 12 个后换到下一行
-                                row_idx = 1 + (k0 // 12)          # 1(B),2(C),...,最多到 7(H)
-                                col = 1 + (k0 % 12)               # 1..12
-                                if not (0 <= row_idx < len(ROWS)) or not (1 <= col <= 12):
-                                    return None  # 超出 96 孔范围则不返回（可按需处理）
-                                row_letter = ROWS[row_idx]
-                                well_pos = f"{row_letter}{col}"   # 例如 B1,B2,...,B12, C1, ...
-                                well_num = _well_number_rowwise(row_idx, col)  # 例如 B1=13, B2=14, ...
-                                if val == "{{Well_Number}}":
-                                    return int(well_num)
-                                elif val == "{{Well_Position}}":
-                                    return f"{injection_plate}-{well_pos}" if injection_plate else well_pos
-                                else:
-                                    return val
-
-                        # case 3: QC/STD/曲线（worklist_table里存 Name，需要映射到 barcode）
-                        if val in ["{{Well_Number}}", "{{Well_Position}}"]:
-                            if sample_name_value in name_to_barcodes and name_to_barcodes[sample_name_value]:
-                                # 取出当前 sample_name 对应的第一个条码，并从队列中移除，保证顺序消耗
-                                barcode = name_to_barcodes[sample_name_value].popleft()
-
-                                # 再用 barcode 去查 barcode_to_well
-                                if barcode in barcode_to_well:
-                                    well_pos, well_num = barcode_to_well[barcode]
-                                    if val == "{{Well_Number}}":
-                                        return int(well_num)
-                                    else:
-                                        return f"{injection_plate}-{well_pos}" if injection_plate else well_pos
-                                else:
+            def fill_cols(mask):
+                for col, val in zip(worklist_table.columns[1:], fill_vals.values):
+                    if col in ("SmplInjVol", "Injection volume"):
+                        continue
+                    if col in ("VialPos", "Vial position", "样品瓶"):
+                        ROWS = list("ABCDEFGH")
+                        def _resolve_vialpos(sample_name_value):
+                            s = str(sample_name_value).strip().upper()
+                            m = re.fullmatch(r"X(\d+)", s)
+                            if m:
+                                k0 = int(m.group(1)) - 1
+                                if platform == "NIMBUS":
+                                    coln     = 3 + (k0 // 8)
+                                    row_idx  = k0 % 8
+                                else:  # Starlet
+                                    row_idx  = 1 + (k0 // 12)
+                                    coln     = 1 + (k0 % 12)
+                                if not (0 <= row_idx < 8 and 1 <= coln <= 12):
                                     return None
-                                
-                            # case 4: 临床样品（worklist_table里就是条码本身）
-                            elif sample_name_value in barcode_to_well:
-                                well_pos, well_num = barcode_to_well[sample_name_value]
-                                if val == "{{Well_Number}}":
-                                    return int(well_num)
-                                else:
-                                    return f"{injection_plate}-{well_pos}" if injection_plate else well_pos 
+                                well_pos = f"{ROWS[row_idx]}{coln}"
+                                well_no  = _well_number_rowwise(row_idx, coln)
+                                return int(well_no) if val == "{{Well_Number}}" else (f"{injection_plate}-{well_pos}" if injection_plate else well_pos)
 
-                            else:
+                            if val in ["{{Well_Number}}", "{{Well_Position}}"]:
+                                # 1) QC/STD：通过 name->barcode 队列取条码，再查位置信息
+                                if sample_name_value in name_to_barcodes and name_to_barcodes[sample_name_value]:
+                                    barcode = name_to_barcodes[sample_name_value].popleft()
+                                    if barcode in barcode_to_well:
+                                        pos, no = barcode_to_well[barcode]
+                                        return int(no) if val == "{{Well_Number}}" else (f"{injection_plate}-{pos}" if injection_plate else pos)
+                                # 2) 临床样本：第一列就是条码
+                                elif sample_name_value in barcode_to_well:
+                                    pos, no = barcode_to_well[sample_name_value]
+                                    return int(no) if val == "{{Well_Number}}" else (f"{injection_plate}-{pos}" if injection_plate else pos)
                                 return None
-                        else:
                             return val
 
-                    worklist_table.loc[mask, col] = worklist_table.loc[mask, first_col].apply(resolve_vialpos)
+                        worklist_table.loc[mask, col] = worklist_table.loc[mask, first_col].apply(_resolve_vialpos)
+                        # 数字列尽量转 Int64（仅当全部为数字时）
+                        non_null = worklist_table[col].dropna()
+                        if len(non_null) and non_null.astype(str).str.strip().str.fullmatch(r"\d+").all():
+                            worklist_table[col] = pd.to_numeric(worklist_table[col], errors="coerce").astype("Int64")
+                    else:
+                        worklist_table.loc[mask, col] = val
 
-                    # 仅当该列（去除空值后）全部为纯数字时，才转换为可空整型 Int64
-                    col_vals = worklist_table[col]
+            if str(sample_key).startswith("DB"):
+                mask = worklist_table.iloc[:, 0].str.startswith("DB")
+                fill_cols(mask)
+            elif str(sample_key).startswith("Test"):
+                mask = worklist_table.iloc[:, 0].str.startswith("Test")
+                fill_cols(mask)
+            elif "STD" in str(sample_key):
+                mask = worklist_table.iloc[:, 0] == str(sample_key)
+                fill_cols(mask)
+            elif str(sample_key) == "*":
+                mask = worklist_table.iloc[:, 1].isna()
+                fill_cols(mask)
 
-                    # 去掉空值后，检查是否全部匹配纯数字（允许前后空格）
-                    non_null = col_vals.dropna()
-                    all_numeric = non_null.astype(str).str.strip().str.fullmatch(r"\d+").all()
+        today_str  = timezone.localtime().strftime("%Y%m%d")
+        year       = today_str[:4]
+        yearmonth  = today_str[:6]
+        setname    = f"{instrument_num}-{project_name}-{today_str}-{plate_no_str}"
+        output_val = f"{year}\\{yearmonth}\\Data{setname}"
+        if "SetName" in worklist_table.columns:  worklist_table["SetName"]  = setname
+        if "OutputFile" in worklist_table.columns: worklist_table["OutputFile"] = output_val
+        worklist_records = worklist_table.to_dict(orient="records")
 
-                    if all_numeric and len(non_null) > 0:
-                        # 确保可安全转型
-                        worklist_table[col] = pd.to_numeric(worklist_table[col], errors="coerce").astype("Int64")
+        header_meta = {
+            "test_date": timezone.localtime().strftime("%Y-%m-%d"),
+            "plate_no": plate_no_str,
+            "instrument_num": instrument_num,
+            "injection_plate": injection_plate,
+            "today_str": today_str,
+        }
 
-                else:
-                    # 普通列，直接填充
-                    worklist_table.loc[mask, col] = val
+        return {
+            "plate_no": plate_no_str,
+            "worksheet_table": worksheet_table,
+            "error_rows": error_rows,
+            "txt_headers": txt_headers,
+            "worklist_records": worklist_records,
+            "header": header_meta,
+        }
 
-    # 日期精确到天，如 20251011
-    today_str = timezone.localtime().strftime("%Y%m%d")
-    year = today_str[:4]       # 2025
-    yearmonth = today_str[:6]  # 202510
-    
-    # e.g. FXS-YZ38-25OHD-20251011
-    setname_value = f"{instrument_num}-{project_name}-{today_str}-X{plate_no}"
+    # ========== 3. 分板 & 逐板处理 ==========
+    plates_payload = []
 
-    # e.g. 2025\202510\DataFXS-YZ38-25OHD-20251011
-    output_value = f"{year}\\{yearmonth}\\Data{setname_value}"
-    
-    if "SetName" in worklist_table.columns:
-        worklist_table["SetName"] = setname_value
+    if platform == "NIMBUS":
+        # —— NIMBUS：仍按“单板”处理 —— #
+        # 直接从整表读取出 arrays（行顺序不调，后续在 build_one_plate_payload 里补齐&渲染）
+        Position, Status, OriginBarcode, CutBarcode, SubBarcode, Warm = [], [], [], [], [], []
+        for i in range(1, nrows):
+            pos  = scan_sheet.row_values(i)[POS_IDX]
+            stat = scan_sheet.row_values(i)[STAT_IDX]
+            bc   = scan_sheet.row_values(i)[BC_IDX]
+            w    = scan_sheet.row_values(i)[WARM_IDX] if WARM_IDX is not None else ""
+            Position.append(pos); Status.append(stat); OriginBarcode.append(bc); Warm.append(w)
+            parts = str(bc).split("-", 1)
+            CutBarcode.append(parts[0]); SubBarcode.append("-" + parts[1] if len(parts) == 2 else "")
 
-    if "OutputFile" in worklist_table.columns:
-        worklist_table["OutputFile"] = output_value
+        # 从 Warm 取 Xn
+        plate_no_int = 1
+        for w in Warm:
+            s = str(w)
+            if s.upper().startswith("X"):
+                m = re.search(r"X(\d+)", s.upper())
+                if m:
+                    plate_no_int = int(m.group(1))
+                    break
+        plate_no_str = f"X{plate_no_int}"
 
-    # 转成 records 形式（每行是一个字典）
-    worklist_records = worklist_table.to_dict(orient="records")
+        aligned = {
+            "Position": Position, "Status": Status, "OriginBarcode": OriginBarcode,
+            "CutBarcode": CutBarcode, "SubBarcode": SubBarcode, "Warm": Warm
+        }
+        plates_payload.append(build_one_plate_payload(aligned, layout='vertical', plate_no_str=plate_no_str))
 
+    else:
+        # —— Starlet：支持单板/多板 —— #
+        plate_groups = _starlet_split_plates(scan_sheet, scan_index)  # [(n, [rows...]), ...]
+        for plate_no_int, row_indexes in plate_groups:
+            aligned = _process_one_starlet_plate(scan_sheet, scan_index, row_indexes, plate_no_int)
+            plates_payload.append(build_one_plate_payload(aligned, layout='horizontal', plate_no_str=aligned["plate_no_str"]))
+
+    # ========== 4. 保存 Session 与渲染 ==========
     request.session["export_payload"] = {
-        "project_name": project_name,           # 如 VD / CSA
-        "platform": platform, 
-        "injection_plate": injection_plate, 
-        "worksheet_table": worksheet_table,     # 你生成的 96 孔板展示数据（列表套字典）
-        "error_rows": error_rows,               # 报错信息
-        "txt_headers": txt_headers,             # 上机列表表头
-        "worklist_records": worklist_records,   # 上机列表数据（DataFrame -> to_dict('records') 的结果）
-        "today_str": today_str,
-        "plate_no": plate_no,     
-        "instrument_num": instrument_num,    
-
-        # ✅ 新增：导出 PDF 页眉需要的元信息（按你 ProcessResult.html 的第二行设计）
-        "header": {
-            "test_date": timezone.localtime().strftime("%Y-%m-%d"),  # 检测日期
-            "plate_no": plate_no,                # 例如 "X2"（你已从 Scanresult Warm 提取）
-            "instrument_num": instrument_num,    # 例如 FXS-YZ___（你已有 POST 获取）
-            "injection_plate": injection_plate,  # 上机盘号（如果表单没这个字段就给空）
-            "today_str": today_str,  
-        },
+        "project_name": project_name,
+        "platform": platform,
+        "injection_plate": injection_plate,
+        "plates": plates_payload,                 # ⭐ 多板/单板统一
     }
     request.session.modified = True
 
-    return render(request, 'dashboard/ProcessResult.html',locals())
+    return render(request, "dashboard/ProcessResult.html", {
+        "project_name": project_name,
+        "platform": platform,
+        "plates": plates_payload,                 # 模板循环多张卡片
+    })
 
 
 def preview_export(request):

@@ -76,7 +76,7 @@
           var m = new bootstrap.Modal(document.getElementById('genSuccessModal'));
           m.show();
         } else {
-          alert({{ popup_message|escapejs }});
+          alert('{{ popup_message|escapejs }}'); 
         }
       });
     })();

@@ -22,6 +22,9 @@ urlpatterns = [
     path('dashboard/sample_search/', views.sample_search, name='sample_search'),  # 标本查找
     path("dashboard/sample_search_api/", views.sample_search_api, name="sample_search_api"),
 
+    # ★ 新增：当天统计 API
+    path("dashboard/sample_search_stats/", views.sample_search_stats_today, name="sample_search_stats_today"),
+
     path('dashboard/file_download/', views.file_download, name='file_download'),  # 文件下载
     path(
         "dashboard/downloads/<str:platform>/<str:date_name>/<str:project>/<path:filename>",

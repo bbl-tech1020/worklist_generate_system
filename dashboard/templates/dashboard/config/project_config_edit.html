@@ -20,8 +20,12 @@
             {% csrf_token %}
             <!-- 其余字段按需添加，可以单独渲染 -->
             <div class="mb-3">
-                <label class="form-label">项目名称</label>
+                <label class="form-label">项目简称</label>
                 {{ form.project_name }}
+            </div>
+            <div class="mb-3">
+                <label class="form-label">项目全称</label>
+                {{ form.project_name_full }}
             </div>
             <div class="mb-3">
                 <label class="form-label">取样方式</label>

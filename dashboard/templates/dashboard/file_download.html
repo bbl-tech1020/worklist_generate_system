@@ -34,14 +34,19 @@
   }
 
   /* ✅ 新增：加大顶级平台间距 */
-  #fileTree > ul > li { margin-top: 25px; }
+  #fileTree>ul>li {
+    margin-top: 25px;
+  }
 
   /* ✅ 仅加大 Starlet 内部一级目录之间的间距（工作清单和上机列表、取样指令） */
-  #fileTree > ul > li:nth-child(2) > ul > li { 
-    margin-top: 18px;  /* 可调大，比如 24px */
+  #fileTree>ul>li:nth-child(2)>ul>li {
+    margin-top: 18px;
+    /* 可调大，比如 24px */
   }
-  #fileTree > ul > li:nth-child(2) > ul > li:first-child { 
-    margin-top: 0;     /* 第一个（工作清单和上机列表）不加额外间距 */
+
+  #fileTree>ul>li:nth-child(2)>ul>li:first-child {
+    margin-top: 0;
+    /* 第一个（工作清单和上机列表）不加额外间距 */
   }
 </style>
 {% endblock %}
@@ -116,7 +121,7 @@
               <span class="folder">📁 {{ proj.name }}</span>
               <ul class="hidden">
                 {% for f in proj.files %}
-                {% if f.is_pdf %}
+                {% if f.force_download %}
                 <li><a class="file" href="{{ f.url }}" download="{{ f.name }}">📄 {{ f.name }}</a></li>
                 {% else %}
                 <li><a class="file" href="{{ f.url }}" target="_blank">📄 {{ f.name }}</a></li>

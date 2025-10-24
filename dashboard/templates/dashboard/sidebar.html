@@ -104,7 +104,7 @@
                     <li class="nav-item">
                         <a class="nav-link sidebar-nav-link {% if request.path == '/dashboard/frontend_entry/' %}active{% endif %}"
                             href="{% url 'frontend_entry' %}">
-                            <span class="nav-link-icon"><i class="ti ti-layout-dashboard"></i></span>
+                            <span class="nav-link-icon"><i class="ti ti-apps-filled"></i></span>
                             <span class="nav-link-title">前端功能入口</span>
                         </a>
                     </li>
@@ -112,15 +112,15 @@
                     <li class="nav-item">
                         <a class="nav-link sidebar-nav-link {% if request.path == '/dashboard/sample_search/' %}active{% endif %}"
                             href="{% url 'sample_search' %}">
-                            <span class="nav-link-icon"><i class="ti ti-layout-dashboard"></i></span>
-                            <span class="nav-link-title">历史标本查找</span>
+                            <span class="nav-link-icon"><i class="ti ti-search"></i></span>
+                            <span class="nav-link-title">历史标本查找与<br>每日标本统计</span>
                         </a>
                     </li>
 
                     <li class="nav-item">
                         <a class="nav-link sidebar-nav-link {% if request.path == '/dashboard/file_download/' %}active{% endif %}"
                             href="{% url 'file_download' %}">
-                            <span class="nav-link-icon"><i class="ti ti-layout-dashboard"></i></span>
+                            <span class="nav-link-icon"><i class="ti ti-download"></i></span>
                             <span class="nav-link-title">文件下载</span>
                         </a>
                     </li>
@@ -135,7 +135,7 @@
                             data-bs-target="#backendConfigCollapse"
                             role="button"
                             aria-expanded="{% if name == 'project_config' or name == 'vendor_config' or name == 'injection_volume_config' %}true{% else %}false{% endif %}">
-                            <span class="nav-link-icon"><i class="ti ti-settings"></i></span>
+                            <span class="nav-link-icon"><i class="ti ti-settings-filled"></i></span>
                             <span class="nav-link-title">后台参数配置</span>
                             <span class="sidebar-caret"><i class="ti ti-chevron-down"></i></span>
                         </a>

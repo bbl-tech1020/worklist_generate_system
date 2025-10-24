@@ -205,9 +205,19 @@
                             <span class="icon-star">★</span>
                         {% endif %}
 
-                        <div class="SampleName">{{ cell.match_sample }}</div>
-                        <div class="Barcode">{{ cell.cut_barcode }}</div>
-                        <div class="Barcode">{{ cell.sub_barcode }}</div>
+                        {% if platform == 'Starlet' %}
+                            {% if cell.cut_barcode == "NOTUBE" %}
+
+                            {% else %}
+                                <div class="SampleName">{{ cell.match_sample }}</div>
+                                <div class="Barcode">{{ cell.cut_barcode }}</div>
+                                <div class="Barcode">{{ cell.sub_barcode }}</div>
+                            {% endif %}
+                        {% else %}
+                            <div class="SampleName">{{ cell.match_sample }}</div>
+                            <div class="Barcode">{{ cell.cut_barcode }}</div>
+                            <div class="Barcode">{{ cell.sub_barcode }}</div>
+                        {% endif %}
                         {% endif %}
                     </td>
                     {% endfor %}
@@ -245,14 +255,16 @@
             </thead>
             <tbody>
                 {% for row in error_rows %}
-                <tr>
-                    <td>{{ row.sample_name }}</td>
-                    <td>{{ row.origin_barcode }}</td>
-                    <td>{{ row.plate_no }}</td>
-                    <td>{{ row.well_str }}</td>
-                    <td>{{ row.warn_level }}</td>
-                    <td>{{ row.warn_info }}</td>
-                </tr>
+                    {% if row.origin_barcode != 'NOTUBE' and row.sample_name != 'No match' %}
+                        <tr>
+                            <td>{{ row.sample_name }}</td>
+                            <td>{{ row.origin_barcode }}</td>
+                            <td>{{ row.plate_no }}</td>
+                            <td>{{ row.well_str }}</td>
+                            <td>{{ row.warn_level }}</td>
+                            <td>{{ row.warn_info }}</td>
+                        </tr>
+                    {% endif %}
                 {% endfor %}
             </tbody>
         </table>

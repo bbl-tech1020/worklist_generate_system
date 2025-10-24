@@ -29,6 +29,7 @@ class SamplingConfiguration(models.Model):
     ]
 
     project_name = models.CharField(max_length=200)
+    project_name_full = models.CharField(max_length=255, default='', blank=True)  # ★ 新增字段:项目全称
     sampling_method = models.CharField(max_length=10, choices=SAMPLING_CHOICES)
 
     # 公共字段

@@ -26,7 +26,8 @@
         <table class="table table-bordered table-striped">
             <thead>
                 <tr>
-                    <th>项目名称</th>
+                    <th>项目简称</th>
+                    <th>项目全称</th>
                     <th>取样方式</th>
                     <th>曲线点数</th>
                     <th>Test数</th>
@@ -38,6 +39,7 @@
                 {% for config in project_configs %}
                 <tr>
                     <td>{{ config.project_name }}</td>
+                    <td>{{ config.project_name_full }}</td>
                     <td>{{ config.get_sampling_method_display }}</td>
                     <td>{{ config.curve_points }}</td>
                     <td>{{ config.test_count }}</td>

@@ -4,7 +4,7 @@
 {% block header %}
 <header class="navbar navbar-expand-md navbar-light d-print-none">
     <div class="container-fluid">
-        <h1 class="navbar-brand">历史标本查找</h1>
+        <h1 class="navbar-brand">历史标本查找与每日标本统计</h1>
     </div>
 </header>
 {% endblock %}
@@ -28,30 +28,122 @@
         <button type="button" class="btn btn-primary" onclick="performSearch()">查找</button>
     </div>
 
+
+    <!-- ★ 新增：每日标本统计按钮 -->
+    <div class="mt-3">
+        <button type="button" class="btn btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#dailyStatsModal" onclick="loadDailyStats()">
+        <i class="ti ti-calendar-stats"></i> 每日标本统计
+        </button>
+    </div>
+    
+    <!-- ★ 新增：统计结果 Modal -->
+    <div class="modal fade" id="dailyStatsModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+            <h5 class="modal-title">
+                统计日期：<span id="statsDate">--</span>
+            </h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body" id="statsBody">
+            <!-- 动态插入每个项目的表格 -->
+            <div class="text-muted">正在加载...</div>
+            </div>
+            <div class="modal-footer">
+            <button class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+            </div>
+        </div>
+        </div>
+    </div>
+  
+
 <script>
-function performSearch() {
-    const query = document.getElementById("searchInput").value.trim();
-    if (!query) {
-        alert("请输入条码或实验号");
-        return;
+    function performSearch() {
+        const query = document.getElementById("searchInput").value.trim();
+        if (!query) {
+            alert("请输入条码或实验号");
+            return;
+        }
+
+        fetch(`/dashboard/sample_search_api/?q=${query}`)
+            .then(response => response.json())
+            .then(data => {
+                const resultsDiv = document.getElementById("searchResults");
+                resultsDiv.innerHTML = "";
+                if (data.results.length === 0) {
+                    resultsDiv.innerHTML = "<p>未找到相关记录</p>";
+                } else {
+                    data.results.forEach(r => {
+                        const p = document.createElement("p");
+                        p.textContent = `项目: ${r.project_name} | 日期: ${r.date} | 板号: ${r.plate_no} | 孔位: ${r.well_str}`;
+                        resultsDiv.appendChild(p);
+                    });
+                }
+            });
     }
 
-    fetch(`/dashboard/sample_search_api/?q=${query}`)
-        .then(response => response.json())
-        .then(data => {
-            const resultsDiv = document.getElementById("searchResults");
-            resultsDiv.innerHTML = "";
-            if (data.results.length === 0) {
-                resultsDiv.innerHTML = "<p>未找到相关记录</p>";
-            } else {
-                data.results.forEach(r => {
-                    const p = document.createElement("p");
-                    p.textContent = `项目: ${r.project_name} | 日期: ${r.date} | 板号: ${r.plate_no} | 孔位: ${r.well_str}`;
-                    resultsDiv.appendChild(p);
-                });
+    async function loadDailyStats() {
+        const body = document.getElementById('statsBody');
+        const dateEl = document.getElementById('statsDate');
+        body.innerHTML = '<div class="text-muted">正在加载...</div>';
+        try {
+            const res = await fetch('{% url "sample_search_stats_today" %}');
+            const data = await res.json();
+            dateEl.textContent = data.today_date || '--';
+
+            if (!data.projects || data.projects.length === 0) {
+            body.innerHTML = '<div class="alert alert-warning">今天暂无记录</div>';
+            return;
             }
-        });
-}
+
+            // 生成与“图3”一致的分项目板块
+            const frag = document.createDocumentFragment();
+            data.projects.forEach(p => {
+            const title = document.createElement('h5');
+            title.className = 'mt-2 mb-2';
+            title.textContent = `项目：${p.project_name}`;
+            frag.appendChild(title);
+
+            const table = document.createElement('table');
+            table.className = 'table table-bordered table-striped';
+            const thead = document.createElement('thead');
+            thead.innerHTML = `
+                <tr>
+                <th>实验号前缀</th>
+                <th>实验号总数</th>
+                <th>起始实验号</th>
+                <th>末尾实验号</th>
+                <th>空号</th>
+                <th>共血</th>
+                <th>多血</th>
+                </tr>`;
+            table.appendChild(thead);
+
+            const tbody = document.createElement('tbody');
+            (p.statistics || []).forEach(row => {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                <td>${row.prefix || ''}</td>
+                <td>${row.total ?? 0}</td>
+                <td>${row.start || ''}</td>
+                <td>${row.end || ''}</td>
+                <td>${row.empty || '0'}</td>
+                <td>${row.sharedBlood || '0'}</td>
+                <td>${row.multiBlood || '0'}</td>
+                `;
+                tbody.appendChild(tr);
+            });
+            table.appendChild(tbody);
+            frag.appendChild(table);
+            });
+
+            body.innerHTML = '';
+            body.appendChild(frag);
+        } catch (e) {
+            body.innerHTML = `<div class="alert alert-danger">加载失败：${e}</div>`;
+        }
+    }
 </script>
 
 {% endblock %}

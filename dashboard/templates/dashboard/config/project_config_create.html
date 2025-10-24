@@ -19,10 +19,14 @@
         <form method="post" enctype="multipart/form-data">
             {% csrf_token %}
 
-            <!-- 项目名称 -->
+            <!-- 项目简称和全称 -->
             <div class="mb-3">
-                <label class="form-label">项目名称</label>
-                <input type="text" class="form-control" name="project_name" placeholder="请输入项目名称">
+                <label class="form-label">项目简称</label>
+                <input type="text" class="form-control" name="project_name" placeholder="请输入项目简称">
+            </div>
+            <div class="mb-3">
+                <label class="form-label">项目全称</label>
+                <input type="text" class="form-control" name="project_name_full" placeholder="请输入项目全称">
             </div>
 
             <!-- 取样方式 -->

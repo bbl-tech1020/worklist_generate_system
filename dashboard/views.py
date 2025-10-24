@@ -300,6 +300,137 @@ def Tecan_sampling(request):
 def sample_search(request):
     return render(request, 'dashboard/sample_search/index.html')
 
+
+def sample_search_stats_today(request):
+    """
+    返回：当天（record_date=today）的所有 project_name 的统计结果。
+    统计口径和你给的 statistics(process_data) 基本一致：
+      - 每个项目：根据 sample_name 自动提取字母前缀，或使用项目定制前缀集
+      - 统计：实验号总数、起始/末尾实验号、空号（含区间描述）、共血、多血
+    """
+    today = datetime.now().date()
+    qs = SampleRecord.objects.filter(record_date=today)
+
+    # 若当天无数据，直接返回空结果
+    if not qs.exists():
+        return JsonResponse({"today_date": today.strftime("%Y-%m-%d"), "projects": []})
+
+    # 可选：按项目设定“允许前缀”集合；项目未配置时自动从数据中抽取
+    allowed_prefix_map = {
+        "VAE": {"AE", "VF", "V", "ST"},
+        "VD":  {"VD", "VF", "V", "YVD", "ST"},
+        # 其他项目留空 → 自动提取
+    }
+
+    def process_project(records, allowed_prefixes=None):
+        """
+        records: 当个项目的 Queryset
+        allowed_prefixes: set[str] | None
+        返回：与示例一致的列表
+        """
+        # 收集候选 sample_name（兼容 'AE1234-VD5678' 这种 "-" 连接的情况）
+        sample_names = []
+        for r in records:
+            if r.sample_name:
+                parts = str(r.sample_name).split('-')
+                if parts:
+                    sample_names.append(parts[0])
+                    if len(parts) > 1:
+                        sample_names.append(parts[1])
+
+        # 自动提取所有(字母+数字)的字母前缀，如 "VD123" → "VD"
+        detected_prefixes = set()
+        for name in sample_names:
+            m = re.match(r"^[A-Za-z]+(?=\d)", str(name))
+            if m:
+                detected_prefixes.add(m.group())
+
+        # 选择要使用的前缀集合
+        prefixes = allowed_prefixes if allowed_prefixes else detected_prefixes
+
+        # ★ 新增：统计时剔除 QC / STD 前缀
+        prefixes = {p for p in prefixes if p not in {"QC", "STD"}}
+
+        # 构造“条码→样本名集合”、“样本名→出现次数”，用于“共血/多血”
+        barcode_to_samples = defaultdict(set)
+        sample_count = defaultdict(int)
+        for r in records:
+            name_head = str(r.sample_name).split('-')[0] if r.sample_name else ""
+            barcode_to_samples[r.barcode].add(name_head)
+            sample_count[name_head] += 1
+
+        # 生成统计行
+        result_rows = []
+        for prefix in sorted(prefixes):
+            # 仅统计纯 '前缀+数字' 的样本名
+            matching = [n for n in sample_names if re.fullmatch(fr"{prefix}\d+", str(n))]
+
+            nums = sorted(
+                int(re.sub(r"^[A-Za-z]+", "", n))
+                for n in matching
+                if re.sub(r"^[A-Za-z]+", "", n).isdigit()
+            )
+
+            total = len(matching)
+            start_number = f"{prefix}{nums[0]}" if nums else None
+            end_number   = f"{prefix}{nums[-1]}" if nums else None
+
+            # 空号（找缺口）
+            missing_ranges = []
+            empty_count = 0
+            for i in range(len(nums) - 1):
+                gap = nums[i+1] - nums[i] - 1
+                if gap > 0:
+                    empty_count += gap
+                    if gap == 1:
+                        missing_ranges.append(f"{prefix}{nums[i] + 1}")
+                    else:
+                        missing_ranges.append(f"{prefix}{nums[i]+1}-{prefix}{nums[i+1]-1}")
+            empty_info = ", ".join(missing_ranges)
+
+            # 共血：同一个样本名映射多个条码（以样本名匹配、条码计数>1）
+            shared_blood_samples = [
+                name for name, barcodes in barcode_to_samples.items()
+                if len(barcodes) > 1 and re.fullmatch(fr"{prefix}\d+", str(name))
+            ]
+            shared_blood_info  = ", ".join(sorted(set(shared_blood_samples)))
+            shared_blood_count = len(set(shared_blood_samples))
+
+            # 多血：同一个样本名在当天记录出现多次（>1）
+            multi_blood_samples = [
+                name for name, cnt in sample_count.items()
+                if cnt > 1 and re.fullmatch(fr"{prefix}\d+", str(name))
+            ]
+            multi_blood_info  = ", ".join(sorted(set(multi_blood_samples)))
+            multi_blood_count = len(set(multi_blood_samples))
+
+            result_rows.append({
+                "prefix":      prefix,
+                "total":       total,
+                "start":       start_number,
+                "end":         end_number,
+                "empty":       f"{empty_count}（{empty_info}）" if empty_count else "0",
+                "sharedBlood": f"{shared_blood_count}（{shared_blood_info}）" if shared_blood_count else "0",
+                "multiBlood":  f"{multi_blood_count}（{multi_blood_info}）" if multi_blood_count else "0",
+            })
+        return result_rows
+
+    # 分项目统计
+    projects_payload = []
+    for proj in qs.values_list("project_name", flat=True).distinct().order_by("project_name"):
+        proj_qs = qs.filter(project_name=proj)
+        prefixes = allowed_prefix_map.get(proj)  # 未配置则为 None → 自动检测
+        stats = process_project(proj_qs, prefixes)
+        projects_payload.append({
+            "project_name": proj,
+            "statistics": stats
+        })
+
+    return JsonResponse({
+        "today_date": today.strftime("%Y-%m-%d"),
+        "projects": projects_payload
+    })
+
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 def download_export(request, platform, date_name, project, filename):
@@ -420,12 +551,13 @@ def file_download(request):
                 files = []
                 for fname in sorted(os.listdir(proj_path)):
                     fpath = os.path.join(proj_path, fname)
+                    ext = fname.lower()
                     if not os.path.isfile(fpath):
                         continue
                     files.append({
                         "name": fname,
                         "url": f"{settings.DOWNLOAD_URL}{platform}/{date_name}/{proj}/{fname}",
-                        "is_pdf": fname.lower().endswith(".pdf"),
+                        "force_download": ext.endswith((".pdf", ".txt", ".xlsx", ".xls", ".csv")),
                     })
 
                 projects.append({"name": proj, "files": files})
@@ -435,7 +567,6 @@ def file_download(request):
         groups.append({"group": platform, "days": days})
 
     return render(request, "dashboard/file_download.html", {"groups": groups})
-
 
 
 # 3 后台参数配置
@@ -451,6 +582,7 @@ def project_config_create(request):
         sampling_method = request.POST.get('sampling_method')
         instance = SamplingConfiguration(
             project_name=request.POST.get('project_name'),
+            project_name_full=request.POST.get('project_name_full'),
             sampling_method=sampling_method,
             curve_points=request.POST.get('curve_points'),
             qc_groups=request.POST.get('qc_groups'),
@@ -792,7 +924,7 @@ def ProcessResult(request):
     df_mapping_wc  = pd.read_excel(mapping_path, sheet_name="工作清单")   # for worksheet
     df_worklistmap = pd.read_excel(mapping_path, sheet_name="上机列表")    # worklist mapping 模板
 
-    # 上机模板（txt/csv）→ DataFrame（只需列名 / txt_headers）
+    # 解析后台设置的上机模板（txt/csv）→ DataFrame（只需列名 / txt_headers）,获取表头
     instrument_config = get_object_or_404(InstrumentConfiguration, instrument_num=instrument_num)
     if not instrument_config.upload_file:
         return HttpResponse("未设置该上机仪器对应的上机模板,请设置后再试", status=404)
@@ -815,7 +947,7 @@ def ProcessResult(request):
     df_template = pd.read_csv(StringIO(text), sep=None, engine="python", dtype=str)
     txt_headers = df_template.columns.tolist()
 
-    # 岗位清单主条码 ↔ 实验号
+    # 岗位清单主条码 ↔ 实验号（获取一一对应关系）
     st_sheet   = Stationtable.sheets()[0]
     st_nrows   = st_sheet.nrows
     st_ncols   = st_sheet.ncols
@@ -829,7 +961,7 @@ def ProcessResult(request):
     for bc, sn in zip(MainBarcode, SampleName):
         barcode_to_names[str(bc)].append(str(sn))
 
-    # 曲线/质控映射（供后续识别非临床样本）
+    # 曲线/质控映射（获取一一对应关系,供后续识别非临床样本）
     barcode_to_name = dict(zip(df_mapping_wc["Barcode"].astype(str), df_mapping_wc["Name"]))
 
     # 用于构建曲线/QC/Test/DB 序列
@@ -843,6 +975,7 @@ def ProcessResult(request):
     std_names = df_std["Name"].head(curve_points + 1).tolist()
     if not std_names or len(std_names) < (curve_points + 1):
         std_names = [f"STD{i}" for i in range(curve_points + 1)]
+
     qc_names = df_mapping_wc.loc[df_mapping_wc["Code"].astype(str).str.startswith("QC"), "Name"].unique().tolist()
 
     # 进样体积
@@ -853,6 +986,7 @@ def ProcessResult(request):
         injection_vol  = ""
 
     # ====== 工具：把“对齐后的单板数据” → 构建（工作清单 + 上机列表）并返回一个 plate payload ======
+    # 适用于只有一块板的情况，多块板需要循环反复调用此函数
     def build_one_plate_payload(aligned: dict, layout: str, plate_no_str: str):
         """
         aligned: 由 _process_one_starlet_plate()（Starlet）或 NIMBUS 构造出的：
@@ -867,7 +1001,7 @@ def ProcessResult(request):
         SubBarcode     = aligned["SubBarcode"]
         Warm           = aligned["Warm"]
 
-        # 96 补齐
+        # 96 补齐（Starlet单块板不到96个孔位，需补齐以保证数据格式与NIMBUS统一）
         rows, cols = 8, 12
         TOTAL = rows * cols
         def pad_to(seq, n, fill=""):
@@ -919,7 +1053,7 @@ def ProcessResult(request):
                 else:
                     MatchSampleName.append(matched_names[0]); DupBarcode.append(""); DupBarcodeSampleName.append("")
 
-        # —— 构建 96 孔工作清单网格（保持原渲染结构）——
+        # 二 构建 96 孔工作清单网格（保持原渲染结构）——
         letters = list("ABCDEFGH"); nums = [str(i) for i in range(1, 13)]
         # 定位孔集合（NIMBUS: Warm 含 X；Starlet: _process_one_starlet_plate 已把 Xn 放在 OriginBarcode 且 Warm 为空）
         locator_positions = set()
@@ -994,6 +1128,7 @@ def ProcessResult(request):
                     data_idx   = col_idx * 8 + row_idx
                     well_index = _well_number_rowwise(row_idx, int(col_num))
                     worksheet_grid[row_idx][col_idx] = build_well(row_letter, col_num, row_idx, col_idx, data_idx, well_index)
+
         else:                      # Starlet（行优先）
             for row_idx, row_letter in enumerate(letters):
                 for col_idx, col_num in enumerate(nums):
@@ -1036,12 +1171,25 @@ def ProcessResult(request):
 
         first_col = worklist_table.columns[0]
 
+        # 记录哪些列需要镜像第一列（由映射表的 * 标注）
+        mirror_cols = set()
+
         for _, row in df_worklistmap.iterrows():
             sample_key = row.iloc[0]
             fill_vals  = row.iloc[1:]
 
+            # ===== 新增：标记本行是否为“默认 * 行” =====
+            is_default_star_row = (str(sample_key).strip() == "*")
+
             def fill_cols(mask):
                 for col, val in zip(worklist_table.columns[1:], fill_vals.values):
+                    # ------- 新增：当“当前行是 * 行 且 该列映射值也为 *” → 镜像第一列 -------
+                    # ★ 标注“需要镜像”的列（映射表该列写了 "*"）
+                    if str(val).strip() == "*":
+                        mirror_cols.add(col)
+                        continue
+                    # -------------------------------------------------------------------
+
                     if col in ("SmplInjVol", "Injection volume"):
                         continue
                     if col in ("VialPos", "Vial position", "样品瓶"):
@@ -1061,7 +1209,10 @@ def ProcessResult(request):
                                     return None
                                 well_pos = f"{ROWS[row_idx]}{coln}"
                                 well_no  = _well_number_rowwise(row_idx, coln)
-                                return int(well_no) if val == "{{Well_Number}}" else (f"{injection_plate}-{well_pos}" if injection_plate else well_pos)
+                                if val == "{{Well_Number}}":
+                                    return f"{injection_plate}:{well_no}" if injection_plate else well_no
+                                else:
+                                    return f"{injection_plate}-{well_pos}" if injection_plate else well_pos
 
                             if val in ["{{Well_Number}}", "{{Well_Position}}"]:
                                 # 1) QC/STD：通过 name->barcode 队列取条码，再查位置信息
@@ -1069,19 +1220,26 @@ def ProcessResult(request):
                                     barcode = name_to_barcodes[sample_name_value].popleft()
                                     if barcode in barcode_to_well:
                                         pos, no = barcode_to_well[barcode]
-                                        return int(no) if val == "{{Well_Number}}" else (f"{injection_plate}-{pos}" if injection_plate else pos)
+                                        if val == "{{Well_Number}}":
+                                            return f"{injection_plate}:{no}" if injection_plate else no
+                                        else:
+                                            return f"{injection_plate}-{pos}" if injection_plate else pos
+
                                 # 2) 临床样本：第一列就是条码
                                 elif sample_name_value in barcode_to_well:
                                     pos, no = barcode_to_well[sample_name_value]
-                                    return int(no) if val == "{{Well_Number}}" else (f"{injection_plate}-{pos}" if injection_plate else pos)
+                                    if val == "{{Well_Number}}":
+                                        return f"{injection_plate}:{no}" if injection_plate else no
+                                    else:
+                                        return f"{injection_plate}-{pos}" if injection_plate else pos
                                 return None
                             return val
 
                         worklist_table.loc[mask, col] = worklist_table.loc[mask, first_col].apply(_resolve_vialpos)
-                        # 数字列尽量转 Int64（仅当全部为数字时）
-                        non_null = worklist_table[col].dropna()
-                        if len(non_null) and non_null.astype(str).str.strip().str.fullmatch(r"\d+").all():
-                            worklist_table[col] = pd.to_numeric(worklist_table[col], errors="coerce").astype("Int64")
+                        # # 数字列尽量转 Int64（仅当全部为数字时）
+                        # non_null = worklist_table[col].dropna()
+                        # if len(non_null) and non_null.astype(str).str.strip().str.fullmatch(r"\d+").all():
+                        #     worklist_table[col] = pd.to_numeric(worklist_table[col], errors="coerce").astype("Int64")
                     else:
                         worklist_table.loc[mask, col] = val
 
@@ -1105,6 +1263,34 @@ def ProcessResult(request):
         output_val = f"{year}\\{yearmonth}\\Data{setname}"
         if "SetName" in worklist_table.columns:  worklist_table["SetName"]  = setname
         if "OutputFile" in worklist_table.columns: worklist_table["OutputFile"] = output_val
+
+
+        # Thermo 专用：若第一列存在完全相同的多行值，则改成 原值_1、原值_2、…（仅对重复值生效）——
+        # 判断当前仪器是否 Thermo（InstrumentConfiguration.instrument_name 中包含 "Thermo"）
+        vendor_name = str(getattr(instrument_config, "instrument_name", "")).lower()
+        if "thermo" in vendor_name:
+            # 第一列的列名
+            first_col_name = worklist_table.columns[0]
+            # 统一按字符串处理
+            s = worklist_table[first_col_name].astype(str)
+
+            # 统计每个值出现次数，用于只对“重复值”做处理
+            vc = s.map(s.value_counts())
+            # 对同值分组做累加计数：0,1,2,...  -> 我们需要 1,2,3,...
+            order = s.groupby(s).cumcount() + 1
+
+            # 只改“出现次数 > 1”的那些值；出现 1 次的保持不变
+            mask = vc > 1
+            worklist_table.loc[mask, first_col_name] = s[mask] + "_" + order[mask].astype(str)
+
+        # ★ 统一“镜像列”赋值（整列镜像，不再区分哪些行）
+        if mirror_cols:
+            first_col_name = worklist_table.columns[0]
+            for col in mirror_cols:
+                worklist_table[col] = worklist_table[first_col_name]
+        
+        ic(worklist_table)
+
         worklist_records = worklist_table.to_dict(orient="records")
 
         header_meta = {
@@ -1181,38 +1367,63 @@ def ProcessResult(request):
 
 
 def preview_export(request):
-    """
-    用于浏览器预览 export_pdf.html（不生成 PDF）
-    """
-    payload = request.session.get("export_payload")
-    if not payload:
+    all_payload = request.session.get("export_payload")
+    if not all_payload:
         return HttpResponseBadRequest("没有可预览的数据，请先生成结果页面。")
 
+    # 兼容：多板/单板
+    if "plates" in all_payload:
+        try:
+            idx = int(request.GET.get("plate", "0"))
+        except ValueError:
+            idx = 0
+        plates = all_payload["plates"]
+        if idx < 0 or idx >= len(plates):
+            return HttpResponseBadRequest("板索引无效。")
+        payload = plates[idx]   # ⭐ 这里面才有 worksheet_table / error_rows / txt_headers / worklist_records
+    else:
+        payload = all_payload   # 旧结构，仍包含 worksheet_table 等顶层字段
+
     nums = [str(i) for i in range(1, 13)]
-
-    # 传 preview=True，让模板走浏览器用的字体加载方式
-    return render(request, "dashboard/export_pdf.html", {
-        "worksheet_table": payload["worksheet_table"],
-        "error_rows": payload["error_rows"],
-        "nums": nums,
-        "project": payload["project_name"],
-        "preview": True,
-
-        # ✅ 新增：导出 PDF 页眉需要的元信息（按你 ProcessResult.html 的第二行设计）
-        "header": {
-            "plate_no": payload["plate_no"],              # 例如 "X2"（你已从 Scanresult Warm 提取）
-            "instrument_num": payload["instrument_num"],    # 例如 FXS-YZ___（你已有 POST 获取）
-            "injection_plate": payload["injection_plate"],  # 上机盘号（如果表单没这个字段就给空）
-            "today_str": payload["today_str"], 
+    project = str(all_payload.get("project_name", "PROJECT"))
+    platform = str(all_payload.get("platform", "NewPlatform"))
+    return render(
+        request,
+        "dashboard/export_pdf.html",
+        {
+            "preview": True,
+            "nums": nums,
+            "project": project,
+            "platform": platform,
+            **payload,   # 必须把 worksheet_table / error_rows / txt_headers / worklist_records / header 带进去
         },
-    })
+    )
+
 
 # 导出pdf和excel
 def export_files(request):
-    """使用WeasyPrint生成PDF"""
-    payload = request.session.get("export_payload")
-    if not payload:
+    """使用WeasyPrint生成PDF（兼容单板/多板）"""
+    all_payload = request.session.get("export_payload")
+    if not all_payload:
         return HttpResponseBadRequest("没有可导出的数据，请先生成结果页面。")
+
+    # === 兼容两种会话结构：单板 vs 多板 ===
+    # 单板（旧结构）：直接就是一份 payload，包含 worksheet_table 等键
+    # 多板（新结构）：export_payload 里有 plates: [ {worksheet_table,..., header{plate_no}}, ... ]
+    if "plates" in all_payload and isinstance(all_payload["plates"], list):
+        # 读取前端传入的板索引（默认 0）
+        try:
+            plate_idx = int(request.GET.get("plate", "0"))
+        except ValueError:
+            plate_idx = 0
+        if plate_idx < 0 or plate_idx >= len(all_payload["plates"]):
+            return HttpResponseBadRequest("板索引无效。")
+        payload = all_payload["plates"][plate_idx]
+        # 这些顶层字段依然从总的 all_payload 里取（沿用旧有逻辑）
+        payload["project_name"] = all_payload.get("project_name")
+        payload["platform"] = all_payload.get("platform")
+    else:
+        payload = all_payload  # 旧结构：单板
 
     # 1) 目录设置
     today_str = datetime.today().strftime("%Y-%m-%d")
@@ -1229,7 +1440,6 @@ def export_files(request):
 
     # 2) 字体路径设置
     font_path = os.path.join(settings.BASE_DIR, 'dashboard', 'static', 'css', 'fonts', 'NotoSansSC-Regular.ttf')
-    ic(font_path)
 
     # 验证字体文件存在
     if not os.path.exists(font_path):
@@ -1276,8 +1486,13 @@ def export_files(request):
     """, font_config=font_config)
 
     # 7) 生成PDF
+    header = payload.get("header") or {}
+    plate_no = header.get("plate_no", "") 
+    plate_suffix = f"_{plate_no}" if str(plate_no) else ""
+
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    pdf_path = os.path.join(target_dir, f"WorkSheet_{timestamp}.pdf")
+    pdf_fname = f"WorkSheet_{timestamp}{plate_suffix}.pdf"
+    pdf_path = os.path.join(target_dir, pdf_fname)
     
     try:
         # 使用WeasyPrint生成PDF
@@ -1310,7 +1525,7 @@ def export_files(request):
 
     if instrument_name.lower() == "sciex":
         # Sciex：导出制表符分隔的 .txt
-        txt_fname = f"OnboardingList_{timestamp}.txt"
+        txt_fname = f"OnboardingList_{timestamp}{plate_suffix}.txt"
         txt_path = os.path.join(target_dir, txt_fname)
         df.to_csv(txt_path, sep="\t", index=False, encoding="utf-8")
         worklist_url_key = "txt_url"
@@ -1318,7 +1533,7 @@ def export_files(request):
 
     else:
         # 其它厂家：维持原有 .xlsx
-        xlsx_fname = f"OnboardingList_{timestamp}.xlsx"
+        xlsx_fname = f"OnboardingList_{timestamp}{plate_suffix}.xlsx"
         xlsx_path = os.path.join(target_dir, xlsx_fname)
         with pd.ExcelWriter(xlsx_path, engine="xlsxwriter") as writer:
             df.to_excel(writer, sheet_name="Worklist", index=False)
@@ -1329,10 +1544,12 @@ def export_files(request):
     resp = {
         "ok": True,
         "message": "导出完成",
-        "pdf_url": f"{settings.DOWNLOAD_URL}{today_str}/{project}/工作清单_{timestamp}.pdf",
+        "pdf_url": f"{settings.DOWNLOAD_URL}{today_str}/{project}/工作清单_{timestamp}{plate_suffix}.pdf",
     }
     resp[worklist_url_key] = worklist_url_val
     return JsonResponse(resp)
+
+
 
 # 历史标本查找
 def sample_search_api(request):

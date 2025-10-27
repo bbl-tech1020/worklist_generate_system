@@ -510,7 +510,7 @@ def file_download(request):
                                 files.append({
                                     "name": fname,
                                     "url": f"{settings.DOWNLOAD_URL}{platform}/{cat}/{date_name}/{proj}/{fname}",
-                                    "is_pdf": fname.lower().endswith(".pdf"),
+                                    "force_download": ext.endswith((".pdf", ".txt", ".xlsx", ".xls", ".csv")),
                                 })
                             projects.append({"name": proj, "files": files})
 
@@ -526,7 +526,7 @@ def file_download(request):
                             files.append({
                                 "name": fname,
                                 "url": f"{settings.DOWNLOAD_URL}{platform}/{cat}/{date_name}/{fname}",
-                                "is_pdf": fname.lower().endswith(".pdf"),
+                                "force_download": ext.endswith((".pdf", ".txt", ".xlsx", ".xls", ".csv")),
                             })
                         days.append({"date": date_name, "files": files})
 
@@ -651,6 +651,7 @@ def vendor_config_create(request):
         instance = InstrumentConfiguration(
             instrument_name=request.POST.get('instrument_name'),
             instrument_num=request.POST.get('instrument_num'),
+            systerm_num=request.POST.get('systerm_num'),
             upload_file=request.FILES.get('upload_file'),
         )
 
@@ -1165,10 +1166,6 @@ def ProcessResult(request):
         for barcode, name in barcode_to_name.items():
             name_to_barcodes[name].append(barcode)
 
-        # 规则：SmplInjVol 单独处理
-        if "SmplInjVol" in worklist_table.columns:
-            worklist_table["SmplInjVol"] = injection_vol
-
         first_col = worklist_table.columns[0]
 
         # 记录哪些列需要镜像第一列（由映射表的 * 标注）
@@ -1259,7 +1256,7 @@ def ProcessResult(request):
         today_str  = timezone.localtime().strftime("%Y%m%d")
         year       = today_str[:4]
         yearmonth  = today_str[:6]
-        setname    = f"{instrument_num}-{project_name}-{today_str}-{plate_no_str}"
+        setname    = f"{instrument_num}_{project_name}_{today_str}_{plate_no_str}_GZ"
         output_val = f"{year}\\{yearmonth}\\Data{setname}"
         if "SetName" in worklist_table.columns:  worklist_table["SetName"]  = setname
         if "OutputFile" in worklist_table.columns: worklist_table["OutputFile"] = output_val
@@ -1288,6 +1285,14 @@ def ProcessResult(request):
             first_col_name = worklist_table.columns[0]
             for col in mirror_cols:
                 worklist_table[col] = worklist_table[first_col_name]
+
+        # 进样体积
+        if "SmplInjVol" in worklist_table.columns:
+            worklist_table["SmplInjVol"] = injection_vol
+        
+        # 进样盘
+        if "PlatePos" in worklist_table.columns:
+            worklist_table["PlatePos"] = injection_plate
         
         ic(worklist_table)
 

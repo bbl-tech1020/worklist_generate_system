@@ -24,6 +24,7 @@
         <tr>
           <th>项目名称</th>
           <th>仪器编号</th>
+          <th>系统号</th> 
           <th>进样盘号</th>
           <th>操作</th>
         </tr>
@@ -33,6 +34,7 @@
         <tr>
           <td>{{ config.project_name }}</td>
           <td>{{ config.instrument_num }}</td>
+          <td>{{ config.systerm_num }}</td> 
           <!-- injection_plate 是一个列表，展示为逗号分隔 -->
           <td>
             {% if config.injection_plate %}

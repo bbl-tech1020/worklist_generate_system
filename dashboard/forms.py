@@ -11,6 +11,7 @@ class SamplingConfigurationForm(forms.ModelForm):
         fields = '__all__'
         widgets = {
             'project_name': forms.TextInput(attrs={'class': 'form-control'}),
+            'project_name_full': forms.TextInput(attrs={'class': 'form-control'}),
             'sampling_method': forms.Select(attrs={'class': 'form-select'}),
             'curve_points': forms.Select(choices=[(i, i) for i in range(6, 11)], attrs={'class': 'form-select'}),
             'qc_groups': forms.Select(choices=[(2, 2), (3, 3)], attrs={'class': 'form-select'}),

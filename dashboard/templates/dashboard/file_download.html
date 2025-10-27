@@ -73,7 +73,7 @@
                 {# 取样指令：日期下直接是文件 #}
                 {% if day.files %}
                 {% for f in day.files %}
-                {% if f.is_pdf %}
+                {% if f.force_download %}
                 <li><a class="file" href="{{ f.url }}" download="{{ f.name }}">📄 {{ f.name }}</a></li>
                 {% else %}
                 <li><a class="file" href="{{ f.url }}" target="_blank">📄 {{ f.name }}</a></li>
@@ -88,7 +88,7 @@
                   <span class="folder">📁 {{ proj.name }}</span>
                   <ul class="hidden">
                     {% for f in proj.files %}
-                    {% if f.is_pdf %}
+                    {% if f.force_download %}
                     <li><a class="file" href="{{ f.url }}" download="{{ f.name }}">📄 {{ f.name }}</a></li>
                     {% else %}
                     <li><a class="file" href="{{ f.url }}" target="_blank">📄 {{ f.name }}</a></li>

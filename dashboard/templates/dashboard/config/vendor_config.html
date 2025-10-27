@@ -28,6 +28,7 @@
                 <tr>
                     <th>仪器编号</th>
                     <th>仪器厂家</th>    
+                    <th>系统号</th> 
                     <th>上传模板</th>
                     <th>操作</th>
                 </tr>
@@ -37,6 +38,7 @@
                 <tr>
                     <td>{{ config.instrument_num }}</td>
                     <td>{{ config.instrument_name }}</td>  
+                    <td>{{ config.systerm_num }}</td>  
                     <td>
                         {% if config.upload_file %}
                             <a href="{{ config.upload_file.url }}" download>{{config.upload_file}}</a>

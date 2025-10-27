@@ -51,20 +51,45 @@ class SamplingConfiguration(models.Model):
         return f"{self.project_name} ({self.sampling_method})"
     
 class InstrumentConfiguration(models.Model):
+    SYSTERM_NUM_CHOICES = [
+        ('S0', 'S0'),
+        ('S1', 'S1'),
+        ('S2', 'S2'),
+        ('S3', 'S3'),
+        ('S4', 'S4'),
+    ]
+
     instrument_name = models.CharField(max_length=200)
     instrument_num = models.CharField(max_length=200)
+    systerm_num = models.CharField(max_length=10, choices=SYSTERM_NUM_CHOICES, default='', blank=True)  # ★ 新增字段:系统号
     upload_file = models.FileField(upload_to=upload_to_instrument_folder, blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
 class InjectionVolumeConfiguration(models.Model):
+    SYSTERM_NUM_CHOICES = [
+        ('S0', 'S0'),
+        ('S1', 'S1'),
+        ('S2', 'S2'),
+        ('S3', 'S3'),
+        ('S4', 'S4'),
+    ]
     project_name = models.CharField(max_length=200)
     instrument_num = models.CharField(max_length=200)
+    systerm_num = models.CharField(max_length=10, choices=SYSTERM_NUM_CHOICES, default='', blank=True)  # ★ 新增字段:系统号
     injection_volume = models.IntegerField()
     created_at = models.DateTimeField(auto_now_add=True)
 
 class InjectionPlateConfiguration(models.Model):
+    SYSTERM_NUM_CHOICES = [
+        ('S0', 'S0'),
+        ('S1', 'S1'),
+        ('S2', 'S2'),
+        ('S3', 'S3'),
+        ('S4', 'S4'),
+    ]
     project_name = models.CharField(max_length=200)
     instrument_num = models.CharField(max_length=200)
+    systerm_num = models.CharField(max_length=10, choices=SYSTERM_NUM_CHOICES, default='', blank=True)  # ★ 新增字段:系统号
     injection_plate = models.JSONField(default=list, help_text="保存为字符串列表，例如 ['Plate1','Plate2','Plate3'] ")
     created_at = models.DateTimeField(auto_now_add=True)
 

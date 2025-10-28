@@ -1227,28 +1227,28 @@ def ProcessResult(request):
                                         pos, no = barcode_to_well[barcode]
                                         if instrument_name == "Thermo" or instrument_name == "Agilent":
                                             if val == "{{Well_Number}}":
-                                                return f"{injection_plate}:{well_no}" if injection_plate else well_no
+                                                return f"{injection_plate}:{no}" if injection_plate else no
                                             else:
-                                                return f"{injection_plate}-{well_pos}" if injection_plate else well_pos
+                                                return f"{injection_plate}-{pos}" if injection_plate else pos
                                         else:
                                             if val == "{{Well_Number}}":
-                                                return f"{well_no}"
+                                                return no
                                             else:
-                                                return f"{well_pos}"
+                                                return pos
 
                                 # 2) 临床样本：第一列就是条码
                                 elif sample_name_value in barcode_to_well:
                                     pos, no = barcode_to_well[sample_name_value]
                                     if instrument_name == "Thermo" or instrument_name == "Agilent":
                                         if val == "{{Well_Number}}":
-                                            return f"{injection_plate}:{well_no}" if injection_plate else well_no
+                                            return f"{injection_plate}:{no}" if injection_plate else no
                                         else:
-                                            return f"{injection_plate}-{well_pos}" if injection_plate else well_pos
+                                            return f"{injection_plate}-{pos}" if injection_plate else pos
                                     else:
                                         if val == "{{Well_Number}}":
-                                            return well_no
+                                            return no
                                         else:
-                                            return ell_pos
+                                            return pos
                                 return None
                             return val
 
@@ -1280,6 +1280,7 @@ def ProcessResult(request):
         output_val = f"{year}\\{yearmonth}\\Data{setname}"
         if "SetName" in worklist_table.columns:  worklist_table["SetName"]  = setname
         if "OutputFile" in worklist_table.columns: worklist_table["OutputFile"] = output_val
+
 
         # Thermo 专用：若第一列存在完全相同的多行值，则改成 原值_1、原值_2、…（仅对重复值生效）——
         # 判断当前仪器是否 Thermo（InstrumentConfiguration.instrument_name 中包含 "Thermo"）

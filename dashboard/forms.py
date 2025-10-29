@@ -20,4 +20,5 @@ class SamplingConfigurationForm(forms.ModelForm):
             'test_count': forms.Select(choices=[(2, 2), (3, 3), (4, 4)], attrs={'class': 'form-select'}),
             'layout': forms.Select(choices=[('horizontal', '横向'), ('vertical', '纵向')], attrs={'class': 'form-select'}),
             'default_upload_instrument': forms.TextInput(attrs={'class': 'form-control'}),
+            'systerm_num': forms.Select(choices=[('S0', 'S0'), ('S1', 'S1'), ('S2', 'S2'), ('S3', 'S3'), ('S4', 'S4')], attrs={'class': 'form-select'}),
         }

@@ -1,0 +1,32 @@
+<!-- dashboard/templates/dashboard/error.html -->
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>错误提示</title>
+    <style>
+        body {
+            font-family: "Microsoft YaHei", sans-serif;
+            background-color: #f8f9fa;
+            text-align: center;
+            padding-top: 120px;
+        }
+        .error-box {
+            background-color: white;
+            display: inline-block;
+            padding: 40px 60px;
+            border-radius: 8px;
+            box-shadow: 0 0 10px rgba(0,0,0,0.1);
+        }
+        h1 { color: #dc3545; }
+        p  { color: #555; font-size: 15px; }
+    </style>
+</head>
+<body>
+    <div class="error-box">
+        <h1>⚠️ 操作失败</h1>
+        <p>{{ message }}</p>
+        <p><a href="{% url 'dashboard_home' %}">返回首页</a></p>
+    </div>
+</body>
+</html>

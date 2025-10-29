@@ -32,6 +32,7 @@
                     <th>曲线点数</th>
                     <th>Test数</th>
                     <th>默认上机仪器</th>
+                    <th>系统号</th>
                     <th>操作</th>
                 </tr>
             </thead>
@@ -44,6 +45,7 @@
                     <td>{{ config.curve_points }}</td>
                     <td>{{ config.test_count }}</td>
                     <td>{{ config.default_upload_instrument }}</td>
+                    <td>{{ config.systerm_num }}</td>
                     <td>
                         <a href="{% url 'project_config_view' config.pk %}" class="text-primary me-2">预览</a> |
                         <a href="{% url 'project_config_edit' config.pk %}" class="text-warning ms-2">编辑</a> |

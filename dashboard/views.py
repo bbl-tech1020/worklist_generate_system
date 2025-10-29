@@ -44,13 +44,22 @@ def user_manual(request):
 def frontend_entry(request):
     return render(request, 'dashboard/frontend/index.html')
 
-# 关联后台参数配置中已设置的所有项目
+# 关联后台参数配置中已设置的所有项目（获取唯一项目名及对应的第一条记录）
 def get_project_list(request):
-    configs = SamplingConfiguration.objects.all()
-    data = [
-        {'id': c.id, 'name': c.project_name}
-        for c in configs
-    ]
+    # 获取唯一项目名及对应的第一条记录
+    unique_projects = (
+        SamplingConfiguration.objects
+        .values('project_name')                # 只取项目名
+        .distinct()                            # 去重（仅保留唯一项目名）
+    )
+
+    # 取每个唯一项目名的第一条记录（id）
+    data = []
+    for proj in unique_projects:
+        first_obj = SamplingConfiguration.objects.filter(project_name=proj['project_name']).first()
+        if first_obj:
+            data.append({'id': first_obj.id, 'name': first_obj.project_name})
+
     return JsonResponse({'projects': data})
 
 # 选择具体某个项目时，关联后台参数配置中该项目的配置信息
@@ -578,29 +587,54 @@ def project_config(request):
 
 def project_config_create(request):
     if request.method == 'POST':
-        # 1. 判断是哪种取样方式
-        sampling_method = request.POST.get('sampling_method')
-        instance = SamplingConfiguration(
-            project_name=request.POST.get('project_name'),
-            project_name_full=request.POST.get('project_name_full'),
-            sampling_method=sampling_method,
-            curve_points=request.POST.get('curve_points'),
-            qc_groups=request.POST.get('qc_groups'),
-            qc_levels=request.POST.get('qc_levels'),
-            qc_insert=request.POST.get('qc_insert'),
-            test_count=request.POST.get('test_count'),
-            layout=request.POST.get('layout'),
-            default_upload_instrument=request.POST.get('default_upload_instrument'),
-            mapping_file=request.FILES.get('mapping_file'),
-        )
+        # 1️⃣ 获取表单字段
+        project_name = request.POST.get('project_name', '').strip()
+        project_name_full = request.POST.get('project_name_full', '').strip()
+        sampling_method = request.POST.get('sampling_method', '').strip()
+        curve_points = request.POST.get('curve_points', '').strip()
+        qc_groups = request.POST.get('qc_groups', '').strip()
+        qc_levels = request.POST.get('qc_levels', '').strip()
+        qc_insert = request.POST.get('qc_insert', '').strip()
+        test_count = request.POST.get('test_count', '').strip()
+        layout = request.POST.get('layout', '').strip()
+        default_upload_instrument = request.POST.get('default_upload_instrument', '').strip()
+        systerm_num = request.POST.get('systerm_num', '').strip()
+        mapping_file = request.FILES.get('mapping_file')
 
+        # 2️⃣ 校验是否已存在相同配置
+        duplicate_qs = SamplingConfiguration.objects.filter(
+            project_name=project_name,
+            default_upload_instrument=default_upload_instrument,
+            systerm_num=systerm_num
+        )
+        if duplicate_qs.exists():
+            return render(request, 'dashboard/error.html', {
+                "message": f"项目 [{project_name}] 已存在相同的仪器编号 [{default_upload_instrument}] 与系统号 [{systerm_num}] 配置，请勿重复创建。"
+            })
+
+        # 3️⃣ 创建新配置
+        instance = SamplingConfiguration(
+            project_name=project_name,
+            project_name_full=project_name_full,
+            sampling_method=sampling_method,
+            curve_points=curve_points,
+            qc_groups=qc_groups,
+            qc_levels=qc_levels,
+            qc_insert=qc_insert,
+            test_count=test_count,
+            layout=layout,
+            default_upload_instrument=default_upload_instrument,
+            systerm_num=systerm_num,
+            mapping_file=mapping_file,
+        )
         instance.save()
         return redirect('project_config')
+
     else:
         curve_range = list(range(6, 11))  # [6, 7, 8, 9, 10]
-    return render(request, 'dashboard/config/project_config_create.html', {
-        'curve_range': curve_range
-    })
+        return render(request, 'dashboard/config/project_config_create.html', {
+            'curve_range': curve_range
+        })
 
 def project_config_view(request, pk):
     config = get_object_or_404(SamplingConfiguration, pk=pk)
@@ -629,7 +663,6 @@ def project_config_edit(request, pk):
         'form': form,
         'config': config,
     })
-
 
 def project_config_delete(request, pk):
     if request.method == "POST":
@@ -682,6 +715,7 @@ def injection_volume_config_create(request):
             project_name=request.POST.get('project_name'),
             instrument_num=request.POST.get('instrument_num'),
             injection_volume=request.POST.get('injection_volume'),
+            systerm_num=request.POST.get('systerm_num'),
         )
 
         instance.save()
@@ -749,6 +783,7 @@ def _tail_number(s: str):
     m = re.search(r'(\d+)$', str(s).strip())
     return int(m.group(1)) if m else None
 
+
 def _starlet_split_plates(scan_sheet, index_map):
     """
     将 Starlet 的扫码 sheet,按 TLabwareId 的末尾数字 分为多块板。
@@ -795,6 +830,7 @@ def _starlet_split_plates(scan_sheet, index_map):
     plate_groups = sorted(bucket.items(), key=lambda x: x[0])  # [(n, [rows...]), ...]
     return plate_groups
 
+
 # 把原先 Starlet 单板的 96 孔对齐 与 定位孔补齐 逻辑封装进来
 def _process_one_starlet_plate(scan_sheet, index_map, row_indexes, plate_no_int):
     """
@@ -814,6 +850,10 @@ def _process_one_starlet_plate(scan_sheet, index_map, row_indexes, plate_no_int)
     s_idx = index_map.get("TSumStateDescription", 0)
     b_idx = index_map.get("SPositionBC", 0)
 
+    # ★ 新增：
+    tsum_idx = index_map.get("TStatusSummary", None)
+    tvol_idx = index_map.get("TVolume", None)
+
     # 先按 position -> row 信息字典
     row_by_pos = {}
     for i in row_indexes:
@@ -821,7 +861,11 @@ def _process_one_starlet_plate(scan_sheet, index_map, row_indexes, plate_no_int)
         row_by_pos[pos] = {
             "Status":        scan_sheet.row_values(i)[s_idx],
             "OriginBarcode": scan_sheet.row_values(i)[b_idx],
-            "Warm":          ""   # Starlet 无 Warm
+            "Warm":          "",   # Starlet 无 Warm
+
+            # ★ 新增：把两列值也放到行记录里（可能为 None）
+            "TStatusSummary": scan_sheet.row_values(i)[tsum_idx] if tsum_idx is not None else "",
+            "TVolume":        scan_sheet.row_values(i)[tvol_idx] if tvol_idx is not None else "",
         }
 
     # 预期 96 孔顺序
@@ -832,6 +876,8 @@ def _process_one_starlet_plate(scan_sheet, index_map, row_indexes, plate_no_int)
     # 对齐并在缺行时补齐
     Position, Status, OriginBarcode = [], [], []
     CutBarcode, SubBarcode, Warm    = [], [], []
+    # ★ 新增：
+    TStatusSummary, TVolume = [], []
 
     # 定位孔规则：第 1~12 板 -> B1..B12；13~24 -> C1..C12；……
     locator_rows = ["B","C","D","E","F","G","H"]  # 最多 7*12 = 84 块板可直接映射
@@ -846,8 +892,14 @@ def _process_one_starlet_plate(scan_sheet, index_map, row_indexes, plate_no_int)
             status = row_by_pos[pos]["Status"]
             bc     = row_by_pos[pos]["OriginBarcode"]
             warm   = row_by_pos[pos]["Warm"]
+            # ★ 新增：
+            tsum   = row_by_pos[pos]["TStatusSummary"]
+            tvol   = row_by_pos[pos]["TVolume"]
         else:
             status, bc, warm = "Not used", "NOTUBE", ""
+            # ★ 新增：缺行时默认
+            tsum, tvol = "", 0
+
             # 缺行但命中定位孔位置时，用 X{n}
             if locator_target and pos == locator_target:
                 bc = f"X{plate_no_int}"
@@ -855,6 +907,9 @@ def _process_one_starlet_plate(scan_sheet, index_map, row_indexes, plate_no_int)
         Position.append(pos)
         Status.append(status)
         Warm.append(warm)
+        # ★ 新增：
+        TStatusSummary.append(tsum)
+        TVolume.append(tvol)
 
         bc_str = str(bc)
         parts  = bc_str.split("-", 1)
@@ -870,6 +925,10 @@ def _process_one_starlet_plate(scan_sheet, index_map, row_indexes, plate_no_int)
         "SubBarcode": SubBarcode,
         "Warm": Warm,
         "plate_no_str": f"X{plate_no_int}",
+
+        # ★ 新增：
+        "TStatusSummary": TStatusSummary,
+        "TVolume": TVolume,
     }
 
 
@@ -892,9 +951,11 @@ def ProcessResult(request):
 
     # ========== 1. 入参与上传文件 ==========
     project_id      = request.POST.get("project_id")
+    project_name = request.POST.get("project_name")
     platform        = request.POST.get("platform")                # 'NIMBUS' | 'Starlet'
     injection_plate = request.POST.get("injection_plate") if 'injection_plate' in request.POST else None
-    instrument_num  = request.POST.get("instrument_num")
+    instrument_num  = request.POST.get("instrument_num")  # 默认上机仪器
+    systerm_num  = request.POST.get("systerm_num")  # 系统号
 
     Stationlist = request.FILES.get('station_list')               # 每日操作清单
     Scanresult  = request.FILES.get('scan_result')                # 扫码结果
@@ -919,16 +980,33 @@ def ProcessResult(request):
     LABW_IDX  = scan_index.get("TLabwareId")        # Starlet有
 
     # ========== 2. 基础配置与映射（整次仅读一次） ==========
-    config         = SamplingConfiguration.objects.get(id=project_id)
+
+    # 获取后台设置的项目参数，如果没设置报错并提示
+
+    try:
+        config = SamplingConfiguration.objects.get(project_name=project_name,default_upload_instrument=instrument_num,systerm_num=systerm_num)
+    except SamplingConfiguration.DoesNotExist:
+        # 返回友好的错误提示页面
+        return render(request, "dashboard/error.html", {
+            "message": "未配置项目参数，请前往后台参数配置中完善该项目设置后重试。"
+        })
+
     project_name   = config.project_name
+    project_name_full   = config.project_name_full
     mapping_path   = config.mapping_file.path
     df_mapping_wc  = pd.read_excel(mapping_path, sheet_name="工作清单")   # for worksheet
     df_worklistmap = pd.read_excel(mapping_path, sheet_name="上机列表")    # worklist mapping 模板
 
     # 解析后台设置的上机模板（txt/csv）→ DataFrame（只需列名 / txt_headers）,获取表头
-    instrument_config = get_object_or_404(InstrumentConfiguration, instrument_num=instrument_num)
+    try:
+        instrument_config = InstrumentConfiguration.objects.get(instrument_num=instrument_num,systerm_num=systerm_num)
+    except InstrumentConfiguration.DoesNotExist:
+        # 返回友好的错误提示页面
+        return render(request, "dashboard/error.html", {
+            "message": "未配置仪器厂家参数，请前往后台参数配置中完善设置后重试。"
+        })
+
     instrument_name = instrument_config.instrument_name
-    ic(instrument_name)
     if not instrument_config.upload_file:
         return HttpResponse("未设置该上机仪器对应的上机模板,请设置后再试", status=404)
 
@@ -981,12 +1059,13 @@ def ProcessResult(request):
 
     qc_names = df_mapping_wc.loc[df_mapping_wc["Code"].astype(str).str.startswith("QC"), "Name"].unique().tolist()
 
-    # 进样体积
+    # 进样体积（非必须设置项）
     try:
-        injection_cfg  = get_object_or_404(InjectionVolumeConfiguration, instrument_num=instrument_num, project_name=project_name)
+        injection_cfg = InjectionVolumeConfiguration.objects.get(project_name=project_name,instrument_num=instrument_num,systerm_num=systerm_num)
         injection_vol  = injection_cfg.injection_volume
-    except InstrumentConfiguration.DoesNotExist:
+    except InjectionVolumeConfiguration.DoesNotExist:
         injection_vol  = ""
+
 
     # ====== 工具：把“对齐后的单板数据” → 构建（工作清单 + 上机列表）并返回一个 plate payload ======
     # 适用于只有一块板的情况，多块板需要循环反复调用此函数
@@ -1004,6 +1083,10 @@ def ProcessResult(request):
         SubBarcode     = aligned["SubBarcode"]
         Warm           = aligned["Warm"]
 
+        # ★ 新增：
+        TStatusSummary = aligned.get("TStatusSummary", [""] * len(Position))
+        TVolume        = aligned.get("TVolume",        [0]   * len(Position))
+
         # 96 补齐（Starlet单块板不到96个孔位，需补齐以保证数据格式与NIMBUS统一）
         rows, cols = 8, 12
         TOTAL = rows * cols
@@ -1015,6 +1098,10 @@ def ProcessResult(request):
         pad_to(SubBarcode, TOTAL, "")
         pad_to(Warm, TOTAL, "")
         pad_to(Status, TOTAL, "Not used")
+
+        # ★ 新增：
+        pad_to(TStatusSummary, TOTAL, 0)
+        pad_to(TVolume,        TOTAL, 0) 
 
         # —— 与岗位清单匹配（按原来的规则）——
         cut_counter = Counter(CutBarcode)
@@ -1098,14 +1185,49 @@ def ProcessResult(request):
             }
 
             status_text = str(Status[data_idx]).strip().lower()
-            is_pipetting_error = ("pipetting error" in status_text)
-            if (str(Warm[data_idx]) in ["1", "4", "16384"]) or is_pipetting_error or (match_sample == "No match"):
+
+            # === Starlet 新口径：用 TStatusSummary + TVolume 判断两类报错 ===
+            def _to_int(x, default=0):
+                try:
+                    # 兼容 float/str/'16384.0' 等
+                    return int(float(x))
+                except Exception:
+                    return default
+
+            tsum = _to_int(TStatusSummary[data_idx], 0)
+            tvol = _to_int(TVolume[data_idx], 0)
+
+            # 1) 吸液报错（孔位可用）：tsum=16384 且 tvol=0
+            if tsum == 16384 and tvol == 0:
+                well["flag_suck"] = "1"
+                error_rows.append({
+                    "sample_name":   match_sample,
+                    "origin_barcode": OriginBarcode[data_idx],
+                    "plate_no":       plate_no_str,
+                    "well_str":       well_pos_str,
+                    "warn_level":     "1",
+                    "warn_info":      "Not used",
+                })
+
+            # 2) 打液报错（孔位不可用）：tsum=16384 且 tvol!=0
+            elif tsum == 16384 and tvol != 0:
+                well["flag_dispense"] = "1"
+                error_rows.append({
+                    "sample_name":   match_sample,
+                    "origin_barcode": OriginBarcode[data_idx],
+                    "plate_no":       plate_no_str,
+                    "well_str":       well_pos_str,
+                    "warn_level":     "16384",
+                    "warn_info":      "Pipetting error",
+                })
+
+            if (str(Warm[data_idx]) in ["1", "4", "16384"]) or (match_sample == "No match"):
                 error_rows.append({
                     "sample_name": match_sample,
                     "origin_barcode": OriginBarcode[data_idx],
                     "plate_no": plate_no_str,
                     "well_str": well_pos_str,
-                    "warn_level": Warm[data_idx] if Warm[data_idx] != "" else ("PIPETTING_ERROR" if is_pipetting_error else ""),
+                    "warn_level": Warm[data_idx],
                     "warn_info": Status[data_idx],
                 })
 
@@ -1253,10 +1375,7 @@ def ProcessResult(request):
                             return val
 
                         worklist_table.loc[mask, col] = worklist_table.loc[mask, first_col].apply(_resolve_vialpos)
-                        # # 数字列尽量转 Int64（仅当全部为数字时）
-                        # non_null = worklist_table[col].dropna()
-                        # if len(non_null) and non_null.astype(str).str.strip().str.fullmatch(r"\d+").all():
-                        #     worklist_table[col] = pd.to_numeric(worklist_table[col], errors="coerce").astype("Int64")
+
                     else:
                         worklist_table.loc[mask, col] = val
 
@@ -1307,8 +1426,9 @@ def ProcessResult(request):
                 worklist_table[col] = worklist_table[first_col_name]
 
         # 进样体积
-        if "SmplInjVol" in worklist_table.columns:
-            worklist_table["SmplInjVol"] = injection_vol
+        for col in ["SmplInjVol", "Injection volume"]:
+            if col in worklist_table.columns:
+                worklist_table[col] = injection_vol
         
         # 进样盘
         if "PlatePos" in worklist_table.columns:
@@ -1378,6 +1498,7 @@ def ProcessResult(request):
     # ========== 4. 保存 Session 与渲染 ==========
     request.session["export_payload"] = {
         "project_name": project_name,
+        "project_name_full": project_name_full,
         "platform": platform,
         "injection_plate": injection_plate,
         "plates": plates_payload,                 # ⭐ 多板/单板统一
@@ -1386,9 +1507,11 @@ def ProcessResult(request):
 
     return render(request, "dashboard/ProcessResult.html", {
         "project_name": project_name,
+        "project_name_full": project_name_full,
         "platform": platform,
         "plates": plates_payload,                 # 模板循环多张卡片
     })
+
 
 
 def preview_export(request):
@@ -1410,7 +1533,8 @@ def preview_export(request):
         payload = all_payload   # 旧结构，仍包含 worksheet_table 等顶层字段
 
     nums = [str(i) for i in range(1, 13)]
-    project = str(all_payload.get("project_name", "PROJECT"))
+    project_name = str(all_payload.get("project_name", "PROJECT"))
+    project_name_full = str(all_payload.get("project_name_full", "PROJECT"))
     platform = str(all_payload.get("platform", "NewPlatform"))
     return render(
         request,
@@ -1418,7 +1542,7 @@ def preview_export(request):
         {
             "preview": True,
             "nums": nums,
-            "project": project,
+            "project_name_full": project_name_full,
             "platform": platform,
             **payload,   # 必须把 worksheet_table / error_rows / txt_headers / worklist_records / header 带进去
         },
@@ -1452,7 +1576,8 @@ def export_files(request):
 
     # 1) 目录设置
     today_str = datetime.today().strftime("%Y-%m-%d")
-    project = str(payload.get("project_name", "PROJECT"))
+    project = str(all_payload.get("project_name", "PROJECT"))
+    project_name_full = str(all_payload.get("project_name_full", "PROJECT"))
     platform = str(payload.get("platform", "NewPlatform"))
     base_dir = settings.DOWNLOAD_ROOT
 
@@ -1479,10 +1604,11 @@ def export_files(request):
         {
             "worksheet_table": payload["worksheet_table"],
             "error_rows": payload["error_rows"],
-            "project": payload["project_name"],
+            "project_name_full": project_name_full,
             "nums": nums,
             "preview": False,  # PDF模式，不使用浏览器字体加载
             "header": payload.get("header", {}), 
+            "platform": payload.get("platform", ""),   # ★ 新增：让模板能识别 Starlet
         },
     )
 

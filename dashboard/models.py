@@ -27,6 +27,13 @@ class SamplingConfiguration(models.Model):
         ('yes', '是'),
         ('no', '否'),
     ]
+    SYSTERM_NUM_CHOICES = [
+        ('S0', 'S0'),
+        ('S1', 'S1'),
+        ('S2', 'S2'),
+        ('S3', 'S3'),
+        ('S4', 'S4'),
+    ]
 
     project_name = models.CharField(max_length=200)
     project_name_full = models.CharField(max_length=255, default='', blank=True)  # ★ 新增字段:项目全称
@@ -42,6 +49,7 @@ class SamplingConfiguration(models.Model):
     layout = models.CharField(max_length=10, choices=LAYOUT_CHOICES, blank=True, null=True)
 
     default_upload_instrument = models.CharField()
+    systerm_num = models.CharField(max_length=10, choices=SYSTERM_NUM_CHOICES, default='', blank=True)  # ★ 新增字段:系统号
 
     mapping_file = models.FileField(upload_to=upload_to_project_folder, blank=True, null=True)
 

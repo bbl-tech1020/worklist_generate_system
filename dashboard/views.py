@@ -1395,11 +1395,12 @@ def ProcessResult(request):
         today_str  = timezone.localtime().strftime("%Y%m%d")
         year       = today_str[:4]
         yearmonth  = today_str[:6]
-        setname    = f"{instrument_num}_{project_name}_{today_str}_{plate_no_str}_GZ"
+
+        setname    = f"{instrument_num}_{systerm_num}_{project_name}_{today_str}_{plate_no_str}_GZ"
         output_val = f"{year}\\{yearmonth}\\Data{setname}"
+
         if "SetName" in worklist_table.columns:  worklist_table["SetName"]  = setname
         if "OutputFile" in worklist_table.columns: worklist_table["OutputFile"] = output_val
-
 
         # Thermo 专用：若第一列存在完全相同的多行值，则改成 原值_1、原值_2、…（仅对重复值生效）——
         # 判断当前仪器是否 Thermo（InstrumentConfiguration.instrument_name 中包含 "Thermo"）
@@ -1499,6 +1500,8 @@ def ProcessResult(request):
     request.session["export_payload"] = {
         "project_name": project_name,
         "project_name_full": project_name_full,
+        "instrument_num": instrument_num,
+        "systerm_num": systerm_num,
         "platform": platform,
         "injection_plate": injection_plate,
         "plates": plates_payload,                 # ⭐ 多板/单板统一
@@ -1576,8 +1579,10 @@ def export_files(request):
 
     # 1) 目录设置
     today_str = datetime.today().strftime("%Y-%m-%d")
-    project = str(all_payload.get("project_name", "PROJECT"))
-    project_name_full = str(all_payload.get("project_name_full", "PROJECT"))
+    project = str(all_payload.get("project_name", ""))
+    project_name_full = str(all_payload.get("project_name_full", ""))
+    instrument_num = str(all_payload.get("instrument_num", ""))
+    systerm_num = str(all_payload.get("systerm_num", ""))
     platform = str(payload.get("platform", "NewPlatform"))
     base_dir = settings.DOWNLOAD_ROOT
 
@@ -1642,7 +1647,9 @@ def export_files(request):
     plate_suffix = f"_{plate_no}" if str(plate_no) else ""
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    pdf_fname = f"WorkSheet_{timestamp}{plate_suffix}.pdf"
+    # pdf_fname = f"WorkSheet_{timestamp}{plate_suffix}.pdf"
+
+    pdf_fname = f"WorkSheet_{instrument_num}_{systerm_num}_{project}_{timestamp}{plate_suffix}_GZ.pdf"
     pdf_path = os.path.join(target_dir, pdf_fname)
     
     try:
@@ -1676,7 +1683,8 @@ def export_files(request):
 
     if instrument_name.lower() == "sciex":
         # Sciex：导出制表符分隔的 .txt
-        txt_fname = f"OnboardingList_{timestamp}{plate_suffix}.txt"
+        # txt_fname = f"OnboardingList_{timestamp}{plate_suffix}.txt"
+        txt_fname = f"OnboardingList_{instrument_num}_{systerm_num}_{project}_{timestamp}{plate_suffix}_GZ.txt"
         txt_path = os.path.join(target_dir, txt_fname)
         df.to_csv(txt_path, sep="\t", index=False, encoding="utf-8")
         worklist_url_key = "txt_url"
@@ -1684,7 +1692,7 @@ def export_files(request):
 
     else:
         # 其它厂家：维持原有 .xlsx
-        xlsx_fname = f"OnboardingList_{timestamp}{plate_suffix}.xlsx"
+        xlsx_fname = f"OnboardingList_{instrument_num}_{systerm_num}_{project}_{timestamp}{plate_suffix}_GZ.xlsx"
         xlsx_path = os.path.join(target_dir, xlsx_fname)
         with pd.ExcelWriter(xlsx_path, engine="xlsxwriter") as writer:
             df.to_excel(writer, sheet_name="Worklist", index=False)

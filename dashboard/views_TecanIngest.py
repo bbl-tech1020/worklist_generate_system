@@ -526,6 +526,73 @@ def _parse_plate_meta_by_filename(filename: str) -> tuple[int, int]:
     return max(1, plate_number), max(1, start_offset)
 
 
+
+# === 新增：根据板号/偏移计算定位孔坐标 ===
+def _locator_coord_for_plate(plate_number: int, start_offset: int) -> tuple[str, int]:
+    """
+    返回 (row_letter, col_num)
+    - 行：按 plate 轮转 A..H
+    - 列：基础列 = 3 + floor((plate-1)/8)，再叠加 start_offset-1
+    """
+    row_letter = _PLATE_ROWS[(max(1, plate_number)-1) % 8]
+    base_col = 3 + ((max(1, plate_number)-1) // 8)
+    col_num = base_col + max(1, start_offset) - 1
+    return row_letter, col_num
+
+
+def _apply_locator_shift_for_clinicals(
+    clinical_cells: list[tuple[str, int, str]],
+    plate_number: int,
+    start_offset: int,
+) -> list[tuple[str, int, str]]:
+    """
+    按‘定位孔随板号’规则对临床样本做位移（沿定位孔所在列‘纵向’）。
+    - base_col = 3 + floor((plate-1)/8) + (start_offset-1)
+    - k = (plate-1) % 8   # 0..7 -> A..H
+    处理：
+      1) (A, base_col) → vertical_prev(A, base_col)  # A→H 且列-1
+      2) (B..rows[k], base_col) 逐个上移一行（B→A，C→B，…）
+      3) (rows[k], base_col) 留空（给定位孔）
+    """
+    base_col = 3 + ((max(1, plate_number) - 1) // 8) + (max(1, start_offset) - 1)
+    k = (max(1, plate_number) - 1) % 8  # 0..7
+
+    # 建索引：((row, col) -> text)
+    mp: dict[tuple[str, int], str] = {}
+    for r, c, s in clinical_cells:
+        mp[(r, c)] = s
+
+    # 纵向序中的“前一个孔”：A→H 且列-1；其余行向上同列
+    def vertical_prev(row_letter: str, col_num: int) -> tuple[str, int]:
+        if row_letter != "A":
+            prev_row = _PLATE_ROWS[_PLATE_ROWS.index(row_letter) - 1]
+            return prev_row, col_num
+        return "H", col_num - 1
+
+    # 1) A, base_col → 前一个纵向孔
+    src = ("A", base_col)
+    if src in mp:
+        dst = vertical_prev("A", base_col)
+        if dst[1] >= 1:           # 列下限保护
+            mp[dst] = mp[src]
+        del mp[src]
+
+    # 2) B..rows[k] 逐个上移（B→A、C→B、…）
+    for i in range(1, k + 1):
+        src = (_PLATE_ROWS[i], base_col)
+        dst = (_PLATE_ROWS[i - 1], base_col)
+        if src in mp:
+            mp[dst] = mp[src]
+            del mp[src]
+
+    # 回写为列表
+    out = []
+    for (r, c), s in mp.items():
+        out.append((r, c, s))
+    return out
+
+
+
 # 获取 QC 名称表（不再读 mapping_file）
 def _get_qc_name_table(file_basename: str) -> list[str]:
     """
@@ -551,8 +618,8 @@ def _build_curve_and_qc_cells(curve_points: int, qc_groups: int, qc_levels: int,
            示例：QC1_1 -> 'QC00001663'（显示“名称字段”，不是 code）
     """
     items = []
-    # STD
-    for i in range(curve_points):
+    # STD(计数时，STD0不算在内)
+    for i in range(curve_points+1):
         items.append({"label": f"STD{i}", "kind": "STD"})
     # QC
     qc_names_pool = _get_qc_name_table(file_basename)
@@ -635,28 +702,36 @@ def _render_tecan_process_result(request: HttpRequest, today: str, csv_abs_path:
     - STD/QC：从 SamplingConfiguration 读取 curve_points / qc_groups / qc_levels
     - 临床样品：读取 csv + station_map，按 R 逻辑定位
     """
-    # 1) 读项目参数（你项目里的 SamplingConfiguration 具体字段名如不同，请在此处改一行）
-    curve_points = qc_groups = qc_levels = None
-    try:
-        # 示例：ProjectConfig.objects.get(pk=project_id).sampling_config   （举例）
-        from .models import Project  # 按你仓库的模型改
-        proj = Project.objects.filter(pk=project_id).first()
-        sc = getattr(proj, "sampling_config", {}) or {}
+    # 1) 读取项目参数（曲线点、QC 组/层）
+    project_id      = request.POST.get("project_id")
+    project_name = request.POST.get("project_name")
+    instrument_num  = request.POST.get("instrument_num")  # 默认上机仪器
+    systerm_num  = request.POST.get("systerm_num")  # 系统号
 
-        project_name = sc.get("curve_points")
-        curve_points = int(sc.get("curve_points", 8))
-        qc_groups    = int(sc.get("qc_groups", 3))
-        qc_levels    = int(sc.get("qc_levels", 2))
-    except Exception:
-        curve_points, qc_groups, qc_levels = 8, 3, 2  # 兜底
+    # 获取后台设置的项目参数，如果没设置报错并提示
+
+    try:
+        config = SamplingConfiguration.objects.get(project_name=project_name,default_upload_instrument=instrument_num,systerm_num=systerm_num)
+    except SamplingConfiguration.DoesNotExist:
+        # 返回友好的错误提示页面
+        return render(request, "dashboard/error.html", {
+            "message": "未配置项目参数，请前往后台参数配置中完善该项目设置后重试。"
+        })
+
+    curve_points = qc_groups = qc_levels = 0
+    curve_points   = config.curve_points
+    qc_groups   = config.qc_groups
+    qc_levels   = config.qc_levels
+
+    project_name_full   = config.project_name_full
 
     # 2) 解析文件名得到 plate_number/offset
     file_basename = os.path.basename(csv_abs_path)
     plate_number, start_offset = _parse_plate_meta_by_filename(file_basename)
 
-    # 3) 构建 STD/QC 单元
+    # 3) 构建 STD/QC 单元 
     std_qc_items = _build_curve_and_qc_cells(curve_points, qc_groups, qc_levels, file_basename)
-    std_qc_coords = _linear_fill_vertical_from_A1(len(std_qc_items))  # [(row, col),...]
+    std_qc_coords = _linear_fill_vertical_from_A1(len(std_qc_items)) 
     std_qc_cells = [
         {"row": r, "col": c, "text": it["label"], "kind": it["kind"]}
         for it, (r, c) in zip(std_qc_items, std_qc_coords)
@@ -671,6 +746,14 @@ def _render_tecan_process_result(request: HttpRequest, today: str, csv_abs_path:
     except Exception:
         clinical_cells = []
 
+    # === 新增：按板号规则对“临床样本”位移（A 行左移 + 首个挪到前一孔）===
+    try:
+        raw_list = [(d["row"], d["col"], d["text"]) for d in clinical_cells]
+        shifted = _apply_locator_shift_for_clinicals(raw_list, plate_number, start_offset)
+        clinical_cells = [{"row": r, "col": c, "text": s} for (r, c, s) in shifted]
+    except Exception:
+        pass
+
     # 5) 组装 96 孔板矩阵 -> 二级字典 grid[row][col]
     grid: dict[str, dict[int, dict]] = {r: {c: {"std_qc": None, "sample": None} for c in _PLATE_COLS} for r in _PLATE_ROWS}
 
@@ -678,6 +761,13 @@ def _render_tecan_process_result(request: HttpRequest, today: str, csv_abs_path:
         grid[cell["row"]][cell["col"]]["std_qc"] = cell
     for cell in clinical_cells:
         grid[cell["row"]][cell["col"]]["sample"] = cell
+
+    # === 新增：把“定位孔”写入 grid（用于页面与上机列表替换）===
+    loc_row, loc_col = _locator_coord_for_plate(plate_number, start_offset)
+    if loc_col >= 1:  # 简单边界保护
+        grid.setdefault(loc_row, {}).setdefault(loc_col, {})
+        grid[loc_row][loc_col]["is_locator"] = True
+        grid[loc_row][loc_col]["locator_warm"] = f"X{plate_number}" 
     
 
     # 6) 渲染
@@ -698,7 +788,7 @@ def _render_tecan_process_result(request: HttpRequest, today: str, csv_abs_path:
             "origin_barcode": "",
             "barcode": "",
             "status": "",
-            "is_locator": False,            # TECAN 目前无定位孔概念，先 False
+            "is_locator": bool((cell or {}).get("is_locator")),     # ← 从 cell 读取
             "flags": [],                    # 预留：重复/一对多等
             "meta": {},
 
@@ -710,21 +800,25 @@ def _render_tecan_process_result(request: HttpRequest, today: str, csv_abs_path:
             "Warm": "",
         }
 
-        # 为了跟通用版“孔内多行”展示兼容，额外带上 TECAN 的两条文本
-        d["std_qc_text"]   = std_qc.get("text") or ""
-        d["sample_text"]   = sample.get("text") or ""
+        # 兼容“孔内多行”展示
+        d["std_qc_text"] = std_qc.get("text") or ""
+        d["sample_text"] = sample.get("text") or ""
 
-        # ⭐ 如果是 STD/QC，把名称也当作“条码”，以便后续 barcode_to_well 映射
-        if d["std_qc_text"]:
-            d["barcode"] = d["std_qc_text"]
+        # 若是定位孔，带上显示名（默认 "X{plate}" 已在 grid 写入）
+        if d["is_locator"]:
+            d["locator_warm"] = (cell or {}).get("locator_warm") or "Locator"
+            # 定位孔一般不当作条码参与映射，故不设置 d["barcode"]
+        else:
+            # 原有条码赋值逻辑（STD/QC 名称 or 样本名）
+            if d["std_qc_text"]:
+                d["barcode"] = d["std_qc_text"]
+            if d["sample_text"] and not d["barcode"]:
+                d["barcode"] = d["sample_text"]
 
-        # 如果是临床样本（sample.text 有值），按照你先前修正过的逻辑把它作为条码
-        if d["sample_text"] and not d["barcode"]:
-            d["barcode"] = d["sample_text"]
-        
-        if d["match_sample"] == "" and d["std_qc_text"]:
+        # match_sample 保持原逻辑
+        if d.get("match_sample", "") == "" and d["std_qc_text"]:
             d["match_sample"] = d["std_qc_text"]
-            d["flags"].append("std_qc")  # 可选：给下游一个标记
+            d["flags"].append("std_qc")
 
         return d
 
@@ -928,11 +1022,13 @@ def _render_tecan_process_result(request: HttpRequest, today: str, csv_abs_path:
         if locator_info:
             break
 
-    # 4) 读取 TECAN 的上机列表模板（DataFrame）
+    # 4) 读取上机列表模板（DataFrame）
     config = SamplingConfiguration.objects.get(id=project_id)
     mapping_file_path = config.mapping_file.path
-    worklist_mapping = pd.read_excel(mapping_file_path, sheet_name="上机列表")
-    worklist_table = pd.DataFrame(columns=worklist_mapping.columns)
+    worklist_table = pd.read_excel(mapping_file_path, sheet_name="上机列表")
+    worklist_table = worklist_table.dropna(how="all").reset_index(drop=True)
+
+    ic(worklist_table)
 
     # 5) 按 NIMBUS 的四类规则批量替换
     worklist_table_resolved, wl_errors = _resolve_tecan_worklist(

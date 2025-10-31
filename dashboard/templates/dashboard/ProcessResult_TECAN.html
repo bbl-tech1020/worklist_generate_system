@@ -104,8 +104,7 @@
     <table class="Table1" id="worksheet" cellpadding="4" cellspacing="4" border="1"> 
         <thead>
             <tr>
-                <th colspan="13" class="title">{{project_name}}前处理样品工作单（Testing Worksheet）
-                    <!-- <span class="spacing">表号：KM-SOP0314.311.02</span>  -->
+                <th colspan="13" class="title">{{project_name_full}}前处理样品工作单（Testing Worksheet）
                 </th>
             </tr>
             <tr>
@@ -129,7 +128,7 @@
                 <td class="letters">{{ row_idx.0.letter }}</td>
                 {% for cell in row_idx %}
                     <td class="{{ cell.letter }}">
-                        {% if cell.locator %}
+                        {% if cell.is_locator %}
                             <div class="locator">{{cell.locator_warm}}</div>
                         {% else %}
                             <div class="hole">{{ cell.letter }}{{ cell.num }}({{ cell.index }})</div>

@@ -25,6 +25,7 @@
             <option value="">请选择项目</option>
             <!-- 选项由js动态加载 -->
           </select>
+          <input type="hidden" id="project-name" name="project_name">
         </div>
 
         <div class="mb-3">
@@ -41,6 +42,20 @@
           <label class="form-label">上机仪器</label>
           <input type="text" class="form-control" id="instrument_num" name="instrument_num" placeholder="请输入仪器编号">
         </div>
+
+        <!-- 系统号 -->
+        <div class="mb-3">
+          <label class="form-label">系统号</label>
+          <select class="form-select" id="systerm_num" name="systerm_num">
+            <option value="">请选择</option>
+            <option value="S0">S0</option>
+            <option value="S1">S1</option>
+            <option value="S2">S2</option>
+            <option value="S3">S3</option>
+            <option value="S4">S4</option>
+        </select>
+        </div>
+        
         <div class="mt-4">
           <button class="btn btn-primary">提交</button>
         </div>
@@ -75,6 +90,11 @@
   
     projectSelect.addEventListener('change', function () {
       const projectId = this.value;
+      const projectName = this.options[this.selectedIndex]?.text || '';
+
+      // 同步项目名称到隐藏字段
+      document.getElementById('project-name').value = projectName;
+      
       if (!projectId) { instrumentInput.value = ''; return; }
   
       // 把最后的 0/ 替换成真实的 projectId + 斜杠

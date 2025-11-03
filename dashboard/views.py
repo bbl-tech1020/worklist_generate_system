@@ -74,30 +74,32 @@ def get_project_detail(request, pk):
 
 @require_GET
 def get_injection_plates(request):
-    """
-    根据项目名称(project_name)与仪器编号(instrument_num)返回配置的进样盘号列表。
-    兼容 CharField/JSONField 两种历史存储格式。
-    """
-    project_name = request.GET.get("project_name", "").strip()
+    project_name  = request.GET.get("project_name", "").strip()
     instrument_num = request.GET.get("instrument_num", "").strip()
+    systerm_num    = request.GET.get("systerm_num", "").strip()  # 新增
 
     plates = []
     if project_name and instrument_num:
-        try:
-            cfg = InjectionPlateConfiguration.objects.get(
-                project_name=project_name,
-                instrument_num=instrument_num,
-            )
+        qs = InjectionPlateConfiguration.objects.filter(
+            project_name=project_name,
+            instrument_num=instrument_num,
+        )
+        if systerm_num:  # 传了就按系统号进一步过滤
+            qs = qs.filter(systerm_num=systerm_num)
+
+        # 兼容历史：可能有多条，合并去重
+        for cfg in qs:
             raw = cfg.injection_plate
-            # 兼容：字符串（逗号分隔）或 JSON list
             if isinstance(raw, str):
-                plates = [s.strip() for s in raw.split(",") if s.strip()]
+                parts = [s.strip() for s in raw.split(",") if s.strip()]
             elif isinstance(raw, (list, tuple)):
-                plates = list(raw)
+                parts = list(raw)
             else:
-                plates = []
-        except InjectionPlateConfiguration.DoesNotExist:
-            plates = []
+                parts = []
+            plates.extend(parts)
+
+        # 去重并按字符串排序，避免顺序抖动
+        plates = sorted(dict.fromkeys(plates), key=lambda x: str(x))
 
     return JsonResponse({"plates": plates})
 
@@ -755,6 +757,7 @@ def injection_plate_config_create(request):
         instance = InjectionPlateConfiguration(
             project_name=request.POST.get('project_name', '').strip(),
             instrument_num=request.POST.get('instrument_num', '').strip(),
+            systerm_num=request.POST.get('systerm_num'),
             injection_plate=plate_list,
         )
         instance.save()
@@ -1514,7 +1517,6 @@ def ProcessResult(request):
         "platform": platform,
         "plates": plates_payload,                 # 模板循环多张卡片
     })
-
 
 
 def preview_export(request):

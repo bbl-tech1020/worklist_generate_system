@@ -513,6 +513,8 @@ def _load_station_map_for_today(today: str) -> dict[str, str]:
         pass
     return {}
 
+
+
 # 根据文件名解析 plate_number 与 start_offset  
 def _parse_plate_meta_by_filename(filename: str) -> tuple[int, int]:
     """
@@ -631,6 +633,142 @@ def _build_curve_and_qc_cells(curve_points: int, qc_groups: int, qc_levels: int,
             name_idx = (lv - 1) % len(qc_names_pool)
             items.append({"label": qc_names_pool[name_idx], "kind": "QC", "group": g, "level": lv})
     return items
+
+
+def _apply_mapping_to_table(
+    mapping_df: pd.DataFrame,
+    worklist_table: pd.DataFrame,
+    *,
+    name_to_barcodes: dict[str, deque],
+    barcode_to_well: dict[str, tuple[str, int]],
+    locator_info: dict | None = None,
+):
+    """
+    按 '上机列表' 映射模板，把占位符填入 worklist_table（第一列已是完整 SampleName_list）。
+    兼容规则：
+      - sample_key = 'DB*'/'Test*'/'STD3'/'*' 等
+      - 列值 = 常量 / '*'(镜像第一列) / {{Well_Number}} / {{Well_Position}}
+      - Tecan 特有：'----------' 代表定位孔（仅第1个生效，其他同名删掉）
+    """
+    df = worklist_table
+    headers = list(df.columns)
+    first_col = headers[0]
+
+    # 识别孔号/孔位列（尽量兼容多命名）
+    WELLNUM_COLS = {"Well_Number", "Vial position", "VialPos", "样品瓶"}
+    WELLPOS_COLS = {"Well_Position", "SourcePositionID", "TargetPositionID", "Vial position"}
+    col_wellnum = next((c for c in headers if c in WELLNUM_COLS), None)
+    col_wellpos = next((c for c in headers if c in WELLPOS_COLS), None)
+
+    # 记录需要镜像第一列的列（模板值 = '*'）
+    mirror_cols = set()
+
+    # 第一次使用定位孔的标记 & 待删除行
+    locator_first_used = False
+    rows_to_drop = []
+
+    # 按模板逐行套规则（与 NIMBUS 同构）
+    for _, map_row in mapping_df.iterrows():
+        sample_key = str(map_row.iloc[0]).strip()
+        fill_vals  = list(map_row.iloc[1:].values)
+
+        # 针对 sample_key 生成 mask
+        col0 = df[first_col].astype(str)
+
+        if sample_key.upper().startswith("DB"):
+            mask = col0.str.upper().str.startswith("DB")
+        elif sample_key.lower().startswith("test"):
+            mask = col0.str.lower().str.startswith("test")
+        elif sample_key.upper().startswith("STD"):
+            mask = col0 == sample_key  # STD3 等精确匹配
+        elif sample_key.strip() == "----------":
+            # 定位孔特殊：只替换第1个，其他同名删除
+            mask = col0 == "----------"
+        elif sample_key.strip() == "*":
+            # 兜底规则：留到最后填尚未填充的行
+            mask = df.iloc[:, 1].isna() if df.shape[1] > 1 else pd.Series([True] * len(df), index=df.index)
+        else:
+            # 临床样本（一般不在模板中定义具体 key），跳过；让 '*' 兜底去管
+            continue
+
+        idxs = df.index[mask].tolist()
+        if not idxs:
+            continue
+
+        # 处理每个目标列
+        for col, val in zip(headers[1:], fill_vals):
+            sval = str(val).strip()
+
+            # '*'：整列镜像第一列
+            if sval == "*":
+                mirror_cols.add(col)
+                continue
+
+            # 定位孔行：只替第一个命中的行
+            if sample_key.strip() == "----------":
+                if not locator_info:
+                    # 没有定位孔信息 → 保留原样
+                    continue
+                # 第一个
+                first_idx = None
+                for i in idxs:
+                    if not locator_first_used:
+                        first_idx = i
+                        locator_first_used = True
+                        break
+                # 其他同名行删除
+                for j in idxs:
+                    if j != first_idx:
+                        rows_to_drop.append(j)
+                if first_idx is None:
+                    continue
+                # 写显示名 + 坐标（仅当占位符时）
+                if col == first_col:
+                    df.at[first_idx, col] = locator_info.get("display_name", "Locator")
+                if col_wellnum and col == col_wellnum and df.at[first_idx, col_wellnum] in (None, "", "{{Well_Number}}"):
+                    df.at[first_idx, col_wellnum] = locator_info.get("well_num")
+                if col_wellpos and col == col_wellpos and df.at[first_idx, col_wellpos] in (None, "", "{{Well_Position}}"):
+                    df.at[first_idx, col_wellpos] = locator_info.get("well_pos")
+                continue
+
+            # 孔号/孔位占位符：根据“样本名 → 条码 → 孔位”求值
+            if sval in ("{{Well_Number}}", "{{Well_Position}}"):
+                def _resolve(sample_name_value: str):
+                    name = str(sample_name_value).strip()
+
+                    # 1) DB*: 固定 A1/1（与 Tecan 现有规则一致）
+                    if name.upper().startswith("DB"):
+                        return 1 if sval == "{{Well_Number}}" else "A1"
+
+                    # 2) QC/STD：Name→Barcode（队列），条码→(well_pos, well_num)
+                    if name in name_to_barcodes and name_to_barcodes[name]:
+                        barcode = name_to_barcodes[name].popleft()
+                        well = barcode_to_well.get(barcode)
+                        if well:
+                            return well[1] if sval == "{{Well_Number}}" else well[0]
+                        return None
+
+                    # 3) 临床：第一列值即条码
+                    well = barcode_to_well.get(name)
+                    if well:
+                        return well[1] if sval == "{{Well_Number}}" else well[0]
+                    return None
+
+                df.loc[mask, col] = df.loc[mask, first_col].apply(_resolve)
+            else:
+                # 其他列：写常量
+                df.loc[mask, col] = val
+
+    # 统一执行“镜像列”
+    for col in mirror_cols:
+        df[col] = df[first_col]
+
+    # 删除多余的定位孔行
+    if rows_to_drop:
+        df.drop(rows_to_drop, inplace=True)
+        df.reset_index(drop=True, inplace=True)
+
+    return df
 
 
 # 把“纵向填充”的线性序列 → 96 孔坐标（A1,B1,...H1,A2,...）
@@ -892,114 +1030,6 @@ def _render_tecan_process_result(request: HttpRequest, today: str, csv_abs_path:
                 mapping[b] = (cell.get("well_str"), cell.get("index"))
         return mapping
 
-    
-    def _resolve_tecan_worklist(worklist_df, *, name_to_barcodes, barcode_to_well, locator_info=None):
-        """
-        复用 NIMBUS 的四类规则对 DataFrame 批量替换：
-        1) DB* 行：{{Well_Number}}=1, {{Well_Position}}='A1'
-        2) '----------'（定位孔）：首次替换、其余删除
-        3) QC/STD：Name->Barcode (队列式)，再 Barcode->(well)
-        4) 临床样本：第一列即条码，Barcode->(well)
-        """
-        if worklist_df is None or worklist_df.empty:
-            return worklist_df, []
-
-        df = worklist_df.copy()
-        headers = list(df.columns)
-        errors = []
-
-        # 识别“样本名列”（NIMBUS 用第一列作为锚）
-        sample_col = headers[0]
-
-        # 找出“孔号/孔位列”（常见命名：VialPos, Vial position, Well_Number, Well_Position 等）
-        # 兼容大小写/空格
-        def _canon(s): return str(s or "").strip().lower().replace(" ", "").replace("_", "")
-        canon_headers = {h: _canon(h) for h in headers}
-        col_wellnum = next((h for h, ch in canon_headers.items() if ch in ("vialpos", "vialposition", "wellnumber")), None)
-        col_wellpos = next((h for h, ch in canon_headers.items() if ch in ("well_position", "wellposition")), None)
-
-        # 定位孔控制
-        locator_first_used = False
-
-        rows_to_drop = []
-
-        for idx, row in df.iterrows():
-            name = str(row.get(sample_col) or "").strip()
-
-            # 1) DB*：固定填充
-            if name.upper().startswith("DB"):
-                if col_wellnum and str(row.get(col_wellnum)).strip().startswith("{{"):
-                    df.at[idx, col_wellnum] = 1
-                if col_wellpos and str(row.get(col_wellpos)).strip().startswith("{{"):
-                    df.at[idx, col_wellpos] = "A1"
-                continue
-
-            # 2) 定位孔 '----------'
-            if name == "----------":
-                if not locator_info:
-                    # 没有定位孔信息，保留原样但记录一条告警
-                    errors.append({"type": "warn", "message": "未提供定位孔信息，'----------' 未替换"})
-                    continue
-                if locator_first_used:
-                    # 只保留第一次出现，其余删除
-                    rows_to_drop.append(idx)
-                    continue
-                # 第一次替换
-                locator_first_used = True
-                well_pos, well_num = locator_info.get("well_pos"), locator_info.get("well_num")
-                display = locator_info.get("display_name", "Locator")
-                df.at[idx, sample_col] = display
-                if col_wellnum and str(row.get(col_wellnum)).strip().startswith("{{"):
-                    df.at[idx, col_wellnum] = well_num
-                if col_wellpos and str(row.get(col_wellpos)).strip().startswith("{{"):
-                    df.at[idx, col_wellpos] = well_pos
-                continue
-
-            # 3) QC/STD：Name->Barcode（队列消费）-> Barcode->Well
-            #   依据：name_to_barcodes 来自 grid 的 std_qc 清单（名称=条码）
-            if name in name_to_barcodes:
-                if not name_to_barcodes[name]:
-                    errors.append({"type": "warn", "message": f"QC/STD '{name}' 数量不足（已耗尽）"})
-                    rows_to_drop.append(idx)
-                    continue
-                barcode = name_to_barcodes[name].popleft()
-                well = barcode_to_well.get(barcode)
-                if not well:
-                    errors.append({"type": "warn", "message": f"找不到 QC/STD '{name}' 的落位（barcode={barcode})"})
-                    rows_to_drop.append(idx)
-                    continue
-                well_pos, well_num = well
-                if col_wellnum and str(row.get(col_wellnum)).strip().startswith("{{"):
-                    df.at[idx, col_wellnum] = well_num
-                if col_wellpos and str(row.get(col_wellpos)).strip().startswith("{{"):
-                    df.at[idx, col_wellpos] = well_pos
-                continue
-
-            # 4) 临床样本：样本名即条码
-            barcode = name
-            well = barcode_to_well.get(barcode)
-            if not well:
-                # 允许工作表模板中出现与本板无关的行，直接略过或给出告警
-                errors.append({"type": "info", "message": f"条码 {barcode} 未在本板落位，忽略占位符替换"})
-                continue
-            well_pos, well_num = well
-            if col_wellnum and str(row.get(col_wellnum)).strip().startswith("{{"):
-                df.at[idx, col_wellnum] = well_num
-            if col_wellpos and str(row.get(col_wellpos)).strip().startswith("{{"):
-                df.at[idx, col_wellpos] = well_pos
-
-        if rows_to_drop:
-            df = df.drop(rows_to_drop).reset_index(drop=True)
-
-        # 孔号列强制为 Int64，避免小数
-        for col in [c for c in [col_wellnum] if c]:
-            try:
-                df[col] = pd.to_numeric(df[col], errors="ignore").astype("Int64")
-            except Exception:
-                pass
-
-        return df, errors
-
 
     # 1) 基于 grid 的 std_qc，构建 name->barcodes（TECAN：名称即条码）
     name_to_barcodes = _name_to_barcodes_from_grid(grid)
@@ -1022,16 +1052,42 @@ def _render_tecan_process_result(request: HttpRequest, today: str, csv_abs_path:
         if locator_info:
             break
 
-    # 4) 读取上机列表模板（DataFrame）
+    # 4) 读取上机列表模板（DataFrame） 
     config = SamplingConfiguration.objects.get(id=project_id)
     mapping_file_path = config.mapping_file.path
-    worklist_table = pd.read_excel(mapping_file_path, sheet_name="上机列表")
-    worklist_table = worklist_table.dropna(how="all").reset_index(drop=True)
+
+    # 读取“项目配置”与“上机映射模板”sheet（保留你现有读取 config 的代码不变）
+    mapping_df = pd.read_excel(mapping_file_path, sheet_name="上机列表").dropna(how="all").reset_index(drop=True)
+
+    # ① 用现有函数拼出 STD/QC 顺序，并计算定位孔
+    std_qc_items  = _build_curve_and_qc_cells(curve_points, qc_groups, qc_levels, file_basename)  # label=STDx/QC名
+    std_names     = [it["label"] for it in std_qc_items]                                          # → ['STD0','STD1',..., 'QCxxxx', ...]
+
+    # 临床样本顺序：直接复用上文已转换为 dict 的 clinical_cells（含 'text'）
+    clinical_barcodes = [cell["text"] for cell in clinical_cells if cell.get("text")]
+
+    # ②（可选）DB 序列：若你的模板含 DB* 规则，开启即可（与 NIMBUS 一致）
+    db_list = ["DB1", "DB2", "DB3", "DB4", "DB5"]
+
+    # ③ 拼出 SampleName_list（与 NIMBUS 同构：DB + STD/QC + 临床 [+ QC 结尾…]）
+    SampleName_list = db_list + std_names + clinical_barcodes
+
+    # ④ 以模板列头构造空表，第一列写入 SampleName_list
+    txt_headers = list(mapping_df.columns)
+    worklist_table = pd.DataFrame(columns=txt_headers)
+    worklist_table[txt_headers[0]] = SampleName_list
 
     ic(worklist_table)
 
     # 5) 按 NIMBUS 的四类规则批量替换
-    worklist_table_resolved, wl_errors = _resolve_tecan_worklist(
+    # ⑤ name→barcode 队列、barcode→well 映射、定位孔信息（直接用你现有构造方式）
+    # name_to_barcodes: 由 grid 统计 QC/STD 名称映射到条码队列（与原先一致）
+    # barcode_to_well : 由可视网格/worksheet_table 反向索引得到（与原先一致）
+    # locator_info    : {'well_pos': 'A3', 'well_num': 3, 'display_name': 'Xn'}（与原先一致）
+
+    # ⑥ 应用“上机映射模板”把占位符填入表
+    worklist_table = _apply_mapping_to_table(
+        mapping_df,
         worklist_table,
         name_to_barcodes=name_to_barcodes,
         barcode_to_well=barcode_to_well,
@@ -1039,8 +1095,8 @@ def _render_tecan_process_result(request: HttpRequest, today: str, csv_abs_path:
     )
 
     # 6) 导出给模板（动态表头/行）
-    txt_headers = list(worklist_table_resolved.columns)
-    worklist_records = worklist_table_resolved.to_dict("records")
+    txt_headers = list(worklist_table.columns)
+    worklist_records = worklist_table.to_dict("records")
 
     # 7) 写进 session 的 export_payload（便于“预览/导出”链路直接复用）
     payload = request.session.get("export_payload", {})

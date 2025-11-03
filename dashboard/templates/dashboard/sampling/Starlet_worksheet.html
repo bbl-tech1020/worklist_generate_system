@@ -119,11 +119,14 @@
   function refreshPlateDropdown() {
     const selectProject = document.getElementById('project-select');
     const instrumentInput = document.getElementById('instrument_num');
+    const systermSelect   = document.getElementById('systerm_num');
+
     const plateGroup = document.getElementById('plate-group');
     const plateSelect = document.getElementById('injection-plate-select');
 
     const projectName = selectProject.options[selectProject.selectedIndex]?.text || '';
     const instrumentNum = instrumentInput.value.trim();
+    const systermNum    = systermSelect.value.trim();
 
     // 条件不足则隐藏并清空
     if (!projectName || !instrumentNum) {
@@ -134,7 +137,8 @@
 
     // 请求后端获取盘号
     fetch("{% url 'get_injection_plates' %}?project_name=" + encodeURIComponent(projectName) +
-      "&instrument_num=" + encodeURIComponent(instrumentNum))
+      "&instrument_num=" + encodeURIComponent(instrumentNum) + 
+      (systermNum ? "&systerm_num=" + encodeURIComponent(systermNum) : ""))
       .then(res => res.json())
       .then(data => {
         const plates = data.plates || [];
@@ -178,6 +182,7 @@
 
   // 用户手动修改仪器时，也刷新盘号
   document.getElementById('instrument_num').addEventListener('input', refreshPlateDropdown);
+  document.getElementById('systerm_num').addEventListener('change', refreshPlateDropdown);
 
 </script>
   

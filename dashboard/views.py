@@ -935,7 +935,7 @@ def _process_one_starlet_plate(scan_sheet, index_map, row_indexes, plate_no_int)
     }
 
 
-# 结果处理，用户在前端功能入口处选择项目，上传文件并点击提交按钮后的处理逻辑
+# 结果处理，用户在前端功能入口处选择项目，上传文件并点击提交按钮后的处理逻辑 localtime
 def ProcessResult(request):
     """
     同时支持：

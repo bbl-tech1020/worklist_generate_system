@@ -10,6 +10,7 @@ from django.contrib.auth.decorators import login_required
 from django.http import HttpRequest, HttpResponse, HttpResponseBadRequest
 from django.views.decorators.csrf import csrf_protect
 from django.utils.html import escape
+from django.utils import timezone
 from django.shortcuts import render
 from .models import *
 
@@ -642,6 +643,8 @@ def _apply_mapping_to_table(
     name_to_barcodes: dict[str, deque],
     barcode_to_well: dict[str, tuple[str, int]],
     locator_info: dict | None = None,
+    set_name: str | None = None,       
+    output_file: str | None = None      
 ):
     """
     按 '上机列表' 映射模板，把占位符填入 worklist_table（第一列已是完整 SampleName_list）。
@@ -653,6 +656,8 @@ def _apply_mapping_to_table(
     df = worklist_table
     headers = list(df.columns)
     first_col = headers[0]
+
+    loc_display = (locator_info or {}).get("display_name")  # e.g. "X3"
 
     # 识别孔号/孔位列（尽量兼容多命名）
     WELLNUM_COLS = {"Well_Number", "Vial position", "VialPos", "样品瓶"}
@@ -681,9 +686,8 @@ def _apply_mapping_to_table(
             mask = col0.str.lower().str.startswith("test")
         elif sample_key.upper().startswith("STD"):
             mask = col0 == sample_key  # STD3 等精确匹配
-        elif sample_key.strip() == "----------":
-            # 定位孔特殊：只替换第1个，其他同名删除
-            mask = col0 == "----------"
+        elif loc_display and sample_key.strip() == loc_display:
+            mask = (col0 == loc_display)
         elif sample_key.strip() == "*":
             # 兜底规则：留到最后填尚未填充的行
             mask = df.iloc[:, 1].isna() if df.shape[1] > 1 else pd.Series([True] * len(df), index=df.index)
@@ -705,7 +709,7 @@ def _apply_mapping_to_table(
                 continue
 
             # 定位孔行：只替第一个命中的行
-            if sample_key.strip() == "----------":
+            if loc_display and sample_key.strip() == loc_display:
                 if not locator_info:
                     # 没有定位孔信息 → 保留原样
                     continue
@@ -724,10 +728,10 @@ def _apply_mapping_to_table(
                     continue
                 # 写显示名 + 坐标（仅当占位符时）
                 if col == first_col:
-                    df.at[first_idx, col] = locator_info.get("display_name", "Locator")
-                if col_wellnum and col == col_wellnum and df.at[first_idx, col_wellnum] in (None, "", "{{Well_Number}}"):
+                    df.at[first_idx, col] = loc_display
+                if col_wellnum and col == col_wellnum:
                     df.at[first_idx, col_wellnum] = locator_info.get("well_num")
-                if col_wellpos and col == col_wellpos and df.at[first_idx, col_wellpos] in (None, "", "{{Well_Position}}"):
+                if col_wellpos and col == col_wellpos:
                     df.at[first_idx, col_wellpos] = locator_info.get("well_pos")
                 continue
 
@@ -739,20 +743,27 @@ def _apply_mapping_to_table(
                     # 1) DB*: 固定 A1/1（与 Tecan 现有规则一致）
                     if name.upper().startswith("DB"):
                         return 1 if sval == "{{Well_Number}}" else "A1"
+                    
+                    # 2) 定位孔：name 等于 X{plate} 时，直接用 locator_info
+                    if loc_display and locator_info and name == loc_display:
+                        well_pos = locator_info.get("well_pos")
+                        well_num = locator_info.get("well_num")
+                        return well_num if sval == "{{Well_Number}}" else well_pos
 
-                    # 2) QC/STD：Name→Barcode（队列），条码→(well_pos, well_num)
+                    # 3) QC/STD：Name→Barcode（队列），条码→(well_pos, well_num)
                     if name in name_to_barcodes and name_to_barcodes[name]:
                         barcode = name_to_barcodes[name].popleft()
-                        well = barcode_to_well.get(barcode)
-                        if well:
-                            return well[1] if sval == "{{Well_Number}}" else well[0]
+                        wells = barcode_to_well.get(barcode)
+                        if wells:
+                            well_pos, well_num = wells.popleft()   # ← 关键：消费本条码的下一个孔位
+                            return well_num if sval == "{{Well_Number}}" else well_pos
                         return None
 
                     # 3) 临床：第一列值即条码
-                    well = barcode_to_well.get(name)
-                    if well:
-                        return well[1] if sval == "{{Well_Number}}" else well[0]
-                    return None
+                    wells = barcode_to_well.get(name)
+                    if wells:
+                        well_pos, well_num = wells.popleft()       # ← 关键：消费一次
+                        return well_num if sval == "{{Well_Number}}" else well_pos
 
                 df.loc[mask, col] = df.loc[mask, first_col].apply(_resolve)
             else:
@@ -767,6 +778,12 @@ def _apply_mapping_to_table(
     if rows_to_drop:
         df.drop(rows_to_drop, inplace=True)
         df.reset_index(drop=True, inplace=True)
+
+    if set_name and ("SetName" in df.columns):
+        df["SetName"] = set_name
+
+    if output_file and ("OutputFile" in df.columns):
+        df["OutputFile"] = output_file
 
     return df
 
@@ -845,6 +862,10 @@ def _render_tecan_process_result(request: HttpRequest, today: str, csv_abs_path:
     project_name = request.POST.get("project_name")
     instrument_num  = request.POST.get("instrument_num")  # 默认上机仪器
     systerm_num  = request.POST.get("systerm_num")  # 系统号
+    today_str  = timezone.localtime().strftime("%Y%m%d")
+    year       = today_str[:4]
+    yearmonth  = today_str[:6]
+
 
     # 获取后台设置的项目参数，如果没设置报错并提示
 
@@ -857,15 +878,19 @@ def _render_tecan_process_result(request: HttpRequest, today: str, csv_abs_path:
         })
 
     curve_points = qc_groups = qc_levels = 0
-    curve_points   = config.curve_points
-    qc_groups   = config.qc_groups
-    qc_levels   = config.qc_levels
+    curve_points = config.curve_points
+    qc_groups = config.qc_groups
+    qc_levels = config.qc_levels
+    test_count = config.test_count
 
     project_name_full   = config.project_name_full
 
     # 2) 解析文件名得到 plate_number/offset
     file_basename = os.path.basename(csv_abs_path)
     plate_number, start_offset = _parse_plate_meta_by_filename(file_basename)
+
+    set_name    = f"{instrument_num}_{systerm_num}_{project_name}_{today_str}_X{plate_number}_GZ"
+    output_file = f"{year}\\{yearmonth}\\Data{set_name}"
 
     # 3) 构建 STD/QC 单元 
     std_qc_items = _build_curve_and_qc_cells(curve_points, qc_groups, qc_levels, file_basename)
@@ -1016,10 +1041,10 @@ def _render_tecan_process_result(request: HttpRequest, today: str, csv_abs_path:
 
     def _barcode_to_well_from_table(worksheet_table):
         """
-        从 96 孔可视化表里提取：barcode -> (Well_Position, Well_Number)
-        （Well_Position 用 'A1' 这种，Well_Number 用 1..96）
+        返回： dict[str, deque[(well_pos, well_num)]]
+        对于同一条码在板上出现多次（如 QC 名称），按 96 孔扫描顺序依次入队。
         """
-        mapping = {}
+        m = defaultdict(deque)
         for row in (worksheet_table or []):
             for cell in (row or []):
                 if not cell:
@@ -1027,8 +1052,8 @@ def _render_tecan_process_result(request: HttpRequest, today: str, csv_abs_path:
                 b = str(cell.get("barcode") or "").strip()
                 if not b:
                     continue
-                mapping[b] = (cell.get("well_str"), cell.get("index"))
-        return mapping
+                m[b].append((cell.get("well_str"), cell.get("index")))
+        return m
 
 
     # 1) 基于 grid 的 std_qc，构建 name->barcodes（TECAN：名称即条码）
@@ -1053,27 +1078,60 @@ def _render_tecan_process_result(request: HttpRequest, today: str, csv_abs_path:
             break
 
     # 4) 读取上机列表模板（DataFrame） 
-    config = SamplingConfiguration.objects.get(id=project_id)
     mapping_file_path = config.mapping_file.path
 
-    # 读取“项目配置”与“上机映射模板”sheet（保留你现有读取 config 的代码不变）
-    mapping_df = pd.read_excel(mapping_file_path, sheet_name="上机列表").dropna(how="all").reset_index(drop=True)
+    # 读取“项目配置”与“上机映射模板”sheet
+    df_mapping_wc  = pd.read_excel(mapping_file_path, sheet_name="工作清单")
+    df_worklistmap = pd.read_excel(mapping_file_path, sheet_name="上机列表")
 
-    # ① 用现有函数拼出 STD/QC 顺序，并计算定位孔
-    std_qc_items  = _build_curve_and_qc_cells(curve_points, qc_groups, qc_levels, file_basename)  # label=STDx/QC名
-    std_names     = [it["label"] for it in std_qc_items]                                          # → ['STD0','STD1',..., 'QCxxxx', ...]
+    # 用于构建曲线/QC/Test/DB 序列
+    df_std = df_mapping_wc.copy() 
+    df_std["Code"] = df_std["Code"].astype(str)
+    df_std = df_std[df_std["Code"].str.match(r"^STD\d+$", na=False)].copy()
+    df_std["__std_idx"] = df_std["Code"].str.replace("STD", "", regex=False).astype(int)
+    df_std = df_std.sort_values("__std_idx")
+    std_names = df_std["Name"].head(curve_points + 1).tolist()
+    if not std_names or len(std_names) < (curve_points + 1):
+        std_names = [f"STD{i}" for i in range(curve_points + 1)]
+    
+    qc_names = df_mapping_wc.loc[df_mapping_wc["Code"].astype(str).str.startswith("QC"), "Name"].unique().tolist()
 
-    # 临床样本顺序：直接复用上文已转换为 dict 的 clinical_cells（含 'text'）
-    clinical_barcodes = [cell["text"] for cell in clinical_cells if cell.get("text")]
+    # 临床样本
+    # === 用“列优先 A1→H1→A2…”提取临床样本顺序（跳过定位孔）+ 插入定位孔显示名 ===
+    def _clinical_barcodes_in_plate_order(worksheet_table):
+        out = []
+        rows = list("ABCDEFGH")
+        for col in range(1, 13):              # 列优先
+            for r_idx, row in enumerate(rows):
+                cell = worksheet_table[r_idx][col-1]
+                if not cell:
+                    continue
+                if cell.get("is_locator"):
+                    continue
+                s = (cell.get("sample_text") or "").strip()
+                if s:
+                    out.append(s)
+        return out
 
-    # ②（可选）DB 序列：若你的模板含 DB* 规则，开启即可（与 NIMBUS 一致）
-    db_list = ["DB1", "DB2", "DB3", "DB4", "DB5"]
+    ClinicalSample = _clinical_barcodes_in_plate_order(worksheet_table)
+
+    # 定位孔显示名
+    locator_display = f"X{plate_number}"
+    # N = (plate-1)%8 + 1：位于第 N 个临床样之后
+    nth = ((plate_number - 1) % 8) + 1
+    insert_idx = min(nth, len(ClinicalSample))
+    ClinicalSample_with_locator = ClinicalSample[:insert_idx] + [locator_display] + ClinicalSample[insert_idx:]
+
+    test_list   = ["DB1"] + [f"Test{i}" for i in range(test_count)]
+    curve_list  = ["DB2"] + std_names
+    qc_list1    = ["DB3"] + qc_names + ["DB4"]
+    qc_list2    = qc_names + ["DB5"]
 
     # ③ 拼出 SampleName_list（与 NIMBUS 同构：DB + STD/QC + 临床 [+ QC 结尾…]）
-    SampleName_list = db_list + std_names + clinical_barcodes
+    SampleName_list = test_list + curve_list + qc_list1 + ClinicalSample_with_locator + qc_list2
 
     # ④ 以模板列头构造空表，第一列写入 SampleName_list
-    txt_headers = list(mapping_df.columns)
+    txt_headers = list(df_worklistmap.columns)
     worklist_table = pd.DataFrame(columns=txt_headers)
     worklist_table[txt_headers[0]] = SampleName_list
 
@@ -1087,11 +1145,13 @@ def _render_tecan_process_result(request: HttpRequest, today: str, csv_abs_path:
 
     # ⑥ 应用“上机映射模板”把占位符填入表
     worklist_table = _apply_mapping_to_table(
-        mapping_df,
+        df_worklistmap,
         worklist_table,
         name_to_barcodes=name_to_barcodes,
         barcode_to_well=barcode_to_well,
         locator_info=locator_info,
+        set_name=set_name,                     
+        output_file=output_file                  
     )
 
     # 6) 导出给模板（动态表头/行）
@@ -1099,12 +1159,41 @@ def _render_tecan_process_result(request: HttpRequest, today: str, csv_abs_path:
     worklist_records = worklist_table.to_dict("records")
 
     # 7) 写进 session 的 export_payload（便于“预览/导出”链路直接复用）
-    payload = request.session.get("export_payload", {})
-    payload.update({
+    payloads = request.session.get("export_payload_multi", [])
+
+    # 组织与 NIMBUS 一致的 per-plate 载荷 p
+    p = {
+        # —— 顶部信息（ProcessResult.html 会用到）——
+        "platform": "Tecan",                  # 平台名：用于导出路径分组以及模板逻辑
+        "project": project_name,              # 简称
+        "header": {
+            "plate_no": plate_number,         # 板号（数字）
+            # 若你在表单里收集了“上机盘号”，也带上；没有就留空字符串
+            "injection_plate": request.POST.get("injection_plate", "")  
+        },
+
+        # —— 96孔工作清单（页面预览 PDF 的 worksheet 会用到）——
+        "worksheet_table": worksheet_table,   # 8×12 的单元格二维表（你已有）
+
+        # —— 上机列表（动态表头/行）——
+        "txt_headers": txt_headers,           # 列头
+        "worklist_records": worklist_records, # 每行字典
+
+        # —— 其他导出所需的附加字段（与 NIMBUS 保持）——
+        "project_name_full": project_name_full,   # 中文全称（pdf 抬头）
+        "date_str": datetime.today().strftime("%Y-%m-%d"),  # 用于导出目录分层
+    }
+
+    # 若一次处理仅一板：保证“当前板”插入到正确索引（urls 里通过 ?plate=idx 取）
+    # 简单策略：清空并仅放本板（你也可按多板模式 append）
+    payloads = [p]
+    request.session["export_payload_multi"] = payloads
+
+    # 兼容 NIMBUS 旧逻辑（有些视图会兜底取 export_payload）
+    request.session["export_payload"] = {
         "txt_headers": txt_headers,
         "worklist_records": worklist_records,
-    })
-    request.session["export_payload"] = payload
+    }
 
 
     return render(request, "dashboard/ProcessResult_TECAN.html",locals())

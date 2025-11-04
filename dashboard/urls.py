@@ -68,6 +68,10 @@ urlpatterns = [
     path('dashboard/TecanIngest/', views_TecanIngest.tecaningest, name='TecanIngest'), # TECAN
     path('dashboard/TecanIngest/resolve/', views_TecanIngest.tecan_resolve_duplicates, name='TecanIngestResolve'),
 
+    path('dashboard/TecanIngest/processed/list/',    views_TecanIngest.tecan_list_processed_files,   name='TecanProcessedList'),
+    path('dashboard/TecanIngest/processed/manage/',  views_TecanIngest.tecan_manage_processed_file,  name='TecanProcessedManage'),
+
+
     path("dashboard/manual/", views.user_manual, name="user_manual"),
 ]
 

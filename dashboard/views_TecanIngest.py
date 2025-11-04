@@ -7,7 +7,7 @@ from collections import defaultdict, deque
 
 from django.conf import settings
 from django.contrib.auth.decorators import login_required
-from django.http import HttpRequest, HttpResponse, HttpResponseBadRequest
+from django.http import JsonResponse, HttpRequest, HttpResponse, HttpResponseBadRequest
 from django.views.decorators.csrf import csrf_protect
 from django.utils.html import escape
 from django.utils import timezone
@@ -40,7 +40,22 @@ def _save_upload_to_media(subdir: str, f) -> str:
             w.write(chunk)
     return abs_path
 
-def _save_station_first_only(today: str, f) -> str:
+
+def _safe_dirname(name: str) -> str:
+    """
+    将项目名转换为安全的目录名：
+    - 允许：中文、英文字母、数字、点(.)、下划线(_)、短横线(-)
+    - 空白统一转为下划线
+    - 其他字符替换为下划线，首尾的 ._- 去掉
+    """
+    s = (name or "").strip()
+    s = re.sub(r"\s+", "_", s)
+    s = re.sub(r"[^A-Za-z0-9._\-\u4e00-\u9fff]+", "_", s)
+    s = s.strip("._-")
+    return s or "project"
+
+
+def _save_station_first_only(today: str, f, project_dir: str) -> str:
     """
     在 media/tecan/{today}/station 目录下：只保留当天“第一份”岗位清单。
     - 若目录已有任意文件，则直接返回该文件路径，不再保存新的；
@@ -48,7 +63,7 @@ def _save_station_first_only(today: str, f) -> str:
     - 文件名固定：station_{today}.<ext>（沿用上传扩展名，默认为 .xlsx）
     返回：最终保留的绝对路径
     """
-    base_dir = os.path.join(settings.MEDIA_ROOT, "tecan", today, "station")
+    base_dir = os.path.join(settings.MEDIA_ROOT, "tecan", today, project_dir,"station")
     _ensure_dir(base_dir)
 
     # 目录已有文件 -> 保留第一份，直接返回
@@ -288,15 +303,19 @@ def tecaningest(request: HttpRequest) -> HttpResponse:
 
     # === 新增：当天目录（YYYYMMDD） ===
     today = datetime.now().strftime("%Y%m%d")
-    base_dir     = os.path.join(settings.MEDIA_ROOT, "tecan", today)
-    original_dir = os.path.join(base_dir, "original")
-    processed_dir= os.path.join(base_dir, "processed")
-    station_dir  = os.path.join(base_dir, "station")
+
+    # 从表单获取项目信息（前端 Tecan 页面会提交 project_id / project_name）
+    project_id   = request.POST.get("project_id", "").strip()
+    project_name = request.POST.get("project_name", "").strip()
+    project_dir  = _safe_dirname(project_name or project_id or "project")
+
+    base_dir      = os.path.join(settings.MEDIA_ROOT, "tecan", today, project_dir)
+    original_dir  = os.path.join(base_dir, "original")
+    processed_dir = os.path.join(base_dir, "processed")
+    station_dir   = os.path.join(base_dir, "station")
     for d in (original_dir, processed_dir, station_dir):
         _ensure_dir(d)
 
-    # 前端保持“基本不变”，这里只取我们需要的字段/文件
-    project_id   = request.POST.get("project_id", "").strip()
     station_file = request.FILES.get("station_list")  # 这一步不使用，但可保存做记录
     scan_file    = request.FILES.get("scan_result")
 
@@ -304,9 +323,13 @@ def tecaningest(request: HttpRequest) -> HttpResponse:
         return HttpResponseBadRequest("请上传‘扫码结果表’(CSV)")
 
     # === 修改：保存到“当天/original|station” ===
-    saved_scan_abs = _save_upload_to_media(f"tecan/{today}/original", scan_file)
+    saved_scan_abs = _save_upload_to_media(f"tecan/{today}/{project_dir}/original", scan_file)
     if station_file:
-        _save_station_first_only(today, station_file)
+        _save_station_first_only(today, station_file, project_dir)
+
+    # 把项目信息写入 session，给 Step2 使用
+    request.session["tecan_project_dir"] = project_dir
+    request.session["tecan_project_id"]  = project_id
 
     # 1) 解析 CSV
     try:
@@ -369,16 +392,6 @@ def tecaningest(request: HttpRequest) -> HttpResponse:
     out_path = _write_processed_copy_from_original(saved_scan_abs, processed_dir)
 
     return _render_tecan_process_result(request, today=today, csv_abs_path=out_path, project_id=project_id)
-    
-    # rel = os.path.relpath(out_path, settings.MEDIA_ROOT).replace(os.sep, "/")
-    # url = f"{getattr(settings, 'MEDIA_URL', '/media/')}{rel}"
-
-    # return HttpResponse(
-    #     f"<div class='card'><div class='card-body'>"
-    #     f"<h5>Tecan Step1</h5><div class='alert alert-success'>未检测到重复条码，已写入 processed。</div>"
-    #     f"<p>文件：<a href='{url}' target='_blank'>{escape(os.path.basename(out_path))}</a></p>"
-    #     f"</div></div>"
-    # )
 
 
 @csrf_protect
@@ -396,8 +409,16 @@ def tecan_resolve_duplicates(request: HttpRequest) -> HttpResponse:
         return HttpResponseBadRequest("未找到待处理文件，请返回重新上传。")
 
     saved_scan_abs = os.path.join(settings.MEDIA_ROOT, rel_path)
-    base_dir     = os.path.join(settings.MEDIA_ROOT, "tecan", today)
-    processed_dir= os.path.join(base_dir, "processed")
+
+    # 读取项目目录（优先 session，回退表单）
+    project_dir = (
+        request.session.get("tecan_project_dir")
+        or _safe_dirname(request.POST.get("project_name", "") or request.POST.get("project_id", ""))
+        or "project"
+    )
+
+    base_dir      = os.path.join(settings.MEDIA_ROOT, "tecan", today, project_dir)
+    processed_dir = os.path.join(base_dir, "processed")
     _ensure_dir(processed_dir)
 
     # 1) 解析当前文件，准备校验
@@ -483,13 +504,119 @@ def tecan_resolve_duplicates(request: HttpRequest) -> HttpResponse:
     # )
 
 
+@csrf_protect
+def tecan_manage_processed_file(request: HttpRequest) -> HttpResponse:
+    """
+    删除或移动 processed 下的文件
+    入参（POST，JSON 或表单）：
+      - project_id / project_name
+      - today（可选，默认当天）
+      - filename（必填）
+      - action ∈ {'delete','move'}
+    行为：
+      - delete: 直接删除 processed/<filename>
+      - move:   将 processed/<filename> 移动到 backup/<filename>
+    """
+    if request.method != "POST":
+        return HttpResponseBadRequest("仅支持POST")
+
+    project_name = (request.POST.get("project_name") or "").strip()
+    project_id   = (request.POST.get("project_id") or "").strip()
+    today        = (request.POST.get("today") or timezone.localtime().strftime("%Y%m%d"))
+    filename     = (request.POST.get("filename") or "").strip()
+    action       = (request.POST.get("action") or "").strip().lower()
+
+    if not filename or action not in {"delete", "move"}:
+        return HttpResponseBadRequest("参数错误")
+
+    project_dir  = _safe_dirname(project_name or project_id or "project")
+    base_dir     = os.path.join(settings.MEDIA_ROOT, "tecan", project_dir, today)
+    processed_dir= os.path.join(base_dir, "processed")
+    backup_dir   = os.path.join(base_dir, "backup")
+
+    # 安全拼接，防止越权
+    src_path = os.path.normpath(os.path.join(processed_dir, filename))
+    if not src_path.startswith(os.path.abspath(processed_dir) + os.sep):
+        return HttpResponseBadRequest("非法文件名")
+
+    if not os.path.exists(src_path) or not os.path.isfile(src_path):
+        return HttpResponseBadRequest("文件不存在")
+
+    try:
+        if action == "delete":
+            os.remove(src_path)
+        else:  # move
+            os.makedirs(backup_dir, exist_ok=True)
+            dst_path = os.path.normpath(os.path.join(backup_dir, filename))
+            if not dst_path.startswith(os.path.abspath(backup_dir) + os.sep):
+                return HttpResponseBadRequest("非法目标路径")
+            os.replace(src_path, dst_path)
+    except Exception as e:
+        return HttpResponseBadRequest(f"操作失败：{e}")
+
+    return JsonResponse({"ok": True})
+
+
+@csrf_protect
+def tecan_list_processed_files(request: HttpRequest) -> HttpResponse:
+    """
+    列出 media/tecan/<today>/<project_dir>/processed 下的所有文件
+    入参（GET）：
+      - project_id（可选）
+      - project_name（可选）
+      - today（可选；默认当天，格式 YYYYMMDD）
+    返回：{ ok: true, files: [{name, size, mtime}] }
+    """
+    if request.method != "GET":
+        return HttpResponseBadRequest("仅支持GET")
+
+    # 1) 解析参数
+    project_name = (request.GET.get("project_name") or "").strip()
+    project_id   = (request.GET.get("project_id") or "").strip()
+    today        = (request.GET.get("today") or timezone.localtime().strftime("%Y%m%d"))
+
+    # 2) 计算项目目录名（与上传逻辑一致）
+    try:
+        project_dir = _safe_dirname(project_name or project_id or "project")
+    except NameError:
+        # 若你未按之前建议添加 _safe_dirname，可临时兜底
+        def _safe_dirname(s): 
+            import re
+            s = (s or "").strip()
+            s = re.sub(r"\s+", "_", s)
+            s = re.sub(r"[^A-Za-z0-9._\-\u4e00-\u9fff]+", "_", s)
+            s = s.strip("._-")
+            return s or "project"
+        project_dir = _safe_dirname(project_name or project_id or "project")
+
+    processed_dir = os.path.join(settings.MEDIA_ROOT, "tecan", project_dir, today, "processed")
+    if not os.path.isdir(processed_dir):
+        return JsonResponse({"ok": True, "files": []})
+
+    # 3) 列出文件
+    files = []
+    for name in sorted(os.listdir(processed_dir)):
+        fpath = os.path.join(processed_dir, name)
+        if not os.path.isfile(fpath):
+            continue
+        st = os.stat(fpath)
+        files.append({
+            "name": name,
+            "size": st.st_size,
+            "mtime": int(st.st_mtime),
+        })
+    return JsonResponse({"ok": True, "files": files})
+
+
+
+
 # 读取当天 station（岗位清单）映射（子条码→实验号）
-def _load_station_map_for_today(today: str) -> dict[str, str]:
+def _load_station_map_for_today(today: str, project_dir: str) -> dict[str, str]:
     """
     读取 media/tecan/{today}/station 下“第一份”岗位清单，提取 子条码->实验号 映射。
     要求表头包含：'子条码', '实验号'
     """
-    base_dir = os.path.join(settings.MEDIA_ROOT, "tecan", today, "station")
+    base_dir = os.path.join(settings.MEDIA_ROOT, "tecan", today, project_dir, "station")
     if not os.path.isdir(base_dir):
         return {}
     candidates = [os.path.join(base_dir, n) for n in os.listdir(base_dir)
@@ -867,7 +994,6 @@ def _render_tecan_process_result(request: HttpRequest, today: str, csv_abs_path:
     year       = today_str[:4]
     yearmonth  = today_str[:6]
 
-
     # 获取后台设置的项目参数，如果没设置报错并提示
 
     try:
@@ -902,7 +1028,10 @@ def _render_tecan_process_result(request: HttpRequest, today: str, csv_abs_path:
     ]
 
     # 4) 临床样品（H2 起始在“R 逻辑布局”下自然满足；如需强制从 H2 连续填充，另加规则——等你确认）
-    station_map = _load_station_map_for_today(today)
+    project_dir = request.session.get("tecan_project_dir") or _safe_dirname(
+        request.POST.get("project_name", "") or request.POST.get("project_id", "")
+    )
+    station_map = _load_station_map_for_today(today, project_dir)
     clinical_cells = []
     try:
         clinical_cells = _build_clinical_cells_from_csv(csv_abs_path, start_offset, station_map)

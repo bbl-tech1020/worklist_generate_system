@@ -53,9 +53,30 @@
             <option value="S2">S2</option>
             <option value="S3">S3</option>
             <option value="S4">S4</option>
-        </select>
+          </select>
         </div>
-        
+
+        <!-- 历史 processed 文件列表 -->
+        <div class="card mt-3">
+          <div class="card-header">
+            <h3 class="card-title">当日历史文件（processed）</h3>
+          </div>
+          <div class="card-body">
+            <div id="processed-list-empty" class="text-muted">尚无文件</div>
+            <table id="processed-list-table" class="table" style="display:none;">
+              <thead>
+                <tr>
+                  <th>文件名</th>
+                  <th>大小</th>
+                  <th>修改时间</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="processed-list-body"></tbody>
+            </table>
+          </div>
+        </div>
+
         <div class="mt-4">
           <button class="btn btn-primary">提交</button>
         </div>
@@ -79,35 +100,156 @@
           select.appendChild(opt);
         });
       });
-  
+
     // 2. 项目下拉联动“上机仪器”
-    const projectSelect   = document.getElementById('project-select');
+    const projectSelect = document.getElementById('project-select');
     const instrumentInput = document.getElementById('instrument_num');
-  
+
     // 用 Django 生成“带占位符的绝对 URL”
     // /dashboard/frontend_entry/get_project_detail/0/
     const detailUrlTemplate = "{% url 'get_project_detail' pk=0 %}";
-  
+
     projectSelect.addEventListener('change', function () {
       const projectId = this.value;
       const projectName = this.options[this.selectedIndex]?.text || '';
 
       // 同步项目名称到隐藏字段
       document.getElementById('project-name').value = projectName;
-      
+
       if (!projectId) { instrumentInput.value = ''; return; }
-  
+
       // 把最后的 0/ 替换成真实的 projectId + 斜杠
       const detailUrl = detailUrlTemplate.replace(/0\/?$/, projectId + "/");
-  
+
       fetch(detailUrl)
         .then(res => res.json())
         .then(data => {
           instrumentInput.value = data.default_upload_instrument || '';
         });
     });
+
+    // 监听项目切换，重新加载列表
+    if (projectSelect) {
+      projectSelect.addEventListener('change', loadProcessedList);
+    }
+
+    // 初次进入，若默认有选中，也加载一次
+    loadProcessedList();
   });
-  </script>
-  
+
+
+  // 若你已有 getCookie 函数，可跳过
+  function getCookie(name) {
+    const value = `; ${document.cookie}`;
+    const parts = value.split(`; ${name}=`);
+    if (parts.length === 2) return parts.pop().split(";").shift();
+  }
+  const csrftoken = getCookie("csrftoken");
+
+  // 工具：格式化
+  function fmtSize(bytes) {
+    if (bytes == null) return "";
+    const units = ["B", "KB", "MB", "GB"];
+    let i = 0, v = Number(bytes);
+    while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+    return v.toFixed(1) + " " + units[i];
+  }
+  function fmtTime(ts) {
+    if (!ts) return "";
+    const d = new Date(ts * 1000);
+    return d.toLocaleString();
+  }
+
+  // 拉取 processed 列表
+  async function loadProcessedList() {
+    const sel = document.getElementById('project-select');
+    const pid = sel && sel.value;
+    const pname = document.getElementById('project-name')?.value || "";
+    if (!pid && !pname) return renderProcessedList([]);
+
+    const params = new URLSearchParams({
+      project_id: pid || "",
+      project_name: pname || ""
+    });
+    const resp = await fetch("{% url 'TecanProcessedList' %}?" + params.toString(), {
+      credentials: "same-origin"
+    });
+    const data = await resp.json();
+    renderProcessedList((data && data.files) || []);
+  }
+
+  function renderProcessedList(files) {
+    const empty = document.getElementById('processed-list-empty');
+    const table = document.getElementById('processed-list-table');
+    const body = document.getElementById('processed-list-body');
+    body.innerHTML = "";
+
+    if (!files || files.length === 0) {
+      empty.style.display = "";
+      table.style.display = "none";
+      return;
+    }
+    empty.style.display = "none";
+    table.style.display = "";
+
+    files.forEach(f => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td>${f.name}</td>
+        <td>${fmtSize(f.size)}</td>
+        <td>${fmtTime(f.mtime)}</td>
+        <td>
+          <button class="btn btn-sm btn-outline-danger js-del" data-fn="${encodeURIComponent(f.name)}">删除</button>
+          <button class="btn btn-sm btn-outline-secondary ms-2 js-mv" data-fn="${encodeURIComponent(f.name)}">移动到 backup</button>
+        </td>`;
+      body.appendChild(tr);
+    });
+
+    // 事件：删除
+    body.querySelectorAll(".js-del").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        await manageProcessed(decodeURIComponent(btn.dataset.fn), "delete");
+        // 操作成功后，直接移除该行
+        btn.closest("tr")?.remove();
+        if (body.children.length === 0) renderProcessedList([]);
+      });
+    });
+
+    // 事件：移动
+    body.querySelectorAll(".js-mv").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        await manageProcessed(decodeURIComponent(btn.dataset.fn), "move");
+        btn.closest("tr")?.remove();
+        if (body.children.length === 0) renderProcessedList([]);
+      });
+    });
+  }
+
+  async function manageProcessed(filename, action) {
+    const sel = document.getElementById('project-select');
+    const pid = sel && sel.value;
+    const pname = document.getElementById('project-name')?.value || "";
+
+    const form = new FormData();
+    form.append("project_id", pid || "");
+    form.append("project_name", pname || "");
+    form.append("filename", filename);
+    form.append("action", action);
+
+    const resp = await fetch("{% url 'TecanProcessedManage' %}", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "X-CSRFToken": csrftoken, "Accept": "application/json" },
+      body: form
+    });
+    if (!resp.ok) {
+      const text = await resp.text();
+      throw new Error(text || "操作失败");
+    }
+  }
+
+
+</script>
+
 
 {% endblock %}

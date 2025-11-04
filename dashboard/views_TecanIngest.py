@@ -365,7 +365,7 @@ def tecaningest(request: HttpRequest) -> HttpResponse:
             "original_filename": os.path.basename(saved_scan_abs),
         })
 
-    # === 修改：无冲突 → 原样复制到“当天/processed/”，保持原 CSV 格式 ===
+    # === 修改：无冲突 → 原样复制到“当天/processed/”，保持原 CSV 格式 ===  
     out_path = _write_processed_copy_from_original(saved_scan_abs, processed_dir)
 
     return _render_tecan_process_result(request, today=today, csv_abs_path=out_path, project_id=project_id)
@@ -862,6 +862,7 @@ def _render_tecan_process_result(request: HttpRequest, today: str, csv_abs_path:
     project_name = request.POST.get("project_name")
     instrument_num  = request.POST.get("instrument_num")  # 默认上机仪器
     systerm_num  = request.POST.get("systerm_num")  # 系统号
+    injection_plate = request.POST.get("injection_plate") if 'injection_plate' in request.POST else None
     today_str  = timezone.localtime().strftime("%Y%m%d")
     year       = today_str[:4]
     yearmonth  = today_str[:6]
@@ -951,7 +952,7 @@ def _render_tecan_process_result(request: HttpRequest, today: str, csv_abs_path:
             "origin_barcode": "",
             "barcode": "",
             "status": "",
-            "is_locator": bool((cell or {}).get("is_locator")),     # ← 从 cell 读取
+            "locator": bool((cell or {}).get("is_locator")),     # ← 从 cell 读取
             "flags": [],                    # 预留：重复/一对多等
             "meta": {},
 
@@ -968,7 +969,7 @@ def _render_tecan_process_result(request: HttpRequest, today: str, csv_abs_path:
         d["sample_text"] = sample.get("text") or ""
 
         # 若是定位孔，带上显示名（默认 "X{plate}" 已在 grid 写入）
-        if d["is_locator"]:
+        if d["locator"]:
             d["locator_warm"] = (cell or {}).get("locator_warm") or "Locator"
             # 定位孔一般不当作条码参与映射，故不设置 d["barcode"]
         else:
@@ -1097,7 +1098,7 @@ def _render_tecan_process_result(request: HttpRequest, today: str, csv_abs_path:
     qc_names = df_mapping_wc.loc[df_mapping_wc["Code"].astype(str).str.startswith("QC"), "Name"].unique().tolist()
 
     # 临床样本
-    # === 用“列优先 A1→H1→A2…”提取临床样本顺序（跳过定位孔）+ 插入定位孔显示名 ===
+    # === 用“列优先 A1→H1→A2…”提取临床样本顺序（跳过定位孔）+ 插入定位孔显示名 === 
     def _clinical_barcodes_in_plate_order(worksheet_table):
         out = []
         rows = list("ABCDEFGH")
@@ -1130,7 +1131,7 @@ def _render_tecan_process_result(request: HttpRequest, today: str, csv_abs_path:
     # ③ 拼出 SampleName_list（与 NIMBUS 同构：DB + STD/QC + 临床 [+ QC 结尾…]）
     SampleName_list = test_list + curve_list + qc_list1 + ClinicalSample_with_locator + qc_list2
 
-    # ④ 以模板列头构造空表，第一列写入 SampleName_list
+    # ④ 以模板列头构造空表，第一列写入 SampleName_list  _write_processed_copy_from_original
     txt_headers = list(df_worklistmap.columns)
     worklist_table = pd.DataFrame(columns=txt_headers)
     worklist_table[txt_headers[0]] = SampleName_list
@@ -1159,40 +1160,27 @@ def _render_tecan_process_result(request: HttpRequest, today: str, csv_abs_path:
     worklist_records = worklist_table.to_dict("records")
 
     # 7) 写进 session 的 export_payload（便于“预览/导出”链路直接复用）
-    payloads = request.session.get("export_payload_multi", [])
+    error_rows= []
 
-    # 组织与 NIMBUS 一致的 per-plate 载荷 p
-    p = {
-        # —— 顶部信息（ProcessResult.html 会用到）——
-        "platform": "Tecan",                  # 平台名：用于导出路径分组以及模板逻辑
-        "project": project_name,              # 简称
-        "header": {
-            "plate_no": plate_number,         # 板号（数字）
-            # 若你在表单里收集了“上机盘号”，也带上；没有就留空字符串
-            "injection_plate": request.POST.get("injection_plate", "")  
-        },
-
-        # —— 96孔工作清单（页面预览 PDF 的 worksheet 会用到）——
-        "worksheet_table": worksheet_table,   # 8×12 的单元格二维表（你已有）
-
-        # —— 上机列表（动态表头/行）——
-        "txt_headers": txt_headers,           # 列头
-        "worklist_records": worklist_records, # 每行字典
-
-        # —— 其他导出所需的附加字段（与 NIMBUS 保持）——
-        "project_name_full": project_name_full,   # 中文全称（pdf 抬头）
-        "date_str": datetime.today().strftime("%Y-%m-%d"),  # 用于导出目录分层
+    header_meta = {
+        "test_date": timezone.localtime().strftime("%Y-%m-%d"),
+        "plate_no": plate_number,
+        "instrument_num": instrument_num,
+        "injection_plate": injection_plate,
+        "today_str": today_str,
     }
-
-    # 若一次处理仅一板：保证“当前板”插入到正确索引（urls 里通过 ?plate=idx 取）
-    # 简单策略：清空并仅放本板（你也可按多板模式 append）
-    payloads = [p]
-    request.session["export_payload_multi"] = payloads
 
     # 兼容 NIMBUS 旧逻辑（有些视图会兜底取 export_payload）
     request.session["export_payload"] = {
+        "project_name": project_name,
+        "project_name_full": project_name_full,
+        "instrument_num": instrument_num,
+        "platform": 'Tecan',
         "txt_headers": txt_headers,
         "worklist_records": worklist_records,
+        "worksheet_table": worksheet_table,
+        "error_rows": error_rows,
+        "header": header_meta,
     }
 
 

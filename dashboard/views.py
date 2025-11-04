@@ -935,7 +935,7 @@ def _process_one_starlet_plate(scan_sheet, index_map, row_indexes, plate_no_int)
     }
 
 
-# 结果处理，用户在前端功能入口处选择项目，上传文件并点击提交按钮后的处理逻辑 localtime
+# 结果处理，用户在前端功能入口处选择项目，上传文件并点击提交按钮后的处理逻辑 locator
 def ProcessResult(request):
     """
     同时支持：
@@ -1437,8 +1437,6 @@ def ProcessResult(request):
         # 进样盘
         if "PlatePos" in worklist_table.columns:
             worklist_table["PlatePos"] = injection_plate
-        
-        ic(worklist_table)
 
         worklist_records = worklist_table.to_dict(orient="records")
 
@@ -1518,7 +1516,7 @@ def ProcessResult(request):
         "plates": plates_payload,                 # 模板循环多张卡片
     })
 
-
+# preview_payload
 def preview_export(request):
     all_payload = request.session.get("export_payload")
     if not all_payload:
@@ -1588,7 +1586,7 @@ def export_files(request):
     platform = str(payload.get("platform", "NewPlatform"))
     base_dir = settings.DOWNLOAD_ROOT
 
-    if platform == 'NIMBUS':
+    if platform == 'NIMBUS' or platform == 'Tecan':
         target_dir = os.path.join(base_dir, platform, today_str, project)
     else:
         target_dir = os.path.join(base_dir, platform,'工作清单和上机列表',today_str, project)

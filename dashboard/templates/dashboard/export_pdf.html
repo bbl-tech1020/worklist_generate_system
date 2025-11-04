@@ -242,10 +242,13 @@
                             <span class="icon-star">★</span> 表示该条码在移液清单中有重复，且对应多个实验号。
                         </th>
                     {% else %}
+                        
                         <th colspan="5">备注：
-                            <span class="icon-flag">⚑</span> 表示移液有问题；
-                            <span class="icon-cubes">◆</span> 表示该条码有多个实验号；
-                            <span class="icon-star">★</span> 表示该条码在移液清单中有重复，且对应多个实验号。
+                            {% if platform != "Tecan" %}
+                                <span class="icon-flag">⚑</span> 表示移液有问题；
+                                <span class="icon-cubes">◆</span> 表示该条码有多个实验号；
+                                <span class="icon-star">★</span> 表示该条码在移液清单中有重复，且对应多个实验号。
+                            {% endif %}
                         </th>
                     {% endif %}
                 </tr>
@@ -255,34 +258,36 @@
     <br />
 
     <!-- 第 2 页：报错信息表 -->
-    <section>
-        <table class="table-error" cellpadding="2" cellspacing="0" border="0">
-            <thead>
-                <tr class="maintext">
-                    <th>实验号</th>
-                    <th>条码</th>
-                    <th>板号</th>
-                    <th>孔位</th>
-                    <th>警告级别</th>
-                    <th>警告信息</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for row in error_rows %}
-                    {% if row.origin_barcode != 'NOTUBE' and row.sample_name != 'No match' %}
-                        <tr>
-                            <td>{{ row.sample_name }}</td>
-                            <td>{{ row.origin_barcode }}</td>
-                            <td>{{ row.plate_no }}</td>
-                            <td>{{ row.well_str }}</td>
-                            <td>{{ row.warn_level }}</td>
-                            <td>{{ row.warn_info }}</td>
-                        </tr>
-                    {% endif %}
-                {% endfor %}
-            </tbody>
-        </table>
-    </section>
+    {% if platform != "Tecan" %}
+        <section>
+            <table class="table-error" cellpadding="2" cellspacing="0" border="0">
+                <thead>
+                    <tr class="maintext">
+                        <th>实验号</th>
+                        <th>条码</th>
+                        <th>板号</th>
+                        <th>孔位</th>
+                        <th>警告级别</th>
+                        <th>警告信息</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in error_rows %}
+                        {% if row.origin_barcode != 'NOTUBE' and row.sample_name != 'No match' %}
+                            <tr>
+                                <td>{{ row.sample_name }}</td>
+                                <td>{{ row.origin_barcode }}</td>
+                                <td>{{ row.plate_no }}</td>
+                                <td>{{ row.well_str }}</td>
+                                <td>{{ row.warn_level }}</td>
+                                <td>{{ row.warn_info }}</td>
+                            </tr>
+                        {% endif %}
+                    {% endfor %}
+                </tbody>
+            </table>
+        </section>
+    {% endif %}
 
 </body>
 

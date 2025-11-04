@@ -128,7 +128,7 @@
                 <td class="letters">{{ row_idx.0.letter }}</td>
                 {% for cell in row_idx %}
                     <td class="{{ cell.letter }}">
-                        {% if cell.is_locator %}
+                        {% if cell.locator %}
                             <div class="locator">{{cell.locator_warm}}</div>
                         {% else %}
                             <div class="hole">{{ cell.letter }}{{ cell.num }}({{ cell.index }})</div>

@@ -316,16 +316,19 @@ def tecaningest(request: HttpRequest) -> HttpResponse:
     for d in (original_dir, processed_dir, station_dir):
         _ensure_dir(d)
 
-    station_file = request.FILES.get("station_list")  # 这一步不使用，但可保存做记录
+    station_file = request.FILES.get("station_list") 
     scan_file    = request.FILES.get("scan_result")
 
     if not scan_file:
         return HttpResponseBadRequest("请上传‘扫码结果表’(CSV)")
 
-    # === 修改：保存到“当天/original|station” ===
+    # === 修改：保存到“当天/original” ===
     saved_scan_abs = _save_upload_to_media(f"tecan/{today}/{project_dir}/original", scan_file)
     if station_file:
-        _save_station_first_only(today, station_file, project_dir)
+        station_map = _load_station_map_from_upload(station_file)  # ← 新函数
+        request.session["tecan_station_map"] = station_map
+    else:
+        request.session["tecan_station_map"] = {}
 
     # 把项目信息写入 session，给 Step2 使用
     request.session["tecan_project_dir"] = project_dir
@@ -530,7 +533,7 @@ def tecan_manage_processed_file(request: HttpRequest) -> HttpResponse:
         return HttpResponseBadRequest("参数错误")
 
     project_dir  = _safe_dirname(project_name or project_id or "project")
-    base_dir     = os.path.join(settings.MEDIA_ROOT, "tecan", project_dir, today)
+    base_dir     = os.path.join(settings.MEDIA_ROOT, "tecan",today,project_dir)
     processed_dir= os.path.join(base_dir, "processed")
     backup_dir   = os.path.join(base_dir, "backup")
 
@@ -589,7 +592,7 @@ def tecan_list_processed_files(request: HttpRequest) -> HttpResponse:
             return s or "project"
         project_dir = _safe_dirname(project_name or project_id or "project")
 
-    processed_dir = os.path.join(settings.MEDIA_ROOT, "tecan", project_dir, today, "processed")
+    processed_dir = os.path.join(settings.MEDIA_ROOT, "tecan", today, project_dir, "processed")
     if not os.path.isdir(processed_dir):
         return JsonResponse({"ok": True, "files": []})
 
@@ -606,7 +609,6 @@ def tecan_list_processed_files(request: HttpRequest) -> HttpResponse:
             "mtime": int(st.st_mtime),
         })
     return JsonResponse({"ok": True, "files": files})
-
 
 
 
@@ -641,6 +643,30 @@ def _load_station_map_for_today(today: str, project_dir: str) -> dict[str, str]:
         pass
     return {}
 
+
+def _load_station_map_from_upload(f) -> dict[str, str]:
+    """
+    直接从用户本次上传的岗位清单文件对象读取“子条码 -> 实验号”映射。
+    要求表头包含：'子条码', '实验号'
+    - f: InMemoryUploadedFile / TemporaryUploadedFile
+    """
+    try:
+        import pandas as pd
+        df = pd.read_excel(f)
+        cols = {c.strip(): c for c in df.columns if isinstance(c, str)}
+        if "子条码" not in cols or "实验号" not in cols:
+            return {}
+        sub = df[[cols["子条码"], cols["实验号"]]].dropna()
+        sub.columns = ["barcode", "exp"]
+        mp = {}
+        for _, r in sub.iterrows():
+            b = str(r["barcode"]).strip()
+            e = str(r["exp"]).strip()
+            if b and e:
+                mp[b] = e
+        return mp
+    except Exception:
+        return {}
 
 
 # 根据文件名解析 plate_number 与 start_offset  
@@ -1031,7 +1057,8 @@ def _render_tecan_process_result(request: HttpRequest, today: str, csv_abs_path:
     project_dir = request.session.get("tecan_project_dir") or _safe_dirname(
         request.POST.get("project_name", "") or request.POST.get("project_id", "")
     )
-    station_map = _load_station_map_for_today(today, project_dir)
+    
+    station_map = request.session.get("tecan_station_map")
     clinical_cells = []
     try:
         clinical_cells = _build_clinical_cells_from_csv(csv_abs_path, start_offset, station_map)

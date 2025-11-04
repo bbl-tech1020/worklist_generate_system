@@ -78,7 +78,7 @@
         </div>
 
         <div class="mt-4">
-          <button class="btn btn-primary">提交</button>
+          <button type="submit" class="btn btn-primary">提交</button>
         </div>
       </form>
     </div>
@@ -164,7 +164,9 @@
   async function loadProcessedList() {
     const sel = document.getElementById('project-select');
     const pid = sel && sel.value;
-    const pname = document.getElementById('project-name')?.value || "";
+    const pname = sel && sel.options[sel.selectedIndex] 
+      ? sel.options[sel.selectedIndex].text.trim() 
+      : "";
     if (!pid && !pname) return renderProcessedList([]);
 
     const params = new URLSearchParams({
@@ -199,25 +201,25 @@
         <td>${fmtSize(f.size)}</td>
         <td>${fmtTime(f.mtime)}</td>
         <td>
-          <button class="btn btn-sm btn-outline-danger js-del" data-fn="${encodeURIComponent(f.name)}">删除</button>
-          <button class="btn btn-sm btn-outline-secondary ms-2 js-mv" data-fn="${encodeURIComponent(f.name)}">移动到 backup</button>
+          <button type="button" class="btn btn-sm btn-outline-danger js-del" data-fn="${encodeURIComponent(f.name)}">删除</button>
+          <button type="button" class="btn btn-sm btn-outline-secondary ms-2 js-mv" data-fn="${encodeURIComponent(f.name)}">移动到 backup</button>
         </td>`;
       body.appendChild(tr);
     });
 
     // 事件：删除
     body.querySelectorAll(".js-del").forEach(btn => {
-      btn.addEventListener("click", async () => {
+      btn.addEventListener("click", async (e) => {
+        e.preventDefault(); e.stopPropagation();
         await manageProcessed(decodeURIComponent(btn.dataset.fn), "delete");
-        // 操作成功后，直接移除该行
         btn.closest("tr")?.remove();
         if (body.children.length === 0) renderProcessedList([]);
       });
     });
 
-    // 事件：移动
     body.querySelectorAll(".js-mv").forEach(btn => {
-      btn.addEventListener("click", async () => {
+      btn.addEventListener("click", async (e) => {
+        e.preventDefault(); e.stopPropagation();
         await manageProcessed(decodeURIComponent(btn.dataset.fn), "move");
         btn.closest("tr")?.remove();
         if (body.children.length === 0) renderProcessedList([]);
@@ -228,7 +230,9 @@
   async function manageProcessed(filename, action) {
     const sel = document.getElementById('project-select');
     const pid = sel && sel.value;
-    const pname = document.getElementById('project-name')?.value || "";
+    const pname = sel && sel.options[sel.selectedIndex] 
+      ? sel.options[sel.selectedIndex].text.trim() 
+      : "";
 
     const form = new FormData();
     form.append("project_id", pid || "");

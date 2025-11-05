@@ -1,5 +1,6 @@
 {% extends 'dashboard/index.html' %}
 {% load static %}
+{% load custom_tags %}
 
 {% block header %}
 <header class="navbar navbar-expand-md navbar-light d-print-none">
@@ -13,7 +14,8 @@
 <div class="card mt-4">
     <div class="card-body">
         <p class="mb-3">请为以下重复的 <code>SRCTubeID</code> 输入 “原 SRCTubeID” 与 “新 SRCTubeID”（新值须包含 <code>-</code>，且其
-            <b>MainBarcode</b> 不能与当前文件及当日历史重复）。</p>
+            <b>MainBarcode</b> 不能与当前文件及当日历史重复）。
+        </p>
 
         {% if cross_mains and cross_mains|length > 0 %}
         <div class="alert alert-warning">
@@ -32,6 +34,7 @@
                     <tr>
                         <th>#</th>
                         <th>位置</th>
+                        <th>原 SRCTubeID</th>
                         <th>原 SRCTubeID（确认）</th>
                         <th>新 SRCTubeID（需包含“-”）</th>
                     </tr>
@@ -39,20 +42,42 @@
                 <tbody>
                     {% for r in dups %}
                     <input type="hidden" name="rowid_{{ forloop.counter0 }}" value="{{ r.RowID }}">
+
+                    <!-- 把原 SRCTubeID 作为隐藏域提交（后端安全兜底用） -->
+                    <input type="hidden" name="old_{{ forloop.counter0 }}" value="{{ r.SRCTubeID }}">
                     <tr>
                         <td>{{ forloop.counter }}</td>
                         <td>
                             GridPos={{ r.GridPos|default:"-" }}, Tip={{ r.TipNumber|default:"-" }}
                             <div class="text-muted small">Main={{ r.MainBarcode }}</div>
                         </td>
+
+                        <!-- 新增：只读显示“原 SRCTubeID” -->
                         <td>
-                            <input type="text" name="old_{{ forloop.counter0 }}" class="form-control" required
-                                placeholder="请输入原 SRCTubeID 以确认" value="{{ r.SRCTubeID }}">
+                            <div class="form-control-plaintext">{{ r.SRCTubeID }}</div>
                         </td>
+
+
+                        <!-- 新增：可编辑的“原 SRCTubeID（确认）” -->
                         <td>
-                            <input type="text" name="new_{{ forloop.counter0 }}" class="form-control" required
-                                placeholder="请输入新的 SRCTubeID（含‘-’）">
+                            <input type="text" name="confirm_old_{{ forloop.counter0 }}"
+                                class="form-control {% if errors_rowids and r.RowID in errors_rowids %}is-invalid{% endif %}"
+                                placeholder="请再次输入原 SRCTubeID 以确认" value="{{ r.confirm_val|default:'' }}">
+                            {% if errors_msgs and r.RowID in errors_msgs %}
+                            <div class="invalid-feedback">{{ errors_msgs|get_item:r.RowID }}</div>
+                            {% endif %}
                         </td>
+
+                        <!-- 仍保留：可编辑的“新 SRCTubeID” -->
+                        <td>
+                            <input type="text" name="new_{{ forloop.counter0 }}"
+                                class="form-control {% if errors_new_bad and r.RowID in errors_new_bad %}is-invalid{% endif %}"
+                                placeholder="请输入新的 SRCTubeID（含‘-’）" value="{{ r.new_val|default:'' }}">
+                            {% if errors_new_msgs and r.RowID in errors_new_msgs %}
+                            <div class="invalid-feedback">{{ errors_new_msgs|get_item:r.RowID }}</div>
+                            {% endif %}
+                        </td>
+
                     </tr>
                     {% endfor %}
                 </tbody>

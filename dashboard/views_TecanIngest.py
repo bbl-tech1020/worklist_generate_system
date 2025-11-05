@@ -442,22 +442,24 @@ def tecan_resolve_duplicates(request: HttpRequest) -> HttpResponse:
     #    或者你也可以按 SRCTubeID 为键：new_for_<srctubeid>
     #    下面按“new_<i> + old_<i>”示例：
     # === A) 收集映射：{ RowID -> (old_srctubeid, new_srctubeid) } ===
-    fix_map_by_rowid: dict[int, tuple[str, str]] = {}
+    fix_map_by_rowid: dict[int, tuple[str, str, str]] = {}
     i = 0
     while True:
-        rk, ok, nk = f"rowid_{i}", f"old_{i}", f"new_{i}"
-        if rk not in request.POST and ok not in request.POST and nk not in request.POST:
+        rk, ok, cok, nk = f"rowid_{i}", f"old_{i}", f"confirm_old_{i}", f"new_{i}"
+        if rk not in request.POST and ok not in request.POST and nk not in request.POST and cok not in request.POST:
             break
         rowid = request.POST.get(rk, "").strip()
         old_v = request.POST.get(ok, "").strip()
+        confirm_old_v = request.POST.get(cok, "").strip()
         new_v = request.POST.get(nk, "").strip()
         if rowid:
-            fix_map_by_rowid[int(rowid)] = (old_v, new_v)
+            fix_map_by_rowid[int(rowid)] = (old_v, confirm_old_v, new_v)
         i += 1
     if not fix_map_by_rowid:
         return HttpResponseBadRequest("没有收到任何修正项")
 
-    # === B) 校验（按行号，和 R 一致） ===
+
+    # === B) 校验（逐行构造错误并返回原页高亮） ===
     rows_for_fix = df[df["RowID"].isin(fix_map_by_rowid.keys())].copy()
     if rows_for_fix.empty:
         return HttpResponseBadRequest("修正的 RowID 不存在于当前文件")
@@ -465,30 +467,99 @@ def tecan_resolve_duplicates(request: HttpRequest) -> HttpResponse:
     history = _collect_history_mainbarcodes(processed_dir)
     all_main = set(df["MainBarcode"].astype(str)) | set(history)
 
+    error_rows = set()      # 需要高亮的行(RowID)
+    error_msgs = {}         # RowID -> 错误消息（用于“确认原值”不一致）
+    new_bad = set()         # RowID -> 新值问题（例如没'-'、主码冲突）
+    new_msgs = {}
+
     seen_new_main: set[str] = set()
-    for rowid, (old_v, new_v) in fix_map_by_rowid.items():
+    for rowid, (old_v, confirm_old_v, new_v) in fix_map_by_rowid.items():
         r = rows_for_fix.loc[rows_for_fix["RowID"] == rowid].iloc[0]
-        if old_v != str(r["SRCTubeID"]):
-            return HttpResponseBadRequest(f"Row {rowid} 原 SRCTubeID 不匹配")
+        real_old = str(r["SRCTubeID"])
+        # 1) 原值一致性：必须“确认输入 == 实际原值”
+        if confirm_old_v != real_old:
+            error_rows.add(rowid)
+            error_msgs[rowid] = f"原 SRCTubeID（确认）与实际原值不一致，应为：{real_old}"
+            continue  # 这一行先不过后续校验
+
+        # 2) 旧隐藏值兜底（正常情况下等于 real_old）
+        if old_v != real_old:
+            error_rows.add(rowid)
+            error_msgs[rowid] = f"提交的原 SRCTubeID 与实际原值不一致，应为：{real_old}"
+            continue
+
+        # 3) 新值格式/主码校验
         if "-" not in new_v:
-            return HttpResponseBadRequest(f"Row {rowid} 新 SRCTubeID 必须包含 '-'")
+            new_bad.add(rowid); new_msgs[rowid] = "新 SRCTubeID 必须包含 '-'"
+            continue
         new_main = new_v.split("-", 1)[0].strip()
         if not new_main:
-            return HttpResponseBadRequest(f"Row {rowid} 新主码为空")
+            new_bad.add(rowid); new_msgs[rowid] = "新 SRCTubeID 主码为空"
+            continue
         if new_main in all_main:
-            return HttpResponseBadRequest(f"Row {rowid} 新主码 {new_main} 已存在（当日历史或本次文件）")
+            new_bad.add(rowid); new_msgs[rowid] = f"新的主码 {new_main} 已存在（当日历史或本次文件）"
+            continue
         if new_main in seen_new_main:
-            return HttpResponseBadRequest(f"多个输入的新主码重复：{new_main}")
+            new_bad.add(rowid); new_msgs[rowid] = f"多个输入的新主码重复：{new_main}"
+            continue
         seen_new_main.add(new_main)
+
+    # 有任何错误 → 回到重复页并高亮
+    if error_rows or new_bad:
+        # 重新排序，保持与首次渲染一致
+        need_fix_df = rows_for_fix.sort_values(["GridPos", "TipNumber"], na_position="last")
+
+        # 先把用户输入的值收集成“按行序号”的映射
+        confirm_vals = {}
+        new_vals = {}
+        i = 0
+        while True:
+            rk = f"rowid_{i}"
+            if rk not in request.POST:
+                break
+            confirm_vals[i] = request.POST.get(f"confirm_old_{i}", "")
+            new_vals[i]     = request.POST.get(f"new_{i}", "")
+            i += 1
+
+        # 构造 dups，并把每行的“回填值”塞进去（索引以 forloop.counter0 的顺序对齐）
+        dups = []
+        for i, (_, r) in enumerate(need_fix_df.iterrows()):
+            dups.append({
+                "RowID": int(r["RowID"]),
+                "SRCTubeID": str(r["SRCTubeID"]),
+                "MainBarcode": str(r["MainBarcode"]),
+                "GridPos": int(r["GridPos"]) if pd.notna(r["GridPos"]) else None,
+                "TipNumber": int(r["TipNumber"]) if pd.notna(r["TipNumber"]) else None,
+                "confirm_val": confirm_vals.get(i, ""),
+                "new_val": new_vals.get(i, ""),
+            })
+
+        return render(request, "dashboard/sampling/Tecan_duplicates.html", {
+            "dups": dups,
+            "cross_mains": sorted(set(df.loc[df["MainBarcode"].isin(history), "MainBarcode"].astype(str))),
+            "today": today,
+            "project_id": project_id,
+            "original_filename": os.path.basename(saved_scan_abs),
+            # —— 改成 4 个简单变量，模板里直接判断，不再出现 `.get` 写法 —— 
+            "errors_rowids": error_rows,      # 需高亮行（确认不一致/隐藏原值不一致）
+            "errors_msgs": error_msgs,        # 行 -> “确认不一致/原值不一致”提示
+            "errors_new_bad": new_bad,        # 新值错误行
+            "errors_new_msgs": new_msgs,      # 行 -> 新值错误提示
+        })
+
 
     # === C) 写 processed：保留首行，仅改这些 RowID 的“最后一列 SRCTubeID” ===
     header_line, data_lines, parsed_rows = _read_raw_csv_lines(saved_scan_abs)
+
+    # 将三元组 (old, confirm_old, new) 瘦身为二元组 (old, new)，以适配写文件函数
+    fix_pairs = {rid: (old, new) for rid, (old, _confirm_old, new) in fix_map_by_rowid.items()}
+
     out_path = _write_processed_with_row_replacements(
         header_line=header_line,
         parsed_rows=parsed_rows,
         processed_dir=processed_dir,
         original_filename=os.path.basename(saved_scan_abs),
-        fix_map_by_rowid=fix_map_by_rowid,
+        fix_map_by_rowid=fix_pairs,  # ← 只传 (old, new)
     )
 
     return _render_tecan_process_result(request, today=today, csv_abs_path=out_path, project_id=project_id)

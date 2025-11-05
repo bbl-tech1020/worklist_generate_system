@@ -333,6 +333,9 @@ def tecaningest(request: HttpRequest) -> HttpResponse:
     # 把项目信息写入 session，给 Step2 使用
     request.session["tecan_project_dir"] = project_dir
     request.session["tecan_project_id"]  = project_id
+    request.session["tecan_project_name"]    = project_name
+    request.session["tecan_instrument_num"]  = request.POST.get("instrument_num", "").strip()
+    request.session["tecan_systerm_num"]     = request.POST.get("systerm_num", "").strip()
 
     # 1) 解析 CSV
     try:
@@ -490,21 +493,6 @@ def tecan_resolve_duplicates(request: HttpRequest) -> HttpResponse:
 
     return _render_tecan_process_result(request, today=today, csv_abs_path=out_path, project_id=project_id)
 
-    # # 6) 返回成功页
-    # rel = os.path.relpath(out_path, settings.MEDIA_ROOT).replace(os.sep, "/")
-    # url = f"{getattr(settings, 'MEDIA_URL', '/media/')}{rel}"
-    # # 清理 session（可选）
-    # for k in ("tecan_pending_file", "tecan_pending_date"):
-    #     if k in request.session: del request.session[k]
-    # request.session.modified = True
-
-    # return HttpResponse(
-    #     f"<div class='card'><div class='card-body'>"
-    #     f"<h5>Tecan Step1 - 冲突修正完成</h5>"
-    #     f"<div class='alert alert-success'>已生成处理后的文件（只改最后一列 SRCTubeID）：</div>"
-    #     f"<p>文件：<a href='{url}' target='_blank'>{escape(os.path.basename(out_path))}</a></p>"
-    #     f"</div></div>"
-    # )
 
 
 @csrf_protect
@@ -1011,10 +999,24 @@ def _render_tecan_process_result(request: HttpRequest, today: str, csv_abs_path:
     - 临床样品：读取 csv + station_map，按 R 逻辑定位
     """
     # 1) 读取项目参数（曲线点、QC 组/层）
-    project_id      = request.POST.get("project_id")
-    project_name = request.POST.get("project_name")
-    instrument_num  = request.POST.get("instrument_num")  # 默认上机仪器
-    systerm_num  = request.POST.get("systerm_num")  # 系统号
+    # POST 优先；无则回退 session；再无则用传入的函数参数/空串
+    project_id  = (request.POST.get("project_id")
+                    or project_id
+                    or request.session.get("tecan_project_id")
+                    or "")
+
+    project_name = (request.POST.get("project_name")
+                    or request.session.get("tecan_project_name")
+                    or "")
+
+    instrument_num = (request.POST.get("instrument_num")
+                    or request.session.get("tecan_instrument_num")
+                    or "")
+
+    systerm_num  = (request.POST.get("systerm_num")
+                    or request.session.get("tecan_systerm_num")
+                    or "")
+
     injection_plate = request.POST.get("injection_plate") if 'injection_plate' in request.POST else None
     today_str  = timezone.localtime().strftime("%Y%m%d")
     year       = today_str[:4]
@@ -1057,7 +1059,7 @@ def _render_tecan_process_result(request: HttpRequest, today: str, csv_abs_path:
     project_dir = request.session.get("tecan_project_dir") or _safe_dirname(
         request.POST.get("project_name", "") or request.POST.get("project_id", "")
     )
-    
+
     station_map = request.session.get("tecan_station_map")
     clinical_cells = []
     try:

@@ -19,6 +19,9 @@ import pandas as pd
 import re
 from icecream import ic
 
+pd.set_option('display.max_columns', None)
+pd.set_option('display.width', 0)  # 自动适配控制台宽度
+
 # ======== 工具函数 ========
 
 TECAN_FILENAME_RE = re.compile(r"Plate(\d+)_([0-9]+)", re.I)
@@ -870,6 +873,7 @@ def _apply_mapping_to_table(
     first_col = headers[0]
 
     loc_display = (locator_info or {}).get("display_name")  # e.g. "X3"
+    ic(loc_display)
 
     # 识别孔号/孔位列（尽量兼容多命名）
     WELLNUM_COLS = {"Well_Number", "Vial position", "VialPos", "样品瓶"}
@@ -1247,8 +1251,6 @@ def _render_tecan_process_result(request: HttpRequest, today: str, csv_abs_path:
     # 8×12 二维表
     worksheet_table = worksheet_grid
 
-    ic(worksheet_table)
-
     def _name_to_barcodes_from_grid(grid):
         """
         用 grid/std_qc 解析出来的清单，构建 name->barcodes（队列，保持顺序）
@@ -1294,10 +1296,13 @@ def _render_tecan_process_result(request: HttpRequest, today: str, csv_abs_path:
 
     # 3) 准备“定位孔”信息（如果你有定位孔；没有就传 None）
     locator_info = None
-    # 比如你在 worksheet_table 某格有 is_locator=True，可搜出来：
+
+    ic(worksheet_table)
+
+    # 比如你在 worksheet_table 某格有 locator=True，可搜出来：
     for row in worksheet_table:
         for cell in row:
-            if cell and cell.get("is_locator"):
+            if cell and cell.get("locator"):
                 locator_info = {
                     "well_pos": cell.get("well_str"),
                     "well_num": cell.get("index"),
@@ -1336,11 +1341,13 @@ def _render_tecan_process_result(request: HttpRequest, today: str, csv_abs_path:
                 cell = worksheet_table[r_idx][col-1]
                 if not cell:
                     continue
-                if cell.get("is_locator"):
+                if cell.get("locator"):
                     continue
                 s = (cell.get("sample_text") or "").strip()
                 if s:
                     out.append(s)
+                    
+                
         return out
 
     ClinicalSample = _clinical_barcodes_in_plate_order(worksheet_table)
@@ -1365,7 +1372,7 @@ def _render_tecan_process_result(request: HttpRequest, today: str, csv_abs_path:
     worklist_table = pd.DataFrame(columns=txt_headers)
     worklist_table[txt_headers[0]] = SampleName_list
 
-    ic(worklist_table)
+    # ic(worklist_table)
 
     # 5) 按 NIMBUS 的四类规则批量替换
     # ⑤ name→barcode 队列、barcode→well 映射、定位孔信息（直接用你现有构造方式）
@@ -1383,6 +1390,8 @@ def _render_tecan_process_result(request: HttpRequest, today: str, csv_abs_path:
         set_name=set_name,                     
         output_file=output_file                  
     )
+
+    print(worklist_table)
 
     # 6) 导出给模板（动态表头/行）
     txt_headers = list(worklist_table.columns)

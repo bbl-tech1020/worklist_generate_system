@@ -1122,15 +1122,23 @@ def _render_tecan_process_result(request: HttpRequest, today: str, csv_abs_path:
     set_name    = f"{instrument_num}_{systerm_num}_{project_name}_{today_str}_X{plate_number}_GZ"
     output_file = f"{year}\\{yearmonth}\\Data{set_name}"
 
-    # 3) 构建 STD/QC 单元 
+    # 3) 构建 STD/QC 单元（仅实施列偏移，不做“让位”）
     std_qc_items = _build_curve_and_qc_cells(curve_points, qc_groups, qc_levels, file_basename)
-    std_qc_coords = _linear_fill_vertical_from_A1(len(std_qc_items)) 
+
+    # 3.1 先按 A1→H1→A2… 的竖向填充得到基础坐标
+    std_qc_coords = _linear_fill_vertical_from_A1(len(std_qc_items))
+
+    # 3.2 仅进行横向偏移：所有 STD/QC 列号 += (start_offset - 1)
+    off = max(1, start_offset) - 1
+    std_qc_coords = [(r, c + off) for (r, c) in std_qc_coords if 1 <= c + off <= 12]
+
+    # 3.3 生成 cell 字典（不做任何纵向位移）
     std_qc_cells = [
         {"row": r, "col": c, "text": it["label"], "kind": it["kind"]}
         for it, (r, c) in zip(std_qc_items, std_qc_coords)
     ]
 
-    # 4) 临床样品（H2 起始在“R 逻辑布局”下自然满足；如需强制从 H2 连续填充，另加规则——等你确认）
+    # 4) 临床样品
     project_dir = request.session.get("tecan_project_dir") or _safe_dirname(
         request.POST.get("project_name", "") or request.POST.get("project_id", "")
     )

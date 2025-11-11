@@ -229,7 +229,7 @@
             </thead>
             <tbody>
                 {% for row in p.error_rows %}
-                    {% if row.origin_barcode != 'NOTUBE' and row.origin_barcode != 'No match' and row.sample_name != 'No match'%}
+                    {% if row.origin_barcode != 'NOTUBE' and row.origin_barcode != 'No match' %}
                         <tr>
                             <td>{{ row.sample_name }}</td>
                             <td>{{ row.origin_barcode }}</td>

@@ -10,6 +10,8 @@ urlpatterns = [
     # 1 前端
     path('dashboard/frontend_entry/', views.frontend_entry, name='frontend_entry'),  # 前端入口
 
+    path('dashboard/frontend_entry/Manual_sampling/', views.Manual_sampling, name='Manual_sampling'), # 手工取样
+
     path('dashboard/frontend_entry/NIMBUS_sampling/', views.NIMBUS_sampling, name='NIMBUS_sampling'), # NIMBUS取样
 
     path('dashboard/frontend_entry/Starlet_sampling/', views.Starlet_sampling, name='Starlet_sampling'), # Starlet取样

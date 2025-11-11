@@ -7,14 +7,20 @@
   </div>
 </header>
 <style>
-  .table thead th, .table tbody td { font-size: 1.25rem; font-weight: bold; text-align: center; }
+  .table thead th,
+  .table tbody td {
+    font-size: 1.25rem;
+    font-weight: bold;
+    text-align: center;
+  }
 </style>
 {% endblock %}
 
 {% block content %}
 <div class="card mt-4">
   <div class="card-header d-flex justify-content-between align-items-center">
-    <h2 class="card-title"></h2>
+    <input id="live-search" type="text" class="form-control me-3" placeholder="输入以筛选：项目名称 / 仪器编号 / 系统号"
+      style="max-width: 420px;">
     <a href="{% url 'injection_plate_config_create' %}" class="btn btn-primary">新建参数</a>
   </div>
 
@@ -24,7 +30,7 @@
         <tr>
           <th>项目名称</th>
           <th>仪器编号</th>
-          <th>系统号</th> 
+          <th>系统号</th>
           <th>进样盘号</th>
           <th>操作</th>
         </tr>
@@ -34,13 +40,13 @@
         <tr>
           <td>{{ config.project_name }}</td>
           <td>{{ config.instrument_num }}</td>
-          <td>{{ config.systerm_num }}</td> 
+          <td>{{ config.systerm_num }}</td>
           <!-- injection_plate 是一个列表，展示为逗号分隔 -->
           <td>
             {% if config.injection_plate %}
-              {{ config.injection_plate|join:", " }}
+            {{ config.injection_plate|join:", " }}
             {% else %}
-              <span class="text-muted">未设置</span>
+            <span class="text-muted">未设置</span>
             {% endif %}
           </td>
           <td>
@@ -58,29 +64,60 @@
 </div>
 
 <script>
-document.addEventListener("DOMContentLoaded", function () {
-  document.querySelectorAll('.btn-delete').forEach(function(btn) {
-    btn.addEventListener('click', function() {
-      let pk = this.getAttribute('data-id');
-      if (confirm("确认要删除此参数吗？")) {
-        fetch("{% url 'injection_plate_config_delete' 0 %}".replace('/0/', `/${pk}/`), {
-          method: 'POST',
-          headers: {
-            'X-CSRFToken': '{{ csrf_token }}',
-            'x-requested-with': 'XMLHttpRequest',
-          },
-        })
-        .then(res => res.json())
-        .then(data => {
-          if (data.success) {
-            location.reload();
-          } else {
-            alert("删除失败：" + (data.error || ''));
-          }
-        });
-      }
+  document.addEventListener("DOMContentLoaded", function () {
+    document.querySelectorAll('.btn-delete').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        let pk = this.getAttribute('data-id');
+        if (confirm("确认要删除此参数吗？")) {
+          fetch("{% url 'injection_plate_config_delete' 0 %}".replace('/0/', `/${pk}/`), {
+            method: 'POST',
+            headers: {
+              'X-CSRFToken': '{{ csrf_token }}',
+              'x-requested-with': 'XMLHttpRequest',
+            },
+          })
+            .then(res => res.json())
+            .then(data => {
+              if (data.success) {
+                location.reload();
+              } else {
+                alert("删除失败：" + (data.error || ''));
+              }
+            });
+        }
+      });
     });
   });
-});
+
+  document.addEventListener("DOMContentLoaded", function () {
+    // ……这里保留你现有的删除相关代码……
+
+    // ====== 即时搜索（按三列筛：项目简称/项目全称/默认上机仪器）======
+    const input = document.getElementById('live-search');
+    const tbody = document.querySelector('table.table tbody');
+    const rows = Array.from(tbody.querySelectorAll('tr'));
+
+    // 哪些列参与筛选：0=项目简称，1=项目全称，5=默认上机仪器
+    function matchRow(tr, kw) {
+      const cells = tr.children;
+      const a = (cells[0]?.textContent || '').toLowerCase();
+      const b = (cells[1]?.textContent || '').toLowerCase();
+      const c = (cells[2]?.textContent || '').toLowerCase();
+      return a.includes(kw) || b.includes(kw) || c.includes(kw);
+    }
+
+    // 简单防抖，避免大数据时频繁计算
+    let timer = null;
+    input.addEventListener('input', function () {
+      const val = this.value.trim().toLowerCase();
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        rows.forEach(tr => {
+          if (!val) { tr.style.display = ''; return; }
+          tr.style.display = matchRow(tr, val) ? '' : 'none';
+        });
+      }, 100);
+    });
+  });
 </script>
 {% endblock %}

@@ -11,6 +11,7 @@ from django.core.files.base import ContentFile
 from django.utils import timezone
 from django.utils.encoding import escape_uri_path
 from django.urls import reverse
+from django.db.models import Q
 from .forms import *
 
 import xlrd
@@ -102,6 +103,11 @@ def get_injection_plates(request):
         plates = sorted(dict.fromkeys(plates), key=lambda x: str(x))
 
     return JsonResponse({"plates": plates})
+
+
+# Manual
+def Manual_sampling(request):
+    return render(request, 'dashboard/sampling/Manual.html')
 
 # NIMBUS
 def NIMBUS_sampling(request):
@@ -582,10 +588,11 @@ def file_download(request):
 
 # 3 后台参数配置
 def project_config(request):
-    project_configs = SamplingConfiguration.objects.all().order_by('-created_at')
+    project_configs = SamplingConfiguration.objects.all().order_by('project_name')
     return render(request, 'dashboard/config/project_config.html', {
         'project_configs': project_configs
     })
+
 
 def project_config_create(request):
     if request.method == 'POST':
@@ -675,25 +682,47 @@ def project_config_delete(request, pk):
         return redirect('config_preview')
     return JsonResponse({"success": False, "error": "Only POST allowed"})
 
+
 def vendor_config(request):
-    instrument_configs = InstrumentConfiguration.objects.all().order_by('-created_at')
+    instrument_configs = InstrumentConfiguration.objects.all().order_by('instrument_num')
     return render(request, 'dashboard/config/vendor_config.html', {
         'instrument_configs': instrument_configs
     })
 
+
 def vendor_config_create(request):
     if request.method == 'POST':
-        instance = InstrumentConfiguration(
-            instrument_name=request.POST.get('instrument_name'),
-            instrument_num=request.POST.get('instrument_num'),
-            systerm_num=request.POST.get('systerm_num'),
-            upload_file=request.FILES.get('upload_file'),
-        )
+        instrument_name = request.POST.get('instrument_name', '').strip()
+        instrument_num  = request.POST.get('instrument_num', '').strip()
+        systerm_num     = request.POST.get('systerm_num', '').strip()
+        upload_file     = request.FILES.get('upload_file')
 
+        # ✅ 1) 去重校验：相同(仪器编号-仪器厂家-系统号)已存在则阻止创建
+        exists = InstrumentConfiguration.objects.filter(
+            instrument_name=instrument_name,
+            instrument_num=instrument_num,
+            systerm_num=systerm_num
+        ).exists()
+
+        if exists:
+            # 复用已有的错误模板（dashboard/templates/dashboard/error.html）
+            # 该模板已经在项目参数配置重复时使用过:contentReference[oaicite:2]{index=2}；模板在此:contentReference[oaicite:3]{index=3}
+            return render(request, 'dashboard/error.html', {
+                "message": f"已存在相同的配置：仪器编号 [{instrument_num}] / 厂家 [{instrument_name}] / 系统号 [{systerm_num}]，无需重复创建。"
+            })
+
+        # 通过校验后再创建
+        instance = InstrumentConfiguration(
+            instrument_name=instrument_name,
+            instrument_num=instrument_num,
+            systerm_num=systerm_num,
+            upload_file=upload_file,
+        )
         instance.save()
         return redirect('vendor_config')
     else:
         return render(request, 'dashboard/config/vendor_config_create.html')
+
     
 def vendor_config_delete(request, pk):
     if request.method == "POST":
@@ -706,7 +735,7 @@ def vendor_config_delete(request, pk):
 
 # 进样体积设置   
 def injection_volume_config(request):
-    injection_volume_configs = InjectionVolumeConfiguration.objects.all().order_by('-created_at')
+    injection_volume_configs = InjectionVolumeConfiguration.objects.all().order_by('project_name')
     return render(request, 'dashboard/config/injection_volume_config.html', {
         'injection_volume_configs': injection_volume_configs
     })
@@ -736,7 +765,7 @@ def injection_volume_config_delete(request, pk):
 
 # 进样盘号设置   
 def injection_plate_config(request):
-    configs = InjectionPlateConfiguration.objects.all().order_by('-created_at')
+    configs = InjectionPlateConfiguration.objects.all().order_by('project_name')
     return render(request, 'dashboard/config/injection_plate_config.html', {
         'configs': configs
     })
@@ -999,6 +1028,8 @@ def ProcessResult(request):
     mapping_path   = config.mapping_file.path
     df_mapping_wc  = pd.read_excel(mapping_path, sheet_name="工作清单")   # for worksheet
     df_worklistmap = pd.read_excel(mapping_path, sheet_name="上机列表")    # worklist mapping 模板
+
+    ic(df_worklistmap)
 
     # 解析后台设置的上机模板（txt/csv）→ DataFrame（只需列名 / txt_headers）,获取表头
     try:
@@ -1382,15 +1413,28 @@ def ProcessResult(request):
                     else:
                         worklist_table.loc[mask, col] = val
 
-            if str(sample_key).startswith("DB"):
+            if str(sample_key) == "DB*":
                 mask = worklist_table.iloc[:, 0].str.startswith("DB")
                 fill_cols(mask)
-            elif str(sample_key).startswith("Test"):
-                mask = worklist_table.iloc[:, 0].str.startswith("Test")
-                fill_cols(mask)
-            elif "STD" in str(sample_key):
+            elif str(sample_key).startswith("DB"):
                 mask = worklist_table.iloc[:, 0] == str(sample_key)
                 fill_cols(mask)
+
+            elif str(sample_key) == "Test*":
+                mask = worklist_table.iloc[:, 0].str.startswith("Test")
+                fill_cols(mask)
+            elif str(sample_key).startswith("Test"):
+                mask = worklist_table.iloc[:, 0] == str(sample_key)
+                fill_cols(mask)
+
+
+            elif str(sample_key) == "STD*":
+                mask = worklist_table.iloc[:, 0].str.startswith("STD")
+                fill_cols(mask)
+            elif str(sample_key).startswith("STD"):
+                mask = worklist_table.iloc[:, 0] == str(sample_key)
+                fill_cols(mask)
+
             elif str(sample_key) == "*":
                 mask = worklist_table.iloc[:, 1].isna()
                 fill_cols(mask)
@@ -1405,7 +1449,7 @@ def ProcessResult(request):
         if "SetName" in worklist_table.columns:  worklist_table["SetName"]  = setname
         if "OutputFile" in worklist_table.columns: worklist_table["OutputFile"] = output_val
 
-        # Thermo 专用：若第一列存在完全相同的多行值，则改成 原值_1、原值_2、…（仅对重复值生效）——
+        # Thermo 专用：若第一列存在完全相同的多行值，则改成 原值-1、原值-2、…（仅对重复值生效）——
         # 判断当前仪器是否 Thermo（InstrumentConfiguration.instrument_name 中包含 "Thermo"）
         vendor_name = str(getattr(instrument_config, "instrument_name", "")).lower()
         if "thermo" in vendor_name:
@@ -1421,7 +1465,7 @@ def ProcessResult(request):
 
             # 只改“出现次数 > 1”的那些值；出现 1 次的保持不变
             mask = vc > 1
-            worklist_table.loc[mask, first_col_name] = s[mask] + "_" + order[mask].astype(str)
+            worklist_table.loc[mask, first_col_name] = s[mask] + "-" + order[mask].astype(str)
 
         # ★ 统一“镜像列”赋值（整列镜像，不再区分哪些行）
         if mirror_cols:
@@ -1515,6 +1559,7 @@ def ProcessResult(request):
         "platform": platform,
         "plates": plates_payload,                 # 模板循环多张卡片
     })
+
 
 # preview_payload
 def preview_export(request):
@@ -1690,6 +1735,15 @@ def export_files(request):
         worklist_url_key = "txt_url"
         worklist_url_val = f"{settings.DOWNLOAD_URL}{today_str}/{project}/{txt_fname}"
 
+    elif instrument_name.lower() == "thermo":
+        # thermo：导出逗号分隔的 .csv
+        # csv_fname = f"OnboardingList_{timestamp}{plate_suffix}.csv"
+        csv_fname = f"OnboardingList_{instrument_num}_{systerm_num}_{project}_{timestamp}{plate_suffix}_GZ.csv"
+        csv_path = os.path.join(target_dir, csv_fname)
+        df.to_csv(csv_path, sep=",", index=False, encoding="utf-8")
+        worklist_url_key = "csv_url"
+        worklist_url_val = f"{settings.DOWNLOAD_URL}{today_str}/{project}/{csv_fname}"
+
     else:
         # 其它厂家：维持原有 .xlsx
         xlsx_fname = f"OnboardingList_{instrument_num}_{systerm_num}_{project}_{timestamp}{plate_suffix}_GZ.xlsx"
@@ -1733,3 +1787,130 @@ def sample_search_api(request):
     return JsonResponse({"results": results})
 
 
+
+
+# 手工取样
+from openpyxl import load_workbook
+
+def Manual_process_result(request):
+    """
+    手工取样：仅根据板数渲染“曲线+质控”
+    - 起始/结束实验号：先收下（本阶段不渲染临床样本）
+    - 板数：渲染几块 96 孔板
+    - 填充顺序：按 SamplingConfiguration.layout（horizontal/vertical）
+    - 别名：若 mapping_file 设置了别名，填入工作清单对应位置
+    """
+    if request.method != "POST":
+        return HttpResponseBadRequest("仅支持POST")
+
+    project_id   = request.POST.get("project_id", "").strip()
+    start_no     = request.POST.get("start_no", "").strip()
+    end_no       = request.POST.get("end_no", "").strip()
+    plate_count  = int(request.POST.get("plate_count", "1") or 1)
+
+    # 取项目配置
+    cfg = SamplingConfiguration.objects.get(pk=project_id)
+
+    curve_points = int(cfg.curve_points or 0)         # 曲线数
+    qc_groups    = int(cfg.qc_groups or 0)            # 质控组数
+    qc_levels    = int(cfg.qc_levels or 0)            # 每组水平数
+    layout       = (cfg.layout or "horizontal")       # horizontal / vertical
+    proj_full    = cfg.project_name_full or cfg.project_name
+
+    # ------- 可选：读取 mapping_file 中的“别名” -------
+    # 约定：Excel 第一张表，包含 Name / Alias 两列（如已配置）
+    alias_map = {}
+    if cfg.mapping_file:
+        try:
+            wb = load_workbook(cfg.mapping_file.path, data_only=True)
+            ws = wb.active
+            headers = { (cell.value or "").strip(): cell.column for cell in ws[1] }
+            name_col  = headers.get("Name")
+            alias_col = headers.get("Alias")
+            if name_col and alias_col:
+                for r in ws.iter_rows(min_row=2, values_only=True):
+                    name  = str(r[name_col-1]).strip() if r[name_col-1] else ""
+                    alias = str(r[alias_col-1]).strip() if r[alias_col-1] else ""
+                    if name and alias:
+                        alias_map[name] = alias
+        except Exception:
+            alias_map = {}
+
+    # ------- 生成 96 孔网格骨架 -------
+    letters = list("ABCDEFGH")
+    nums    = list(range(1, 13))  # 1..12
+    today_str = timezone.localtime().strftime("%Y-%m-%d")
+
+    # 生成“曲线+质控”的占位清单（线性序列）
+    # 约定：前 curve_points 个为“曲线”，之后为 QC（qc_groups * qc_levels）
+    slots = []
+    # 曲线
+    for i in range(1, curve_points + 1):
+        name = f"STD-{i}"
+        slots.append({
+            "type": "STD",
+            "name": alias_map.get(name, name),
+        })
+    # 质控
+    for g in range(1, qc_groups + 1):
+        for lv in range(1, qc_levels + 1):
+            name = f"QC{g}-L{lv}"
+            slots.append({
+                "type": "QC",
+                "name": alias_map.get(name, name),
+            })
+
+    # 把线性 slots 按“横向/纵向”塞进 96 孔网格
+    def make_empty_plate():
+        return [[{
+            "letter": letters[r],
+            "num": c+1,
+            "index": r*12 + c + 1,   # 1..96
+            "locator": False,        # 与 Tecan 模板字段兼容
+            "locator_warm": "",
+            "match_sample": "",      # 兼容模板
+            "cut_barcode": "",
+            "sub_barcode": "",
+            "warm": "",
+            "status": "",
+            "dup_barcode": "",
+            "dup_barcode_sample": "",
+        } for c in range(12)] for r in range(8)]
+
+    def fill_plate(plate):
+        # 返回已填入“曲线+质控”的 plate（不足 96 个则只填前面）
+        seq = list(slots)  # 只填这些
+        if layout == "vertical":   # 纵向：A1,A2,...,A12,B1,B2,...
+            for c in range(12):
+                for r in range(8):
+                    if not seq: return
+                    cell = plate[r][c]
+                    cell["match_sample"] = seq[0]["name"]
+                    seq.pop(0)
+        else:                      # 横向：A1,B1,...,H1,A2,B2,...
+            for r in range(8):
+                for c in range(12):
+                    if not seq: return
+                    cell = plate[r][c]
+                    cell["match_sample"] = seq[0]["name"]
+                    seq.pop(0)
+
+    worksheet_list = []  # 多板
+    for p in range(plate_count):
+        plate = make_empty_plate()
+        fill_plate(plate)
+        worksheet_list.append(plate)
+
+    # —— 为了最大限度复用 Tecan 的结果模板字段命名 —— 
+    # （plate_number/nums/worksheet_table 等，见 Tecan 结果页模板变量） :contentReference[oaicite:3]{index=3}
+    ctx = {
+        "platform": "Manual",
+        "project_name_full": proj_full,
+        "today_str": today_str,
+        "nums": nums,
+        "plate_number": plate_count,
+        "plates": worksheet_list,         # 多板
+    }
+
+    # 采用独立模板（仅渲染工作清单，无上机列表）
+    return render(request, "dashboard/sampling/ProcessResult_Manual.html", ctx)

@@ -200,8 +200,16 @@ def _detect_conflicts(df: pd.DataFrame, history: Set[str]) -> Dict[str, List[Dic
     """
     res = {"intra": [], "cross": []}
 
-    # 本次内重复
-    dup_mask = df["MainBarcode"].duplicated(keep="first")  # 只标后续
+    # === 新：本次内重复（细分规则）
+    # A. 主码相同且子码不同：仅标记“后续出现”的重复
+    has_multi_subs = df.groupby("MainBarcode")["SRCTubeID"].transform(lambda s: s.nunique() > 1)
+    diff_sub_later_mask = has_multi_subs & df["MainBarcode"].duplicated(keep="first")
+
+    # B. 主码和子码均相同：标记所有重复（包括第一次出现）
+    exact_dup_all = df["SRCTubeID"].duplicated(keep=False)
+
+    dup_mask = diff_sub_later_mask | exact_dup_all
+
     if dup_mask.any():
         dup_rows = df[dup_mask].sort_values(["MainBarcode", "RowID"])
         for _, r in dup_rows.iterrows():
@@ -349,20 +357,29 @@ def tecaningest(request: HttpRequest) -> HttpResponse:
     # 冲突检测 + 渲染 
     history = _collect_history_mainbarcodes(processed_dir)
 
-    # === 与 R 一致的重复选择逻辑 ===
-    # 文件内重复：只把“后续出现”的重复标出来（首个出现的不算）
-    mask_infile = df["MainBarcode"].duplicated(keep="first")
+    # === 新：文件内重复的细分规则 ===
+    # 1) 主码相同且子码不同：仅标记“后续出现”的重复
+    has_multi_subs = df.groupby("MainBarcode")["SRCTubeID"].transform(lambda s: s.nunique() > 1)
+    diff_sub_later_mask = has_multi_subs & df["MainBarcode"].duplicated(keep="first")
 
-    # 跨文件重复：本次文件任何出现过的 MainBarcode 只要在当天 processed 中出现过就算重复
+    # 2) 主码和子码均相同：标记所有重复（包括第一次出现）
+    exact_dup_all = df["SRCTubeID"].duplicated(keep=False)
+
+    # 合并两种“文件内重复”的掩码
+    mask_infile_new = diff_sub_later_mask | exact_dup_all
+
+    # 跨文件重复（沿用旧逻辑）
     mask_cross = df["MainBarcode"].isin(history)
 
-    # 去除含有'$'的MainBarcode
+    # 去除含有 '$' 的主码
     mask_dollar = df["MainBarcode"].astype(str).str.contains(r"\$")
 
-    # 并集 + 对 SRCTubeID 去重 + 按位置信息排序（与 R 的 order(GridPos, TipNumber) 一致）
+    # 最终需要人工修正的集合 = （新文件内重复 ∪ 跨文件重复） 且 不含 '$'
+    intra_or_cross_mask = (mask_infile_new | mask_cross) & (~mask_dollar)
+
     need_fix_df = (
-        df[(mask_infile | mask_cross) & (~mask_dollar)]              # ← 过滤掉含 $
-        .drop_duplicates(subset=["SRCTubeID"])
+        df[intra_or_cross_mask]
+        # .drop_duplicates(subset=["SRCTubeID"])
         .sort_values(["GridPos", "TipNumber"], na_position="last")
     )
 

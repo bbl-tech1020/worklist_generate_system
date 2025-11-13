@@ -1,6 +1,7 @@
 from django.db import models
 import os
 from django.utils.text import slugify
+from datetime import date
 
 # Create your models here.
 def upload_to_project_folder(instance, filename):
@@ -108,7 +109,8 @@ class SampleRecord(models.Model):
     well_str = models.CharField(max_length=10)        # 孔位 (如 A1)
     sample_name = models.CharField(max_length=100, blank=True, null=True)  # 实验号
     barcode = models.CharField(max_length=100, blank=True, null=True)      # 条码
-    record_date = models.DateField(auto_now_add=True)  # 生成日期（自动）
+    error_info = models.CharField(max_length=100, default='', blank=True)  # ★ 新增字段:报错信息（1，4，16384）
+    record_date = models.DateField(default=date.today)  # 生成日期（自动）
 
     def __str__(self):
         return f"{self.project_name} | {self.sample_name or self.barcode} | {self.plate_no}-{self.well_str}"

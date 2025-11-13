@@ -65,6 +65,15 @@
           <div class="form-text">当该项目与仪器在“进样盘号配置”中存在记录时，此项才会出现。</div>
         </div>
 
+        <!-- 检测日期 -->
+        <div class="mb-3">
+          <label class="form-label">检测日期(适用于夜班检测项目,非特殊情况保持默认即可)</label>
+          <select class="form-select" id="testing_day" name="testing_day">
+            <option value="today">当天日期</option>
+            <option value="tomorrow">明天日期</option>
+        </select>
+        </div>
+
         <div class="mt-4">
           <button class="btn btn-primary">提交</button>
         </div>

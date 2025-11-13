@@ -15,7 +15,7 @@ from django.db.models import Q
 from .forms import *
 
 import xlrd
-from datetime import datetime,date
+from datetime import datetime,date,timedelta
 from icecream import ic
 from collections import defaultdict, deque
 import pandas as pd
@@ -979,7 +979,6 @@ def ProcessResult(request):
     from django.utils import timezone
     from django.http import HttpResponse, HttpResponseBadRequest
     from django.shortcuts import get_object_or_404, render
-    from datetime import date
 
     # ========== 1. 入参与上传文件 ==========
     project_id      = request.POST.get("project_id")
@@ -988,6 +987,16 @@ def ProcessResult(request):
     injection_plate = request.POST.get("injection_plate") if 'injection_plate' in request.POST else None
     instrument_num  = request.POST.get("instrument_num")  # 默认上机仪器
     systerm_num  = request.POST.get("systerm_num")  # 系统号
+    testing_day      = request.POST.get("testing_day") # 检测日期
+
+    if testing_day == "today":
+        today_str  = timezone.localtime().strftime("%Y%m%d")  # 用于96孔板和上机列表
+        record_date = date.today()  # 用于历史标本查找和统计
+    else:
+        today_str = (timezone.localtime() + timedelta(days=1)).strftime("%Y%m%d")
+        record_date = date.today() + timedelta(days=1)
+    
+    ic(record_date)
 
     Stationlist = request.FILES.get('station_list')               # 每日操作清单
     Scanresult  = request.FILES.get('scan_result')                # 扫码结果
@@ -1028,8 +1037,6 @@ def ProcessResult(request):
     mapping_path   = config.mapping_file.path
     df_mapping_wc  = pd.read_excel(mapping_path, sheet_name="工作清单")   # for worksheet
     df_worklistmap = pd.read_excel(mapping_path, sheet_name="上机列表")    # worklist mapping 模板
-
-    ic(df_worklistmap)
 
     # 解析后台设置的上机模板（txt/csv）→ DataFrame（只需列名 / txt_headers）,获取表头
     try:
@@ -1268,7 +1275,7 @@ def ProcessResult(request):
             # 落库（以“同日-同项目-同板号-孔位”为粒度）
             SampleRecord.objects.update_or_create(
                 project_name=project_name,
-                record_date=date.today(),
+                record_date=record_date,
                 plate_no=plate_no_str,
                 well_str=well_pos_str,
                 defaults={
@@ -1279,7 +1286,7 @@ def ProcessResult(request):
             return well
 
         # 清理同日同项目同板号旧记录（避免重复）
-        SampleRecord.objects.filter(project_name=project_name, record_date=date.today(), plate_no=plate_no_str).delete()
+        SampleRecord.objects.filter(project_name=project_name, record_date=record_date, plate_no=plate_no_str).delete()
 
         if layout == 'vertical':   # NIMBUS（列优先）
             for col_idx, col_num in enumerate(nums):
@@ -1439,7 +1446,6 @@ def ProcessResult(request):
                 mask = worklist_table.iloc[:, 1].isna()
                 fill_cols(mask)
 
-        today_str  = timezone.localtime().strftime("%Y%m%d")
         year       = today_str[:4]
         yearmonth  = today_str[:6]
 
@@ -1482,6 +1488,21 @@ def ProcessResult(request):
         if "PlatePos" in worklist_table.columns:
             worklist_table["PlatePos"] = injection_plate
 
+        # 过滤掉 报错信息表 warn_level == 16384 的条码
+        exclude_barcodes = {
+            str(r.get("origin_barcode")).strip()
+            for r in error_rows
+            if str(r.get("warn_level")) == "16384"
+        }
+
+        ic(exclude_barcodes)
+
+        if exclude_barcodes:
+            first_col_name = worklist_table.columns[0]  # 上机列表第一列
+            # 统一按字符串比对；将第一列等于这些条码的行删除
+            mask_keep = ~worklist_table[first_col_name].astype(str).isin(exclude_barcodes)
+            worklist_table = worklist_table[mask_keep]
+
         worklist_records = worklist_table.to_dict(orient="records")
 
         header_meta = {
@@ -1499,6 +1520,8 @@ def ProcessResult(request):
             "txt_headers": txt_headers,
             "worklist_records": worklist_records,
             "header": header_meta,
+            "today_str": today_str,
+            "testing_day": testing_day,
         }
 
     # ========== 3. 分板 & 逐板处理 ==========
@@ -1549,6 +1572,8 @@ def ProcessResult(request):
         "systerm_num": systerm_num,
         "platform": platform,
         "injection_plate": injection_plate,
+        "today_str": today_str,
+        "testing_day": testing_day,
         "plates": plates_payload,                 # ⭐ 多板/单板统一
     }
     request.session.modified = True
@@ -1557,6 +1582,7 @@ def ProcessResult(request):
         "project_name": project_name,
         "project_name_full": project_name_full,
         "platform": platform,
+        "today_str": today_str,
         "plates": plates_payload,                 # 模板循环多张卡片
     })
 
@@ -1601,6 +1627,8 @@ def preview_export(request):
 def export_files(request):
     """使用WeasyPrint生成PDF（兼容单板/多板）"""
     all_payload = request.session.get("export_payload")
+    ic(all_payload)
+
     if not all_payload:
         return HttpResponseBadRequest("没有可导出的数据，请先生成结果页面。")
 
@@ -1619,11 +1647,25 @@ def export_files(request):
         # 这些顶层字段依然从总的 all_payload 里取（沿用旧有逻辑）
         payload["project_name"] = all_payload.get("project_name")
         payload["platform"] = all_payload.get("platform")
+
+        if payload["platform"]!="Tecan":
+            payload["testing_day"] = all_payload.get("testing_day")
+        else:
+            pass
+
     else:
         payload = all_payload  # 旧结构：单板
 
     # 1) 目录设置
-    today_str = datetime.today().strftime("%Y-%m-%d")
+
+    if payload["platform"]!="Tecan":
+        if payload["testing_day"] == "today":
+            today_str  = timezone.localtime().strftime("%Y-%m-%d")
+        else:
+            today_str = (timezone.localtime() + timedelta(days=1)).strftime("%Y-%m-%d")
+    else:
+        today_str = datetime.today().strftime("%Y-%m-%d")
+
     project = str(all_payload.get("project_name", ""))
     project_name_full = str(all_payload.get("project_name_full", ""))
     instrument_num = str(all_payload.get("instrument_num", ""))

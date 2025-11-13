@@ -827,7 +827,6 @@ def _apply_locator_shift_for_clinicals(
     return out
 
 
-
 # 获取 QC 名称表（不再读 mapping_file）
 def _get_qc_name_table(file_basename: str) -> list[str]:
     """
@@ -843,28 +842,41 @@ def _get_qc_name_table(file_basename: str) -> list[str]:
     return ["QC00001663", "QC00001664", "QC00001665"]
 
 
+def _get_qc_names_from_mapping(mapping_path: str) -> list[str]:
+    """
+    从对应关系表（mapping_file）的『工作清单』工作表读取 QC 名称列表：
+    - 取 Code 以 'QC' 开头的行
+    - 返回 Name 列，保持原表顺序
+    """
+    try:
+        df = pd.read_excel(mapping_path, sheet_name="工作清单")
+        df = df.copy()
+        df["Code"] = df["Code"].astype(str)
+        qc_names = df.loc[df["Code"].str.startswith("QC", na=False), "Name"].astype(str).tolist()
+        # 兜底：保证至少返回一个占位
+        return qc_names or ["QC"]
+    except Exception:
+        return ["QC"]
+
+
 # 生成“STD/QC”列表（纵向从 A1 开始）
-def _build_curve_and_qc_cells(curve_points: int, qc_groups: int, qc_levels: int, file_basename: str) -> list[dict]:
+def _build_curve_and_qc_cells(curve_points: int, qc_groups: int, qc_levels: int, qc_names_pool: list[str]) -> list[dict]:
     """
     生成一个顺序列表，每个元素包含：
     { 'label': 显示文本, 'kind': 'STD'|'QC' }
-    - STD: STD0 ~ STD{curve_points-1}
-    - QC:  按 qc_groups * qc_levels 生成，名称来自 _get_qc_name_table
-           示例：QC1_1 -> 'QC00001663'（显示“名称字段”，不是 code）
+    - STD: STD0 ~ STD{curve_points}
+    - QC:  按 qc_groups * qc_levels 生成，名称来自 qc_names_pool（来自“工作清单”）
     """
     items = []
-    # STD(计数时，STD0不算在内)
-    for i in range(curve_points+1):
+    # STD（从 0 到 curve_points）
+    for i in range(curve_points + 1):
         items.append({"label": f"STD{i}", "kind": "STD"})
-    # QC
-    qc_names_pool = _get_qc_name_table(file_basename)
-    if not qc_names_pool:
-        qc_names_pool = ["QC"] * max(1, qc_levels)
+    # QC（循环使用 qc_names_pool）
+    pool = (qc_names_pool or ["QC"])
     for g in range(1, qc_groups + 1):
         for lv in range(1, qc_levels + 1):
-            # 名称取“第 lv 个”QC 名
-            name_idx = (lv - 1) % len(qc_names_pool)
-            items.append({"label": qc_names_pool[name_idx], "kind": "QC", "group": g, "level": lv})
+            name_idx = (lv - 1) % len(pool)
+            items.append({"label": pool[name_idx], "kind": "QC", "group": g, "level": lv})
     return items
 
 
@@ -1129,8 +1141,16 @@ def _render_tecan_process_result(request: HttpRequest, today: str, csv_abs_path:
     qc_groups = config.qc_groups
     qc_levels = config.qc_levels
     test_count = config.test_count
-
     project_name_full   = config.project_name_full
+
+    # 读取上机列表模板
+    mapping_file_path = config.mapping_file.path
+
+    # 读取“项目配置”与“上机映射模板”sheet
+    df_mapping_wc  = pd.read_excel(mapping_file_path, sheet_name="工作清单")
+    df_worklistmap = pd.read_excel(mapping_file_path, sheet_name="上机列表")
+
+    ic(df_mapping_wc)
 
     # 2) 解析文件名得到 plate_number/offset
     file_basename = os.path.basename(csv_abs_path)
@@ -1140,7 +1160,20 @@ def _render_tecan_process_result(request: HttpRequest, today: str, csv_abs_path:
     output_file = f"{year}\\{yearmonth}\\Data{set_name}"
 
     # 3) 构建 STD/QC 单元（仅实施列偏移，不做“让位”）
-    std_qc_items = _build_curve_and_qc_cells(curve_points, qc_groups, qc_levels, file_basename)
+    # std_qc_items = _build_curve_and_qc_cells(curve_points, qc_groups, qc_levels, file_basename)
+
+    # 从『工作清单』表取 QC 名称池 —— 
+    qc_names_pool = df_mapping_wc.loc[
+        df_mapping_wc["Code"].astype(str).str.startswith("QC", na=False), "Name"
+    ].astype(str).tolist()
+
+    # —— 传给新版 _build_curve_and_qc_cells —— 
+    std_qc_items = _build_curve_and_qc_cells(
+        curve_points=curve_points,
+        qc_groups=qc_groups,
+        qc_levels=qc_levels,
+        qc_names_pool=qc_names_pool
+    )
 
     # 3.1 先按 A1→H1→A2… 的竖向填充得到基础坐标
     std_qc_coords = _linear_fill_vertical_from_A1(len(std_qc_items))
@@ -1322,8 +1355,6 @@ def _render_tecan_process_result(request: HttpRequest, today: str, csv_abs_path:
     # 3) 准备“定位孔”信息（如果你有定位孔；没有就传 None）
     locator_info = None
 
-    ic(worksheet_table)
-
     # 比如你在 worksheet_table 某格有 locator=True，可搜出来：
     for row in worksheet_table:
         for cell in row:
@@ -1336,13 +1367,6 @@ def _render_tecan_process_result(request: HttpRequest, today: str, csv_abs_path:
                 break
         if locator_info:
             break
-
-    # 4) 读取上机列表模板（DataFrame） 
-    mapping_file_path = config.mapping_file.path
-
-    # 读取“项目配置”与“上机映射模板”sheet
-    df_mapping_wc  = pd.read_excel(mapping_file_path, sheet_name="工作清单")
-    df_worklistmap = pd.read_excel(mapping_file_path, sheet_name="上机列表")
 
     # 用于构建曲线/QC/Test/DB 序列
     df_std = df_mapping_wc.copy() 
@@ -1397,7 +1421,6 @@ def _render_tecan_process_result(request: HttpRequest, today: str, csv_abs_path:
     worklist_table = pd.DataFrame(columns=txt_headers)
     worklist_table[txt_headers[0]] = SampleName_list
 
-    # ic(worklist_table)
 
     # 5) 按 NIMBUS 的四类规则批量替换
     # ⑤ name→barcode 队列、barcode→well 映射、定位孔信息（直接用你现有构造方式）
@@ -1416,7 +1439,7 @@ def _render_tecan_process_result(request: HttpRequest, today: str, csv_abs_path:
         output_file=output_file                  
     )
 
-    print(worklist_table)
+    # print(worklist_table)
 
     # 6) 导出给模板（动态表头/行）
     txt_headers = list(worklist_table.columns)

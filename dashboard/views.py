@@ -1238,8 +1238,12 @@ def ProcessResult(request):
             tsum = _to_int(TStatusSummary[data_idx], 0)
             tvol = _to_int(TVolume[data_idx], 0)
 
+            # 记录SampleRecord模型中的error_info字段
+            error_info = ""
+
             # 1) 吸液报错（孔位可用）：tsum=16384 且 tvol=0
             if tsum == 16384 and tvol == 0:
+                error_info = "1"
                 well["flag_suck"] = "1"
                 error_rows.append({
                     "sample_name":   match_sample,
@@ -1252,6 +1256,7 @@ def ProcessResult(request):
 
             # 2) 打液报错（孔位不可用）：tsum=16384 且 tvol!=0
             elif tsum == 16384 and tvol != 0:
+                error_info = "16384"
                 well["flag_dispense"] = "1"
                 error_rows.append({
                     "sample_name":   match_sample,
@@ -1263,6 +1268,7 @@ def ProcessResult(request):
                 })
 
             if (str(Warm[data_idx]) in ["1", "4", "16384"]) or (match_sample == "No match"):
+                error_info = str(Warm[data_idx])
                 error_rows.append({
                     "sample_name": match_sample,
                     "origin_barcode": OriginBarcode[data_idx],
@@ -1281,6 +1287,7 @@ def ProcessResult(request):
                 defaults={
                     "sample_name": match_sample,
                     "barcode": origin_barcode,
+                    "error_info": error_info,
                 }
             )
             return well
@@ -1822,6 +1829,7 @@ def sample_search_api(request):
             "date": r.record_date.strftime("%Y-%m-%d"),
             "plate_no": r.plate_no,
             "well_str": r.well_str,
+            "error_info": r.error_info or "",
         }
         for r in records
     ]

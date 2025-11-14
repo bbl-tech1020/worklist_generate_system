@@ -77,7 +77,7 @@
                     data.results.forEach(r => {
                         const p = document.createElement("p");
                         let remark = "";
-                        if (r.error_info === "4" || r.error_info === "16384") {
+                        if (r.error_info === "1" || r.error_info === "4" || r.error_info === "16384") {
                             remark = ` (报错信息：${r.error_info})`;
                         }
                         p.textContent = `项目: ${r.project_name} | 日期: ${r.date} | 板号: ${r.plate_no} | 孔位: ${r.well_str}${remark}`;

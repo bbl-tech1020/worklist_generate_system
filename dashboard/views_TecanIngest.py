@@ -1127,7 +1127,6 @@ def _render_tecan_process_result(request: HttpRequest, today: str, csv_abs_path:
     yearmonth  = today_str[:6]
 
     # 获取后台设置的项目参数，如果没设置报错并提示
-
     try:
         config = SamplingConfiguration.objects.get(project_name=project_name,default_upload_instrument=instrument_num,systerm_num=systerm_num)
     except SamplingConfiguration.DoesNotExist:
@@ -1135,6 +1134,13 @@ def _render_tecan_process_result(request: HttpRequest, today: str, csv_abs_path:
         return render(request, "dashboard/error.html", {
             "message": "未配置项目参数，请前往后台参数配置中完善该项目设置后重试。"
         })
+
+    # 进样体积（非必须设置项）
+    try:
+        injection_cfg = InjectionVolumeConfiguration.objects.get(project_name=project_name,instrument_num=instrument_num,systerm_num=systerm_num)
+        injection_vol  = injection_cfg.injection_volume
+    except InjectionVolumeConfiguration.DoesNotExist:
+        injection_vol  = ""
 
     curve_points = qc_groups = qc_levels = 0
     curve_points = config.curve_points
@@ -1439,7 +1445,11 @@ def _render_tecan_process_result(request: HttpRequest, today: str, csv_abs_path:
         output_file=output_file                  
     )
 
-    # print(worklist_table)
+    # 关联后台参数设置中设置的进样体积
+    for col in ["SmplInjVol", "Injection volume"]:
+        if col in worklist_table.columns:
+            worklist_table[col] = injection_vol
+
 
     # 6) 导出给模板（动态表头/行）
     txt_headers = list(worklist_table.columns)

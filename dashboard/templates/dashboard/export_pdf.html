@@ -11,14 +11,15 @@
         @page {
             size: A4 landscape;
             /* margin: 6mm 6mm 8mm 6mm; */
-            margin: 4mm 4mm 10mm;   /* 适度页边距，保证内容装下一页 */
+            margin: 3mm;;   /* 适度页边距，保证内容装下一页 */
         }
 
         /* 每个 .pdf-page 占一整页 */
-        .pdf-page {
-            break-after: page;           /* CSS Fragmentation */
-            page-break-after: always;    /* 兼容旧属性 */
-        }
+        /* .pdf-page {
+            break-after: page;       
+            page-break-after: always;   
+        } */
+
 
         body,
         table,
@@ -73,12 +74,13 @@
 
         /* 样本名/条码字号更小些 */
         .SampleName {
-            font-size: 8pt;
+            font-size: 9pt;
             font-weight: 700;
         }
 
         .Barcode {
-            font-size: 7pt;
+            font-size: 9pt;
+            font-weight: 700;
         }
 
         .hole {
@@ -126,6 +128,7 @@
             text-align: center;
             border-collapse: collapse;
             margin-top: 6mm;
+            page-break-inside: avoid;   /* 尽量让整张错误表在一页内 */
         }
 
         .table-error th,
@@ -152,7 +155,7 @@
 
     <!-- 96孔板 -->
     <!-- 第 1 页：96 孔板工作清单 -->
-    <section class="pdf-page">
+    <section>
         <table class="table-worksheet" cellpadding="2" cellspacing="0" border="0">
             <thead>
                 <tr>

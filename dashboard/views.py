@@ -1193,7 +1193,9 @@ def ProcessResult(request):
                 if isinstance(w, str) and "X" in w:
                     locator_positions.add(Position[idx])
 
-        barcode_to_well = {}   # OriginBarcode -> (well_str, well_number)
+        barcode_to_well = defaultdict(deque)  # 把普通字典改成 defaultdict(deque)，用于保存 “一个条码 → 多个 (孔位,孔号)”
+
+        # barcode_to_well = {}   # OriginBarcode -> (well_str, well_number)
         worksheet_grid  = [[None for _ in nums] for _ in letters]
         error_rows      = []
 
@@ -1205,7 +1207,9 @@ def ProcessResult(request):
             origin_barcode = str(OriginBarcode[data_idx])
 
             if origin_barcode not in ("", "nan"):
-                barcode_to_well[origin_barcode] = (well_pos_str, well_index)
+                # 同一条码可能对应多个孔位，全部记录到队列里
+                barcode_to_well[origin_barcode].append((well_pos_str, well_index))
+                # barcode_to_well[origin_barcode] = (well_pos_str, well_index)
 
             value = str(MatchSampleName[data_idx])
             match_sample = value if MatchResult[data_idx] == "TRUE" else ("" if value == "" else barcode_to_name.get(value, "No match"))
@@ -1393,8 +1397,11 @@ def ProcessResult(request):
                                 # 1) QC/STD：通过 name->barcode 队列取条码，再查位置信息
                                 if sample_name_value in name_to_barcodes and name_to_barcodes[sample_name_value]:
                                     barcode = name_to_barcodes[sample_name_value].popleft()
-                                    if barcode in barcode_to_well:
-                                        pos, no = barcode_to_well[barcode]
+                                    wells_q = barcode_to_well.get(barcode)
+                                    if wells_q:
+                                        # 依次使用该条码对应的各个孔位
+                                        pos, no = wells_q.popleft()
+                                        # 下面保持你原来的仪器判断逻辑不变
                                         if instrument_name == "Thermo" or instrument_name == "Agilent":
                                             if val == "{{Well_Number}}":
                                                 return f"{injection_plate}:{no}" if injection_plate else no
@@ -1408,17 +1415,19 @@ def ProcessResult(request):
 
                                 # 2) 临床样本：第一列就是条码
                                 elif sample_name_value in barcode_to_well:
-                                    pos, no = barcode_to_well[sample_name_value]
-                                    if instrument_name == "Thermo" or instrument_name == "Agilent":
-                                        if val == "{{Well_Number}}":
-                                            return f"{injection_plate}:{no}" if injection_plate else no
+                                    wells_q = barcode_to_well.get(str(sample_name_value))
+                                    if wells_q:
+                                        pos, no = wells_q.popleft()
+                                        if instrument_name == "Thermo" or instrument_name == "Agilent":
+                                            if val == "{{Well_Number}}":
+                                                return f"{injection_plate}:{no}" if injection_plate else no
+                                            else:
+                                                return f"{injection_plate}-{pos}" if injection_plate else pos
                                         else:
-                                            return f"{injection_plate}-{pos}" if injection_plate else pos
-                                    else:
-                                        if val == "{{Well_Number}}":
-                                            return no
-                                        else:
-                                            return pos
+                                            if val == "{{Well_Number}}":
+                                                return no
+                                            else:
+                                                return pos
                                 return None
                             return val
 

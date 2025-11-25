@@ -7,6 +7,11 @@ from django.conf.urls.static import static
 urlpatterns = [
     path("", views.home, name="dashboard_home"),
 
+    # 登陆和创建用户
+    path('dashboard/login/', views.login_view, name='dashboard_login'),
+    path('dashboard/logout/', views.logout_view, name='dashboard_logout'),
+    path('dashboard/create_user/', views.create_user, name='create_user'),
+
     # 1 前端
     path('dashboard/frontend_entry/', views.frontend_entry, name='frontend_entry'),  # 前端入口
 

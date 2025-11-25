@@ -107,7 +107,7 @@ AUTH_PASSWORD_VALIDATORS = [
 
 LANGUAGE_CODE = 'en-us'
 
-TIME_ZONE = 'UTC'
+TIME_ZONE = 'Asia/Shanghai'
 
 USE_I18N = True
 
@@ -137,3 +137,5 @@ DOWNLOAD_ROOT = os.path.join(BASE_DIR, "downloads")
 DOWNLOAD_URL  = "/downloads/"     # 用于浏览器直接访问
 
 
+# 登录重定向地址（当 @login_required 触发时会跳到这里）
+LOGIN_URL = '/dashboard/login/'

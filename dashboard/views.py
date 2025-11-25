@@ -1,4 +1,9 @@
 
+from django.contrib.auth import authenticate, login, logout
+from django.contrib.auth.decorators import login_required, user_passes_test
+from django.contrib.auth.forms import UserCreationForm
+from django.contrib import messages
+
 from django.views.decorators.http import require_POST,require_GET
 from django.views.decorators.csrf import csrf_exempt
 from django.shortcuts import render, redirect, get_object_or_404
@@ -33,6 +38,41 @@ from weasyprint import HTML, CSS
 from weasyprint.text.fonts import FontConfiguration
 
 # Create your views here.
+def login_view(request):
+    # 支持 next 参数跳转回原页面
+    if request.method == "POST":
+        username = request.POST.get("username", "").strip()
+        password = request.POST.get("password", "")
+        user = authenticate(request, username=username, password=password)
+        if user is not None:
+            login(request, user)
+            next_url = request.GET.get("next") or request.POST.get("next") or reverse("project_config")
+            return redirect(next_url)
+        else:
+            messages.error(request, "用户名或密码错误")
+            # fallthrough -> re-render form
+    return render(request, "dashboard/login.html")
+
+
+def logout_view(request):
+    logout(request)
+    return redirect("dashboard_home")
+
+
+@user_passes_test(lambda u: u.is_superuser)
+def create_user(request):
+    # 仅超级管理员可访问
+    if request.method == "POST":
+        form = UserCreationForm(request.POST)
+        if form.is_valid():
+            new_user = form.save()
+            messages.success(request, f"用户 {new_user.username} 创建成功")
+            return redirect("project_config")
+    else:
+        form = UserCreationForm()
+    return render(request, "dashboard/create_user.html", {"form": form})
+
+
 def home(request):
     return render(request, "dashboard/index.html")
 
@@ -587,6 +627,8 @@ def file_download(request):
 
 
 # 3 后台参数配置
+# @login_required
+
 def project_config(request):
     project_configs = SamplingConfiguration.objects.all().order_by('project_name')
     return render(request, 'dashboard/config/project_config.html', {
@@ -963,6 +1005,27 @@ def _process_one_starlet_plate(scan_sheet, index_map, row_indexes, plate_no_int)
         "TVolume": TVolume,
     }
 
+
+def format_vialpos_column(df: pd.DataFrame, colname: str = "VialPos"):
+    """
+    统一格式化 VialPos 列：
+    - 空值 -> ""
+    - 1.0 -> "1"
+    - 86.0 -> "86"
+    - 3 -> "3"
+    """
+    def fmt(v):
+        if pd.isna(v):
+            return ""                     # 也可以 return "nan" 看你需求
+        try:
+            # 能转成数字的全部按整数格式输出
+            return str(int(float(v)))
+        except Exception:
+            # 极少数无法解析成数字的，保持原样
+            return str(v)
+
+    df[colname] = df[colname].map(fmt)
+    return df
 
 # 结果处理，用户在前端功能入口处选择项目，上传文件并点击提交按钮后的处理逻辑 locator
 def ProcessResult(request):
@@ -1511,13 +1574,37 @@ def ProcessResult(request):
             if str(r.get("warn_level")) == "16384"
         }
 
-        ic(exclude_barcodes)
-
         if exclude_barcodes:
             first_col_name = worklist_table.columns[0]  # 上机列表第一列
             # 统一按字符串比对；将第一列等于这些条码的行删除
             mask_keep = ~worklist_table[first_col_name].astype(str).isin(exclude_barcodes)
             worklist_table = worklist_table[mask_keep]
+   
+        if project_name == 'IGF1':
+            # 获取第一列列名（不管叫什么）
+            col = worklist_table.columns[0]
+            col2 = "Sample name"
+            col3 = "Vial position"
+
+            val = worklist_table.loc[worklist_table[col] == "STD0", col3].iat[0]
+
+            # 1. 删除以 DB 和 Test 开头的行，但保留 DB3
+            worklist_table = worklist_table[~(
+                (worklist_table[col].str.startswith("DB", na=False) & (worklist_table[col] != "DB3")) |
+                (worklist_table[col].str.startswith("Test", na=False))
+            )]
+            
+            # 2. 将 DB3 替换为 Blank
+            worklist_table.loc[worklist_table[col] == "DB3", col] = "Blank"
+            worklist_table.loc[worklist_table[col2] == "DB3", col2] = "Blank"
+
+            # 把STD0的孔位赋值给Blank
+            worklist_table.loc[worklist_table[col] == "Blank", col3] = val
+
+        if 'VialPos' in worklist_table.columns:
+            worklist_table = format_vialpos_column(worklist_table, "VialPos")
+
+        # ic(worklist_table)
 
         worklist_records = worklist_table.to_dict(orient="records")
 
@@ -1643,7 +1730,6 @@ def preview_export(request):
 def export_files(request):
     """使用WeasyPrint生成PDF（兼容单板/多板）"""
     all_payload = request.session.get("export_payload")
-    ic(all_payload)
 
     if not all_payload:
         return HttpResponseBadRequest("没有可导出的数据，请先生成结果页面。")
@@ -1688,6 +1774,8 @@ def export_files(request):
     systerm_num = str(all_payload.get("systerm_num", ""))
     platform = str(payload.get("platform", "NewPlatform"))
     base_dir = settings.DOWNLOAD_ROOT
+
+    ic(project)
 
     if platform == 'NIMBUS' or platform == 'Tecan':
         target_dir = os.path.join(base_dir, platform, today_str, project)
@@ -1750,7 +1838,6 @@ def export_files(request):
     plate_suffix = f"_{plate_no}" if str(plate_no) else ""
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    # pdf_fname = f"WorkSheet_{timestamp}{plate_suffix}.pdf"
 
     pdf_fname = f"WorkSheet_{instrument_num}_{systerm_num}_{project}_{timestamp}{plate_suffix}_GZ.pdf"
     pdf_path = os.path.join(target_dir, pdf_fname)

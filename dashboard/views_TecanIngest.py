@@ -880,6 +880,28 @@ def _build_curve_and_qc_cells(curve_points: int, qc_groups: int, qc_levels: int,
     return items
 
 
+def format_vialpos_column(df: pd.DataFrame, colname: str = "VialPos"):
+    """
+    统一格式化 VialPos 列：
+    - 空值 -> ""
+    - 1.0 -> "1"
+    - 86.0 -> "86"
+    - 3 -> "3"
+    """
+    def fmt(v):
+        if pd.isna(v):
+            return ""                     # 也可以 return "nan" 看你需求
+        try:
+            # 能转成数字的全部按整数格式输出
+            return str(int(float(v)))
+        except Exception:
+            # 极少数无法解析成数字的，保持原样
+            return str(v)
+
+    df[colname] = df[colname].map(fmt)
+    return df
+
+
 def _apply_mapping_to_table(
     mapping_df: pd.DataFrame,
     worklist_table: pd.DataFrame,
@@ -1029,6 +1051,10 @@ def _apply_mapping_to_table(
 
     if output_file and ("OutputFile" in df.columns):
         df["OutputFile"] = output_file
+    
+    if 'VialPos' in df.columns:
+        df = format_vialpos_column(df, "VialPos")
+    ic(df)
 
     return df
 

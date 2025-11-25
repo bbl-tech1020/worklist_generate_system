@@ -79,8 +79,8 @@
         }
 
         .Barcode {
-            font-size: 9pt;
-            font-weight: 700;
+            font-size: 7pt;
+            /* font-weight: 700; */
         }
 
         .hole {
@@ -147,7 +147,6 @@
             table-layout: fixed;
         }
 
-        
     </style>
 </head>
 
@@ -157,6 +156,10 @@
     <!-- 第 1 页：96 孔板工作清单 -->
     <section>
         <table class="table-worksheet" cellpadding="2" cellspacing="0" border="0">
+            <colgroup>
+                <col style="width:12mm; box-sizing:border-box;">
+                <col span="12"> <!-- 剩下 12 列让浏览器自动分配剩余宽度 -->
+            </colgroup>
             <thead>
                 <tr>
                     <th colspan="13" class="title">{{ project_name_full }}前处理样品工作单（Testing Worksheet）</th>
@@ -174,7 +177,7 @@
                     <th colspan="2" style="text-align:left;">{{ header.injection_plate }}</th>
                 </tr>
                 <tr class="maintext">
-                    <th style="width: 28px;"></th>
+                    <th style="width: 12mm;"></th>
                     {% for n in nums %}
                         <th style="text-align:center;">{{ n }}</th>
                     {% endfor %}

@@ -1,0 +1,267 @@
+
+
+{% load static %}
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  <title>后台参数配置 · 登录</title>
+
+  <!-- Bootstrap 5 -->
+  <link href="{% static 'bootstrap/css/bootstrap.min.css' %}" rel="stylesheet">
+
+  <!-- 可选：FontAwesome 用于图标（眼睛、锁等） -->
+  <link href="{% static 'css/all.min.css' %}" rel="stylesheet">
+
+  <!-- 可选：SweetAlert2（漂亮的弹窗提示） -->
+  <link href="{% static 'css/sweetalert2.min.css' %}" rel="stylesheet">
+
+  <style>
+    :root {
+      --brand: #ff7a00; /* 主色，可按你系统主题改 */
+    }
+
+    body {
+      font-family: "Noto Sans SC", "Helvetica Neue", Arial, sans-serif;
+      background: linear-gradient(90deg, #f3f6fb 0%, #fff 30%);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+
+    .login-card {
+      max-width: 820px;
+      width: 100%;
+      background: #fff;
+      border-radius: 12px;
+      box-shadow: 0 8px 30px rgba(25, 40, 63, .08);
+      overflow: hidden;
+    }
+
+    .login-left {
+      padding: 28px 28px;
+    }
+
+    .brand-bar {
+      height: 6px;
+      background: var(--brand);
+      width: 100%;
+    }
+
+    .logo {
+      height: 64px;
+      width: 64px;
+      border-radius: 8px;
+      background: #f5f7fa;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      margin-right: 14px;
+    }
+
+    .form-control:focus {
+      box-shadow: 0 0 0 .15rem rgba(255,122,0,.15);
+      border-color: var(--brand);
+    }
+
+    .btn-brand {
+      background: var(--brand);
+      color: #fff;
+      border: none;
+    }
+
+    .btn-brand:hover {
+      background: #e36a00;
+    }
+
+    .small-muted {
+      font-size: 13px;
+      color: #6c757d;
+    }
+
+    .password-toggle {
+      cursor: pointer;
+      color: #6c757d;
+    }
+
+    .footer-links {
+      font-size: 13px;
+    }
+
+    @media (min-width: 992px) {
+      .login-wrap {
+        display: flex;
+      }
+      .login-side {
+        flex: 0 0 40%;
+        background:
+          radial-gradient(circle at 10% 10%, rgba(255,122,0,0.06), transparent 10%),
+          linear-gradient(180deg, #fafafa, #fff);
+        padding: 26px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-right: 1px solid #f0f0f0;
+      }
+      .login-left {
+        flex: 1;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="login-card">
+    <div class="brand-bar" aria-hidden="true"></div>
+
+    <div class="login-wrap">
+      <!-- 左侧/提示（桌面显示） -->
+      <div class="login-side d-none d-lg-flex">
+        <div class="text-center">
+          <div class="logo mb-3">
+            <!-- 可以替换成系统 logo -->
+            <i class="fa-solid fa-flask fa-2x" style="color:var(--brand)"></i>
+          </div>
+          <h5>工作清单与上机列表系统</h5>
+          <p class="small-muted mt-2">请使用后台管理员账号登录，登录后可进入“后台参数配置”管理项目与仪器信息。</p>
+        </div>
+      </div>
+
+      <!-- 右侧：表单 -->
+      <div class="login-left">
+        <div class="p-3 p-lg-4">
+          <div class="d-flex align-items-center mb-3">
+            <div class="logo d-lg-none">
+              <i class="fa-solid fa-flask fa-lg" style="color:var(--brand)"></i>
+            </div>
+            <div>
+              <h4 class="mb-0">后台登录</h4>
+              <div class="small-muted">请输入你的账号密码以进入后台参数配置</div>
+            </div>
+          </div>
+
+          {% if messages %}
+            <div id="django-messages" class="mb-3">
+              {% for m in messages %}
+                <div class="alert alert-{{ m.tags|default:"danger" }} alert-dismissible fade show" role="alert">
+                  {{ m }}
+                  <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="关闭"></button>
+                </div>
+              {% endfor %}
+            </div>
+          {% endif %}
+
+          <form id="loginForm" method="post" action="{% url 'dashboard_login' %}" class="needs-validation" novalidate>
+            {% csrf_token %}
+
+            {# next 隐藏字段，若请求带 next 则传回去 #}
+            <input type="hidden" name="next" value="{{ request.GET.next|default:'' }}">
+
+            <div class="mb-3">
+              <label for="id_username" class="form-label">用户名</label>
+              <input id="id_username" name="username" type="text"
+                     class="form-control" placeholder="请输入用户名" required
+                     value="{{ request.POST.username|default:'' }}" autofocus aria-label="用户名">
+              <div class="invalid-feedback">请输入用户名</div>
+            </div>
+
+            <div class="mb-3 position-relative">
+              <label for="id_password" class="form-label">密码</label>
+              <div class="input-group">
+                <input id="id_password" name="password" type="password"
+                       class="form-control" placeholder="请输入密码" required aria-label="密码">
+                <span class="input-group-text password-toggle" id="togglePassword" title="显示/隐藏密码" role="button" aria-pressed="false">
+                  <i class="fa-solid fa-eye" id="eyeIcon"></i>
+                </span>
+                <div class="invalid-feedback">请输入密码</div>
+              </div>
+            </div>
+
+            <div class="d-flex justify-content-between align-items-center mb-3">
+              <div class="form-check">
+                <input class="form-check-input" type="checkbox" value="1" name="remember_me" id="id_remember_me">
+                <label class="form-check-label small-muted" for="id_remember_me">记住我</label>
+              </div>
+              <div class="footer-links">
+                <a href="{% url 'dashboard_home' %}" class="small-muted">返回首页</a>
+              </div>
+            </div>
+
+            <div class="d-grid mb-3">
+              <button type="submit" class="btn btn-brand btn-lg" id="loginBtn" aria-label="登录按钮">
+                <i class="fa-solid fa-right-to-bracket me-2"></i> 登录
+              </button>
+            </div>
+
+            <div class="text-center small-muted">
+              <!-- 创建账号链接：后端会再次校验是否是超级用户 -->
+              <a href="{% url 'create_user' %}">创建新账号（超级管理员可用）</a>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div> <!-- .login-wrap -->
+  </div> <!-- .login-card -->
+
+  <!-- Bootstrap JS+Popper -->
+  <script src="{% static 'bootstrap/js/bootstrap.bundle.min.js' %}"></script>
+
+  <!-- SweetAlert2（可选） -->
+  <script src="{% static 'bootstrap/js/sweetalert2.all.min.js' %}"></script>
+
+  <script>
+    (function () {
+      'use strict';
+
+      // 密码显示/隐藏
+      const toggle = document.getElementById('togglePassword');
+      const pwd = document.getElementById('id_password');
+      const eye = document.getElementById('eyeIcon');
+      if (toggle && pwd) {
+        toggle.addEventListener('click', function () {
+          const type = pwd.getAttribute('type') === 'password' ? 'text' : 'password';
+          pwd.setAttribute('type', type);
+          eye.classList.toggle('fa-eye');
+          eye.classList.toggle('fa-eye-slash');
+          // accessibility
+          const pressed = this.getAttribute('aria-pressed') === 'true';
+          this.setAttribute('aria-pressed', (!pressed).toString());
+        });
+      }
+
+      // html5 表单验证（Bootstrap 风格）
+      const form = document.getElementById('loginForm');
+      form.addEventListener('submit', function (event) {
+        if (!form.checkValidity()) {
+          event.preventDefault();
+          event.stopPropagation();
+        }
+        form.classList.add('was-validated');
+      }, false);
+
+      // 如果后端通过 Django messages 返回了错误/提示，我们可以使用 SweetAlert2 弹窗（可选）
+      {% if messages %}
+        {% comment %} 仅当引入 SweetAlert2 时使用 nicer alert {% endcomment %}
+        const hasSweet = typeof Swal !== 'undefined';
+        {% for m in messages %}
+          const msg = "{{ m|escapejs }}";
+          const tags = "{{ m.tags|default:'info' }}";
+          if (hasSweet) {
+            Swal.fire({
+              icon: tags.includes('error') || tags.includes('danger') ? 'error' : (tags.includes('success') ? 'success' : 'info'),
+              title: msg,
+              timer: 3000,
+              toast: true,
+              position: 'top-end',
+              showConfirmButton: false
+            });
+          }
+        {% endfor %}
+      {% endif %}
+    })();
+  </script>
+</body>
+</html>

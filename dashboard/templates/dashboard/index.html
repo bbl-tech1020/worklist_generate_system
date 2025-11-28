@@ -101,9 +101,12 @@
     {% include 'dashboard/sidebar.html' %}
 
     <div class="page-wrapper">
+
       {% block header %}
       <!-- 默认 header -->
       {% endblock %}
+
+      
       <div class="page-body">
         <div class="container-fluid">
           {% block content %}{% endblock %}

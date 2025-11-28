@@ -3,6 +3,7 @@ from . import views
 from . import views_TecanIngest
 from django.conf import settings
 from django.conf.urls.static import static
+from django.contrib.auth.decorators import login_required
 
 urlpatterns = [
     path("", views.home, name="dashboard_home"),
@@ -44,24 +45,24 @@ urlpatterns = [
 
 
     # 3 后台参数配置
-    path('dashboard/project_config/', views.project_config, name='project_config'),  # 项目参数配置
+    path('dashboard/project_config/', login_required(views.project_config), name='project_config'),  # 项目参数配置
 
-    path('dashboard/project_config_create/', views.project_config_create, name='project_config_create'),  # 项目参数配置——新建
-    path('dashboard/project_config_view/<int:pk>/', views.project_config_view, name='project_config_view'),  # 项目参数配置——预览
-    path('dashboard/project_config_edit/<int:pk>/', views.project_config_edit, name='project_config_edit'),  # 项目参数配置——编辑
-    path('dashboard/project_config_delete/<int:pk>/', views.project_config_delete, name='project_config_delete'),  # 项目参数配置——删除
+    path('dashboard/project_config_create/', login_required(views.project_config_create), name='project_config_create'),  # 项目参数配置——新建
+    path('dashboard/project_config_view/<int:pk>/', login_required(views.project_config_view), name='project_config_view'),  # 项目参数配置——预览
+    path('dashboard/project_config_edit/<int:pk>/', login_required(views.project_config_edit), name='project_config_edit'),  # 项目参数配置——编辑
+    path('dashboard/project_config_delete/<int:pk>/', login_required(views.project_config_delete), name='project_config_delete'),  # 项目参数配置——删除
 
-    path('dashboard/vendor_config/', views.vendor_config, name='vendor_config'),  # 仪器厂家参数配置
-    path('dashboard/vendor_config_create/', views.vendor_config_create, name='vendor_config_create'),  # 仪器厂家参数配置——新建
-    path('dashboard/vendor_config_delete/<int:pk>/', views.vendor_config_delete, name='vendor_config_delete'),  # 仪器厂家参数配置——删除
+    path('dashboard/vendor_config/', login_required(views.vendor_config), name='vendor_config'),  # 仪器厂家参数配置
+    path('dashboard/vendor_config_create/', login_required(views.vendor_config_create), name='vendor_config_create'),  # 仪器厂家参数配置——新建
+    path('dashboard/vendor_config_delete/<int:pk>/', login_required(views.vendor_config_delete), name='vendor_config_delete'),  # 仪器厂家参数配置——删除
 
-    path('dashboard/injection_volume_config/', views.injection_volume_config, name='injection_volume_config'),  # 进样体积配置
-    path('dashboard/injection_volume_config_create/', views.injection_volume_config_create, name='injection_volume_config_create'),  # 进样体积配置——新建
-    path('dashboard/injection_volume_config_delete/<int:pk>/', views.injection_volume_config_delete, name='injection_volume_config_delete'),  # 进样体积配置——删除
+    path('dashboard/injection_volume_config/', login_required(views.injection_volume_config), name='injection_volume_config'),  # 进样体积配置
+    path('dashboard/injection_volume_config_create/', login_required(views.injection_volume_config_create), name='injection_volume_config_create'),  # 进样体积配置——新建
+    path('dashboard/injection_volume_config_delete/<int:pk>/', login_required(views.injection_volume_config_delete), name='injection_volume_config_delete'),  # 进样体积配置——删除
 
-    path('dashboard/injection_plate_config/', views.injection_plate_config, name='injection_plate_config'),  # 进样盘号配置
-    path('dashboard/injection_plate_config_create/', views.injection_plate_config_create, name='injection_plate_config_create'),  # 进样盘号配置——新建
-    path('dashboard/injection_plate_config_delete/<int:pk>/', views.injection_plate_config_delete, name='injection_plate_config_delete'),  # 进样盘号配置——删除
+    path('dashboard/injection_plate_config/', login_required(views.injection_plate_config), name='injection_plate_config'),  # 进样盘号配置
+    path('dashboard/injection_plate_config_create/', login_required(views.injection_plate_config_create), name='injection_plate_config_create'),  # 进样盘号配置——新建
+    path('dashboard/injection_plate_config_delete/<int:pk>/', login_required(views.injection_plate_config_delete), name='injection_plate_config_delete'),  # 进样盘号配置——删除
 
     # 获取后台配置的项目信息
     path('dashboard/frontend_entry/get_project_list/', views.get_project_list, name='get_project_list'),
@@ -77,6 +78,7 @@ urlpatterns = [
 
     path('dashboard/TecanIngest/processed/list/',    views_TecanIngest.tecan_list_processed_files,   name='TecanProcessedList'),
     path('dashboard/TecanIngest/processed/manage/',  views_TecanIngest.tecan_manage_processed_file,  name='TecanProcessedManage'),
+    path('dashboard/TecanIngest/processed/download/',views_TecanIngest.tecan_download_processed_file,name='TecanProcessedDownload'),
 
 
     path("dashboard/manual/", views.user_manual, name="user_manual"),

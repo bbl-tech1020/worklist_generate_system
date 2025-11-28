@@ -7,7 +7,7 @@ from collections import defaultdict, deque
 
 from django.conf import settings
 from django.contrib.auth.decorators import login_required
-from django.http import JsonResponse, HttpRequest, HttpResponse, HttpResponseBadRequest
+from django.http import JsonResponse, HttpRequest, HttpResponse, HttpResponseBadRequest, FileResponse
 from django.views.decorators.csrf import csrf_protect
 from django.utils.html import escape
 from django.utils import timezone
@@ -585,7 +585,6 @@ def tecan_resolve_duplicates(request: HttpRequest) -> HttpResponse:
     return _render_tecan_process_result(request, today=today, csv_abs_path=out_path, project_id=project_id)
 
 
-
 @csrf_protect
 def tecan_manage_processed_file(request: HttpRequest) -> HttpResponse:
     """
@@ -639,6 +638,42 @@ def tecan_manage_processed_file(request: HttpRequest) -> HttpResponse:
     return JsonResponse({"ok": True})
 
 
+def tecan_download_processed_file(request: HttpRequest) -> HttpResponse:
+    """
+    下载 processed 下的单个文件
+    入参（GET）：
+      - project_id / project_name
+      - today（可选，默认当天）
+      - filename（必填）
+    """
+    if request.method != "GET":
+        return HttpResponseBadRequest("仅支持GET")
+
+    project_name = (request.GET.get("project_name") or "").strip()
+    project_id   = (request.GET.get("project_id") or "").strip()
+    today        = (request.GET.get("today") or timezone.localtime().strftime("%Y%m%d"))
+    filename     = (request.GET.get("filename") or "").strip()
+
+    if not filename:
+        return HttpResponseBadRequest("参数错误")
+
+    # 目录结构与 tecan_list_processed_files / tecan_manage_processed_file 保持一致 :contentReference[oaicite:2]{index=2}
+    project_dir  = _safe_dirname(project_name or project_id or "project")
+    base_dir     = os.path.join(settings.MEDIA_ROOT, "tecan", today, project_dir)
+    processed_dir= os.path.join(base_dir, "processed")
+
+    # 安全拼接，防止越权
+    src_path = os.path.normpath(os.path.join(processed_dir, filename))
+    if not src_path.startswith(os.path.abspath(processed_dir) + os.sep):
+        return HttpResponseBadRequest("非法文件名")
+
+    if not os.path.exists(src_path) or not os.path.isfile(src_path):
+        return HttpResponseBadRequest("文件不存在")
+
+    # 返回文件下载
+    return FileResponse(open(src_path, "rb"), as_attachment=True, filename=filename)
+
+
 @csrf_protect
 def tecan_list_processed_files(request: HttpRequest) -> HttpResponse:
     """
@@ -688,7 +723,6 @@ def tecan_list_processed_files(request: HttpRequest) -> HttpResponse:
             "mtime": int(st.st_mtime),
         })
     return JsonResponse({"ok": True, "files": files})
-
 
 
 # 读取当天 station（岗位清单）映射（子条码→实验号）

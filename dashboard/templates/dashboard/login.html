@@ -123,7 +123,7 @@
         <div class="text-center">
           <div class="logo mb-3">
             <!-- 可以替换成系统 logo -->
-            <i class="fa-solid fa-flask fa-2x" style="color:var(--brand)"></i>
+            <i class="fa-solid fa-gears fa-2x" style="color:var(--brand)"></i>
           </div>
           <h5>工作清单与上机列表系统</h5>
           <p class="small-muted mt-2">请使用后台管理员账号登录，登录后可进入“后台参数配置”管理项目与仪器信息。</p>
@@ -192,12 +192,11 @@
 
             <div class="d-grid mb-3">
               <button type="submit" class="btn btn-brand btn-lg" id="loginBtn" aria-label="登录按钮">
-                <i class="fa-solid fa-right-to-bracket me-2"></i> 登录
+                <i class="fa-solid fa-arrow-right-to-bracket me-2"></i> 登录
               </button>
             </div>
 
             <div class="text-center small-muted">
-              <!-- 创建账号链接：后端会再次校验是否是超级用户 -->
               <a href="{% url 'create_user' %}">创建新账号（超级管理员可用）</a>
             </div>
           </form>
@@ -210,7 +209,7 @@
   <script src="{% static 'bootstrap/js/bootstrap.bundle.min.js' %}"></script>
 
   <!-- SweetAlert2（可选） -->
-  <script src="{% static 'bootstrap/js/sweetalert2.all.min.js' %}"></script>
+  <script src="{% static 'js/sweetalert2.all.min.js' %}"></script>
 
   <script>
     (function () {

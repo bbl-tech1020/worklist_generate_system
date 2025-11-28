@@ -1,0 +1,52 @@
+<style>
+    /* 顶部用户工具条样式 */
+    .user-toolbar {
+      font-size: 0.85rem;
+      white-space: nowrap;
+    }
+    .user-toolbar-username {
+      padding: 0.2rem 0.75rem;
+      border-radius: 999px;
+      background-color: #f1f5f9;
+      border: 1px solid #e2e8f0;
+      color: #64748b;
+    }
+    .user-toolbar-username .value {
+      font-weight: 600;
+      color: #0f172a;
+      margin-left: .25rem;
+    }
+    .user-toolbar .btn {
+      padding: 0.2rem 0.7rem;
+      font-size: 0.78rem;
+    }
+  </style>
+
+
+{# 右上角用户工具栏：可在任意 header 中 include #}
+<div class="user-toolbar d-flex align-items-center justify-content-end">
+  {% if request.user.is_authenticated %}
+    <span class="user-toolbar-username me-3">
+      <span class="label">当前用户：</span>
+      <span class="value">{{ request.user.username }}</span>
+    </span>
+
+    <a href="#"
+       class="btn btn-outline-primary btn-sm me-2">
+      <i class="ti ti-lock-open me-1"></i>
+      修改密码
+    </a>
+
+    <a href="{% url 'dashboard_logout' %}"
+       class="btn btn-outline-danger btn-sm">
+      <i class="ti ti-logout me-1"></i>
+      退出
+    </a>
+  {% else %}
+    <a href="{% url 'dashboard_login' %}"
+       class="btn btn-primary btn-sm">
+      <i class="ti ti-login me-1"></i>
+      登录
+    </a>
+  {% endif %}
+</div>

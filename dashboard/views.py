@@ -627,14 +627,11 @@ def file_download(request):
 
 
 # 3 后台参数配置
-# @login_required
-
 def project_config(request):
     project_configs = SamplingConfiguration.objects.all().order_by('project_name')
     return render(request, 'dashboard/config/project_config.html', {
         'project_configs': project_configs
     })
-
 
 def project_config_create(request):
     if request.method == 'POST':
@@ -723,7 +720,6 @@ def project_config_delete(request, pk):
             return JsonResponse({"success": True})
         return redirect('config_preview')
     return JsonResponse({"success": False, "error": "Only POST allowed"})
-
 
 def vendor_config(request):
     instrument_configs = InstrumentConfiguration.objects.all().order_by('instrument_num')

@@ -201,10 +201,36 @@
         <td>${fmtSize(f.size)}</td>
         <td>${fmtTime(f.mtime)}</td>
         <td>
-          <button type="button" class="btn btn-sm btn-outline-danger js-del" data-fn="${encodeURIComponent(f.name)}">删除</button>
+          <button type="button" class="btn btn-sm btn-outline-primary js-download" data-fn="${encodeURIComponent(f.name)}">下载</button>
+          <button type="button" class="btn btn-sm btn-outline-danger ms-2 js-del" data-fn="${encodeURIComponent(f.name)}">删除</button>
           <button type="button" class="btn btn-sm btn-outline-secondary ms-2 js-mv" data-fn="${encodeURIComponent(f.name)}">移动到 backup</button>
         </td>`;
       body.appendChild(tr);
+    });
+
+    // 事件：下载
+    body.querySelectorAll(".js-download").forEach(btn => {
+      btn.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+
+        const filename = decodeURIComponent(btn.dataset.fn);
+
+        const sel = document.getElementById('project-select');
+        const pid = sel && sel.value;
+        const pname = sel && sel.options[sel.selectedIndex] 
+          ? sel.options[sel.selectedIndex].text.trim()
+          : "";
+
+        const params = new URLSearchParams({
+          project_id: pid || "",
+          project_name: pname || "",
+          filename: filename
+        });
+
+        // 跳转到后端下载接口
+        window.location.href = "{% url 'TecanProcessedDownload' %}?" + params.toString();
+      });
     });
 
     // 事件：删除
@@ -217,6 +243,7 @@
       });
     });
 
+    // 事件：移动
     body.querySelectorAll(".js-mv").forEach(btn => {
       btn.addEventListener("click", async (e) => {
         e.preventDefault(); e.stopPropagation();

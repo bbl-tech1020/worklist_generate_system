@@ -943,6 +943,8 @@ def _apply_mapping_to_table(
     name_to_barcodes: dict[str, deque],
     barcode_to_well: dict[str, tuple[str, int]],
     locator_info: dict | None = None,
+    injection_plate: str | None = None,
+    instrument_name: str | None = None,
     set_name: str | None = None,       
     output_file: str | None = None      
 ):
@@ -1036,7 +1038,7 @@ def _apply_mapping_to_table(
                     df.at[first_idx, col_wellpos] = locator_info.get("well_pos")
                 continue
 
-            # 孔号/孔位占位符：根据“样本名 → 条码 → 孔位”求值
+            # 孔号/孔位占位符：根据“样本名 → 条码 → 孔位”求值  f"{injection_plate}:{well_no}"
             if sval in ("{{Well_Number}}", "{{Well_Position}}"):
                 def _resolve(sample_name_value: str):
                     name = str(sample_name_value).strip()
@@ -1049,7 +1051,16 @@ def _apply_mapping_to_table(
                     if loc_display and locator_info and name == loc_display:
                         well_pos = locator_info.get("well_pos")
                         well_num = locator_info.get("well_num")
-                        return well_num if sval == "{{Well_Number}}" else well_pos
+                        if instrument_name == "Thermo" or instrument_name == "Agilent":
+                            if sval == "{{Well_Number}}":
+                                return f"{injection_plate}:{well_num}" if injection_plate else well_num
+                            else:
+                                return f"{injection_plate}-{well_pos}" if injection_plate else well_pos
+                        else:
+                            if sval == "{{Well_Number}}":
+                                return well_num
+                            else:
+                                return well_pos
 
                     # 3) QC/STD：Name→Barcode（队列），条码→(well_pos, well_num)
                     if name in name_to_barcodes and name_to_barcodes[name]:
@@ -1057,14 +1068,32 @@ def _apply_mapping_to_table(
                         wells = barcode_to_well.get(barcode)
                         if wells:
                             well_pos, well_num = wells.popleft()   # ← 关键：消费本条码的下一个孔位
-                            return well_num if sval == "{{Well_Number}}" else well_pos
+                            if instrument_name == "Thermo" or instrument_name == "Agilent":
+                                if sval == "{{Well_Number}}":
+                                    return f"{injection_plate}:{well_num}" if injection_plate else well_num
+                                else:
+                                    return f"{injection_plate}-{well_pos}" if injection_plate else well_pos
+                            else:
+                                if sval == "{{Well_Number}}":
+                                    return well_num
+                                else:
+                                    return well_pos
                         return None
 
                     # 3) 临床：第一列值即条码
                     wells = barcode_to_well.get(name)
                     if wells:
                         well_pos, well_num = wells.popleft()       # ← 关键：消费一次
-                        return well_num if sval == "{{Well_Number}}" else well_pos
+                        if instrument_name == "Thermo" or instrument_name == "Agilent":
+                            if sval == "{{Well_Number}}":
+                                return f"{injection_plate}:{well_num}" if injection_plate else well_num
+                            else:
+                                return f"{injection_plate}-{well_pos}" if injection_plate else well_pos
+                        else:
+                            if sval == "{{Well_Number}}":
+                                return well_num
+                            else:
+                                return well_pos
 
                 df.loc[mask, col] = df.loc[mask, first_col].apply(_resolve)
             else:
@@ -1186,6 +1215,8 @@ def _render_tecan_process_result(request: HttpRequest, today: str, csv_abs_path:
     year       = today_str[:4]
     yearmonth  = today_str[:6]
 
+    ic(injection_plate)
+
     # 获取后台设置的项目参数，如果没设置报错并提示
     try:
         config = SamplingConfiguration.objects.get(project_name=project_name,default_upload_instrument=instrument_num,systerm_num=systerm_num)
@@ -1216,7 +1247,18 @@ def _render_tecan_process_result(request: HttpRequest, today: str, csv_abs_path:
     df_mapping_wc  = pd.read_excel(mapping_file_path, sheet_name="工作清单")
     df_worklistmap = pd.read_excel(mapping_file_path, sheet_name="上机列表")
 
-    ic(df_mapping_wc)
+    # 解析后台设置的上机模板（txt/csv）→ DataFrame（只需列名 / txt_headers）,获取表头
+    try:
+        instrument_config = InstrumentConfiguration.objects.get(instrument_num=instrument_num,systerm_num=systerm_num)
+    except InstrumentConfiguration.DoesNotExist:
+        # 返回友好的错误提示页面
+        return render(request, "dashboard/error.html", {
+            "message": "未配置仪器厂家参数，请前往后台参数配置中完善设置后重试。"
+        })
+
+    instrument_name = instrument_config.instrument_name
+    if not instrument_config.upload_file:
+        return HttpResponse("未设置该上机仪器对应的上机模板,请设置后再试", status=404)
 
     # 2) 解析文件名得到 plate_number/offset
     file_basename = os.path.basename(csv_abs_path)
@@ -1501,6 +1543,8 @@ def _render_tecan_process_result(request: HttpRequest, today: str, csv_abs_path:
         name_to_barcodes=name_to_barcodes,
         barcode_to_well=barcode_to_well,
         locator_info=locator_info,
+        injection_plate=injection_plate,
+        instrument_name=instrument_name,
         set_name=set_name,                     
         output_file=output_file                  
     )

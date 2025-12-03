@@ -72,6 +72,8 @@ urlpatterns = [
     # 4 结果处理(适用于NIMBUS和Starlet)，用户在前端功能入口处选择项目，上传文件并点击提交按钮后的处理逻辑
     path('dashboard/ProcessResult/', views.ProcessResult, name='ProcessResult'), # NIMBUS和Starlet
 
+    path('dashboard/ManualProcessResult/', views.Manual_process_result, name='ManualProcessResult'), # NIMBUS和Starlet
+
     # 5 结果处理(适用于TECAN)
     path('dashboard/TecanIngest/', views_TecanIngest.tecaningest, name='TecanIngest'), # TECAN
     path('dashboard/TecanIngest/resolve/', views_TecanIngest.tecan_resolve_duplicates, name='TecanIngestResolve'),

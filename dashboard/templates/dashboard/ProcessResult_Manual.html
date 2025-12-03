@@ -1,4 +1,3 @@
-
 {% extends 'dashboard/index.html' %}
 {% load static %}
 {% load custom_tags %}
@@ -223,8 +222,6 @@
                     <th>条码</th>
                     <th>板号</th>
                     <th>孔位</th>
-                    <th>警告级别</th>
-                    <th>警告信息</th>
                 </tr>
             </thead>
             <tbody>
@@ -235,8 +232,6 @@
                             <td>{{ row.origin_barcode }}</td>
                             <td>{{ row.plate_no }}</td>
                             <td>{{ row.well_str }}</td>
-                            <td>{{ row.warn_level }}</td>
-                            <td>{{ row.warn_info }}</td>
                         </tr>
                     {% endif %}
                 {% endfor %}

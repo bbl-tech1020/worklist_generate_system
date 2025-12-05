@@ -59,7 +59,7 @@
       <span class="folder">📁 {{ g.group }}</span>
       <ul class="hidden">
 
-        {# —— Starlet（有 categories）—— #}
+        <!-- Starlet（有 categories） -->
         {% if g.categories %}
         {% for cat in g.categories %}
         <li>
@@ -111,7 +111,7 @@
         {% endfor %}
 
         {% else %}
-        {# —— 其他平台（旧三层）—— #}
+        <!--  其他平台（旧三层） -->
         {% for day in g.days %}
         <li>
           <span class="folder">📁 {{ day.date }}</span>

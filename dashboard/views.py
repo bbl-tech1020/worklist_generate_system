@@ -1268,7 +1268,6 @@ def ProcessResult(request):
             if origin_barcode not in ("", "nan"):
                 # 同一条码可能对应多个孔位，全部记录到队列里
                 barcode_to_well[origin_barcode].append((well_pos_str, well_index))
-                # barcode_to_well[origin_barcode] = (well_pos_str, well_index)
 
             value = str(MatchSampleName[data_idx])
             match_sample = value if MatchResult[data_idx] == "TRUE" else ("" if value == "" else barcode_to_name.get(value, "No match"))
@@ -1499,6 +1498,7 @@ def ProcessResult(request):
                                             return "1"
                                         else:
                                             return "A1"
+
                             return val
 
                         worklist_table.loc[mask, col] = worklist_table.loc[mask, first_col].apply(_resolve_vialpos)
@@ -1776,7 +1776,7 @@ def export_files(request):
 
     # 1) 目录设置
 
-    if payload["platform"]!="Tecan":
+    if payload["platform"]!="Tecan" and payload["platform"]!="手工取样":
         if payload["testing_day"] == "today":
             today_str  = timezone.localtime().strftime("%Y-%m-%d")
         else:
@@ -1793,7 +1793,7 @@ def export_files(request):
 
     ic(project)
 
-    if platform == 'NIMBUS' or platform == 'Tecan':
+    if platform == 'NIMBUS' or platform == 'Tecan' or platform == '手工取样':
         target_dir = os.path.join(base_dir, platform, today_str, project)
     else:
         target_dir = os.path.join(base_dir, platform,'工作清单和上机列表',today_str, project)
@@ -1967,6 +1967,33 @@ def Manual_process_result(request):
 
     if method_type == "icpms":  # ICP-MS特殊方法逻辑
         ctx = _build_icpms_manual_worksheets(request)
+
+        # ★ 新增：把手工 ICP-MS 生成的结果写入 session，结构与 ProcessResult 保持一致
+        header_meta = {
+            "today_str":         ctx.get("today_str"),
+            "instrument_num":    ctx.get("instrument_num"),
+            "injection_plate":   ctx.get("injection_plate"), 
+        }
+
+        request.session["export_payload"] = {
+            "project_name":      ctx.get("project_name"),
+            "project_name_full": ctx.get("project_name_full"),
+            "instrument_num":    ctx.get("instrument_num"),
+            "systerm_num":       ctx.get("systerm_num"),
+            "platform":          ctx.get("platform"),
+            "injection_plate":   ctx.get("injection_plate"), 
+            "today_str":         ctx.get("today_str"),
+
+            # 手工这里只支持“今天”，直接写 today，就能复用 export_files 里对 testing_day 的逻辑
+            # "testing_day":       ctx.get("testing_day", "today"),
+            # 多板/单板统一放在 plates 里，preview_export/export_files 都是读这个字段
+            "plates":            ctx.get("plates", []),
+
+            "header": header_meta,
+        }
+        request.session.modified = True
+        # ★ END 新增
+
         return render(request, "dashboard/ProcessResult_Manual.html", ctx)
 
     # “常规方法”逻辑
@@ -2099,6 +2126,7 @@ def _build_icpms_manual_worksheets(request):
     project_id     = request.POST.get("project_id", "").strip()
     instrument_num = request.POST.get("instrument_num", "").strip()
     systerm_num    = request.POST.get("systerm_num", "").strip()
+    injection_plate = request.POST.get("injection_plate")
 
     station_file = request.FILES.get("station_list")
     scan_file    = request.FILES.get("scan_result")
@@ -2108,7 +2136,8 @@ def _build_icpms_manual_worksheets(request):
 
     # 1) 项目配置 & 对应关系表（工作清单 sheet）
     cfg = SamplingConfiguration.objects.get(pk=project_id)
-    proj_name_full = cfg.project_name_full or cfg.project_name
+    proj_name = cfg.project_name
+    proj_name_full = cfg.project_name_full
     mapping_path   = cfg.mapping_file.path
 
     df_mapping_wc = pd.read_excel(mapping_path, sheet_name="工作清单")
@@ -2441,6 +2470,9 @@ def _build_icpms_manual_worksheets(request):
     )
     txt_headers = df_template.columns.tolist()
 
+    # 仪器名称（Thermo / Agilent 等）
+    instrument_name = getattr(instrument_config, "instrument_name", "")
+
     # 曲线 / QC 名称集合
     test_count   = cfg.test_count or 0
     curve_points = cfg.curve_points or 0
@@ -2455,27 +2487,43 @@ def _build_icpms_manual_worksheets(request):
         df_mapping_wc["Code"].astype(str).str.startswith("QC")
     ]["Name"].astype(str).unique().tolist()
 
+    # 对每块板分别生成上机列表
     for p in plates:
-        # 1) barcode -> well 映射（用于 VialPos）
-        def resolve_vial_pos(sample_name):
-            s = str(sample_name).strip()
-            if not s:
-                return ""
-            for row in p["worksheet_table"]:
-                for cell in row:
-                    if cell["match_sample"] == s:
-                        return cell["well_str"]
-            return ""
+        plate_no_str = p["plate_no"]
 
-        # 2) 构造第一列 SampleName_list：DB/Test + STD + QC + 临床 + QC2
-        test_list   = ["DB1"] + [f"Test{i}" for i in range(1, test_count + 1)]
-        curve_list  = ["DB2"] + std_names_use
-        qc_list1    = ["DB3"] + qc_names + ["DB4"]
-        qc_list2    = qc_names + ["DB5"]
+        # ★ 每块板单独构建一次 name_to_barcodes（从 df_mapping_wc 拷贝）
+        name_to_barcodes = defaultdict(deque)
+        for _, row_m in df_mapping_wc.iterrows():
+            n = str(row_m.get("Name", "")).strip()
+            b = str(row_m.get("Barcode", "")).strip()
+            if n and b and b != "nan":
+                name_to_barcodes[n].append(b)
+        
+        ic(name_to_barcodes)
 
-        clinical_list = []
-        for row in p["worksheet_table"]:
+        # ---------- 1) 构建 barcode -> [(well_pos, well_no)...] 队列 ----------
+        barcode_to_well = defaultdict(deque)
+
+        rows_grid = p["worksheet_table"]  # 8 行 x 12 列
+        for r_idx, row in enumerate(rows_grid):
             for cell in row:
+                origin_bc = str(cell["origin_barcode"]).strip()
+                if origin_bc and origin_bc != "nan":
+                    well_pos = cell["well_str"]          # A1, B5 这种
+                    well_no  = (r_idx * 12) + int(cell["num"])  # 1..96 行优先编号
+                    barcode_to_well[origin_bc].append((well_pos, well_no))
+
+        # ---------- 2) 构造第一列 SampleName：DB/Test + STD/QC + 临床条码 + QC ----------
+        test_list   = ["DB1"] + [f"Test{i}" for i in range(1, test_count + 1)]
+        curve_list  = std_names_use
+        qc_list1    = ["DB1"] + qc_names
+        qc_list2    = qc_names
+
+        # ★ 临床样本：从工作清单中“纵向”遍历，取 **条码** 而不是实验号
+        clinical_list = []
+        for c in range(12):         # 列优先：A1,A2,...,H12,B1,B2,...
+            for r in range(8):
+                cell = rows_grid[r][c]
                 name = str(cell["match_sample"]).strip()
                 if not name:
                     continue
@@ -2483,12 +2531,14 @@ def _build_icpms_manual_worksheets(request):
                     continue
                 if name in std_names_use or name in qc_names:
                     continue
-                if name.startswith("DB") or name.startswith("Test"):
+                if name.startswith("DB") or name.startswith("Test") or name.startswith("Blank"):
                     continue
-                # 只保留一次
-                clinical_list.append(name)
+                origin_bc = str(cell["origin_barcode"]).strip()
+                if not origin_bc:
+                    continue
+                clinical_list.append(origin_bc)      # ★ 第一列使用条码
 
-        SampleName_list = test_list + curve_list + qc_list1 + clinical_list + qc_list2
+        SampleName_list = curve_list + qc_list1 + clinical_list + qc_list2
         SampleName_list = [
             x for x in SampleName_list
             if isinstance(x, str) and x
@@ -2504,66 +2554,126 @@ def _build_icpms_manual_worksheets(request):
         # 4) 应用 df_worklistmap 映射规则
         col0 = df_worklist[first_col_header]
 
+        def resolve_vialpos_for_value(sample_name_value, placeholder):
+            """
+            根据第一列的值 sample_name_value 决定孔位。
+            - 当 placeholder 为 {{Well_Number}} / {{Well_Position}} 时，按条码动态计算；
+            - 否则视为固定字符串（例如 D3B-F8 / D3B-F9），直接返回 placeholder。
+            """
+
+            s = str(sample_name_value).strip()
+            if not s:
+                return ""
+
+            # 1) 非占位符：直接返回配置值（用于 DB* / Test* 的 D3B-F8 / D3B-F9）
+            if placeholder not in ("{{Well_Number}}", "{{Well_Position}}"):
+                return placeholder
+
+            # 1) QC/STD：通过 name_to_barcodes 队列取条码，再查位置信息
+            if s in name_to_barcodes and name_to_barcodes[s]:
+                barcode = name_to_barcodes[s].popleft()
+                wells_q = barcode_to_well.get(barcode)
+                if wells_q:
+                    pos, no = wells_q.popleft()
+                    # ICP-MS 这里不区分 Thermo/Agilent，格式保持与 NIMBUS 一致
+                    if placeholder == "{{Well_Number}}":
+                        return f"{injection_plate}:{no}"
+                    else:
+                        return f"{injection_plate}-{pos}"
+
+            # 2) 临床样本：第一列即为条码
+            if s in barcode_to_well:
+                wells_q = barcode_to_well.get(s)
+                if wells_q:
+                    pos, no = wells_q.popleft()
+                    if placeholder == "{{Well_Number}}":
+                        return f"{injection_plate}:{no}"
+                    else:
+                        return f"{injection_plate}-{pos}"
+
+            # 3) 找不到就返回空
+            return f"{injection_plate}-{'H1'}"
+
         def apply_to(mask, fill_values):
             nonlocal mirror_cols
             for col, val in zip(txt_headers[1:], fill_values.values):
-
                 v = str(val).strip()
 
-                # "*"：镜像第一列
+                # "*"：该列镜像第一列
                 if v == "*":
                     mirror_cols.add(col)
                     continue
 
-                # VialPos / Well ：根据样本名反查孔位
-                if col.lower() in ["vialpos", "vial position", "样品瓶", "well"]:
-                    df_worklist.loc[mask, col] = \
-                        df_worklist.loc[mask, first_col_header].apply(resolve_vial_pos)
-                else:
-                    df_worklist.loc[mask, col] = val
+                # 2) 进样体积列：直接用配置的 injection_volume（如果有），否则写回映射表里的值
+                if col in ("SmplInjVol", "Injection volume"):
+                    df_worklist.loc[mask, col] = injection_volume or v
+                    continue
 
+                # 3) ★ 动态计算孔位列：列名为 VialPos / Vial position / 样品瓶
+                #    触发方式与 NIMBUS 完全一致，不再通过占位符 "{{Well_Number}}" 判断
+                if col in ("VialPos", "Vial position", "样品瓶", "样品瓶号"):
+                    df_worklist.loc[mask, col] = df_worklist.loc[mask, first_col_header].apply(
+                        lambda x: resolve_vialpos_for_value(x, v)
+                    )
+                    continue
+
+                # 4) 其它列：直接按映射表填固定值
+                df_worklist.loc[mask, col] = val
+
+        # 遍历 mapping 表中的每一条规则（完全照 NIMBUS 的 key 语义）
         for _, rule in df_worklistmap.iterrows():
-            key         = str(rule.iloc[0]).strip()
+            sample_key  = rule.iloc[0]
             fill_values = rule.iloc[1:]
 
-            if key == "DB*":
-                mask = col0.str.startswith("DB")
+            if str(sample_key) == "DB*":
+                mask = df_worklist.iloc[:, 0].str.startswith("DB")
                 apply_to(mask, fill_values)
-            elif key.startswith("DB"):
-                mask = col0 == key
+            elif str(sample_key).startswith("DB"):
+                mask = col0 == str(sample_key)
                 apply_to(mask, fill_values)
-            elif key == "Test*":
+            elif str(sample_key) == "Test*":
                 mask = col0.str.startswith("Test")
                 apply_to(mask, fill_values)
-            elif key.startswith("Test"):
-                mask = col0 == key
+            elif str(sample_key).startswith("Test"):
+                mask = col0 == str(sample_key)
                 apply_to(mask, fill_values)
-            elif key == "STD*":
+
+            elif str(sample_key) == "STD*":
                 mask = col0.isin(std_names_use)
                 apply_to(mask, fill_values)
-            elif key.startswith("STD"):
-                mask = col0 == key
+            elif str(sample_key).startswith("STD"):
+                mask = col0 == str(sample_key)
                 apply_to(mask, fill_values)
-            elif key == "QC*":
+
+            elif str(sample_key) == "QC*":
                 mask = col0.isin(qc_names)
                 apply_to(mask, fill_values)
-            elif key.startswith("QC"):
-                mask = col0 == key
+            elif str(sample_key).startswith("QC"):
+                mask = col0 == str(sample_key)
                 apply_to(mask, fill_values)
-            elif key == "*":
-                mask = col0.isna()
+
+            elif str(sample_key) == "*":
+                # 通配：填充剩余所有空行
+                mask = df_worklist.iloc[:, 1].isna() 
                 apply_to(mask, fill_values)
 
         # 5) 镜像列填充
         for col in mirror_cols:
             df_worklist[col] = df_worklist[first_col_header]
 
+        txt_headers = ["跳过", "样品类型", "样品名称", "样品瓶号", "级别", "总稀释倍数"]
+    
         p["txt_headers"]      = txt_headers
         p["worklist_records"] = df_worklist.to_dict(orient="records")
+    
 
     # 8) 返回给视图的 payload
     ctx = {
-        "platform": "Manual-ICPMS",
+        "instrument_num":instrument_num,
+        "systerm_num":systerm_num,
+        "injection_plate":injection_plate,
+        "platform": "手工取样",
+        "project_name": proj_name,
         "project_name_full": proj_name_full,
         "today_str": today_str,
         "nums": nums,

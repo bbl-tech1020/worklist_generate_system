@@ -28,6 +28,12 @@
           <input type="hidden" id="project-name" name="project_name">
         </div>
 
+        <!-- 上机仪器 -->
+        <div class="mb-3">
+          <label class="form-label">上机仪器</label>
+          <input type="text" class="form-control" id="instrument_num" name="instrument_num" placeholder="请输入仪器编号">
+        </div>
+
         <!-- 新增：方法类型下拉框 -->
         <div class="mb-3">
           <label class="form-label">方法类型</label>
@@ -63,34 +69,27 @@
             <label class="form-label">扫码结果表</label>
             <input type="file" class="form-control" name="scan_result">
           </div>
-        </div>
-
-        <!-- 上机仪器 -->
-        <div class="mb-3">
-          <label class="form-label">上机仪器</label>
-          <input type="text" class="form-control" id="instrument_num" name="instrument_num" placeholder="请输入仪器编号">
-        </div>
-
-        <!-- 系统号 -->
-        <div class="mb-3">
-          <label class="form-label">系统号</label>
-          <select class="form-select" id="systerm_num" name="systerm_num">
-            <option value="">请选择</option>
-            <option value="S0">S0</option>
-            <option value="S1">S1</option>
-            <option value="S2">S2</option>
-            <option value="S3">S3</option>
-            <option value="S4">S4</option>
-        </select>
-        </div>
-
-        <!-- 进样盘号（按需显示） -->
-        <div class="mb-3 d-none" id="plate-group">
-          <label class="form-label">进样盘号</label>
-          <select class="form-select" id="injection-plate-select" name="injection_plate">
-            <option value="">请选择进样盘号</option>
+          <!-- 系统号 -->
+          <div class="mb-3">
+            <label class="form-label">系统号</label>
+            <select class="form-select" id="systerm_num" name="systerm_num">
+              <option value="">请选择</option>
+              <option value="S0">S0</option>
+              <option value="S1">S1</option>
+              <option value="S2">S2</option>
+              <option value="S3">S3</option>
+              <option value="S4">S4</option>
           </select>
-          <div class="form-text">当该项目与仪器在“进样盘号配置”中存在记录时，此项才会出现。</div>
+          </div>
+
+          <!-- 进样盘号（按需显示） -->
+          <div class="mb-3" id="plate-group">
+            <label class="form-label">进样盘号</label>
+            <select class="form-select" id="injection-plate-select" name="injection_plate">
+              <option value="">请选择进样盘号</option>
+            </select>
+            <div class="form-text">当该项目与仪器在“进样盘号配置”中存在记录时，此项才会出现。</div>
+          </div>
         </div>
 
         <div class="mt-4">

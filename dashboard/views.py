@@ -1054,8 +1054,6 @@ def ProcessResult(request):
     else:
         today_str = (timezone.localtime() + timedelta(days=1)).strftime("%Y%m%d")
         record_date = date.today() + timedelta(days=1)
-    
-    ic(record_date)
 
     Stationlist = request.FILES.get('station_list')               # 每日操作清单
     Scanresult  = request.FILES.get('scan_result')                # 扫码结果
@@ -1329,16 +1327,21 @@ def ProcessResult(request):
                     "warn_info":      "Pipetting error",
                 })
 
-            if (str(Warm[data_idx]) in ["1", "4", "16384"]) or (match_sample == "No match"):
-                error_info = str(Warm[data_idx])
-                error_rows.append({
-                    "sample_name": match_sample,
-                    "origin_barcode": OriginBarcode[data_idx],
-                    "plate_no": plate_no_str,
-                    "well_str": well_pos_str,
-                    "warn_level": Warm[data_idx],
-                    "warn_info": Status[data_idx],
-                })
+            row_data = {
+                "sample_name": match_sample,
+                "origin_barcode": OriginBarcode[data_idx],
+                "plate_no": plate_no_str,
+                "well_str": well_pos_str,
+                "warn_level": Warm[data_idx],
+                "warn_info": Status[data_idx],
+            }
+
+            if (str(Warm[data_idx]) in ["1", "4", "16384"]) or (well_pos_str == "H12") or (match_sample == "No match"):
+                # ✅ 如果是 H12，放到第一行
+                if well_pos_str == "H12":
+                    error_rows.insert(0, row_data)
+                else:
+                    error_rows.append(row_data)
 
             # 落库（以“同日-同项目-同板号-孔位”为粒度）
             SampleRecord.objects.update_or_create(
@@ -1611,14 +1614,13 @@ def ProcessResult(request):
         if 'VialPos' in worklist_table.columns:
             worklist_table = format_vialpos_column(worklist_table, "VialPos")
 
-        # ic(worklist_table)
-
         worklist_records = worklist_table.to_dict(orient="records")
 
         header_meta = {
             "test_date": timezone.localtime().strftime("%Y-%m-%d"),
             "plate_no": plate_no_str,
             "instrument_num": instrument_num,
+            "systerm_num": systerm_num,
             "injection_plate": injection_plate,
             "today_str": today_str,
         }
@@ -1896,8 +1898,8 @@ def export_files(request):
         worklist_url_key = "txt_url"
         worklist_url_val = f"{settings.DOWNLOAD_URL}{today_str}/{project}/{txt_fname}"
 
-    elif instrument_name.lower() == "thermo":
-        # thermo：导出逗号分隔的 .csv
+    elif instrument_name.lower() == "thermo" or instrument_name.lower() == "agilent":
+        # thermo和agilent：导出逗号分隔的 .csv
         # csv_fname = f"OnboardingList_{timestamp}{plate_suffix}.csv"
         csv_fname = f"OnboardingList_{instrument_num}_{systerm_num}_{project}_{timestamp}{plate_suffix}_GZ.csv"
         csv_path = os.path.join(target_dir, csv_fname)

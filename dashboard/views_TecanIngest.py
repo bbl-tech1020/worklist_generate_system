@@ -894,7 +894,7 @@ def _get_qc_names_from_mapping(mapping_path: str) -> list[str]:
 
 
 # 生成“STD/QC”列表（纵向从 A1 开始）
-def _build_curve_and_qc_cells(curve_points: int, qc_groups: int, qc_levels: int, qc_names_pool: list[str]) -> list[dict]:
+def _build_curve_and_qc_cells(curve_points: int, std_names_pool: list[str], qc_groups: int, qc_levels: int, qc_names_pool: list[str]) -> list[dict]:
     """
     生成一个顺序列表，每个元素包含：
     { 'label': 显示文本, 'kind': 'STD'|'QC' }
@@ -902,9 +902,15 @@ def _build_curve_and_qc_cells(curve_points: int, qc_groups: int, qc_levels: int,
     - QC:  按 qc_groups * qc_levels 生成，名称来自 qc_names_pool（来自“工作清单”）
     """
     items = []
+    STDpool = (std_names_pool or ["STD"])
+
+    # 把‘nan’替换为空字符串
+    STDpool = ['' if x == 'nan' else x for x in STDpool]
+
     # STD（从 0 到 curve_points）
     for i in range(curve_points + 1):
-        items.append({"label": f"STD{i}", "kind": "STD"})
+        items.append({"label": STDpool[i], "kind": "STD"})
+
     # QC（循环使用 qc_names_pool）
     pool = (qc_names_pool or ["QC"])
     for g in range(1, qc_groups + 1):
@@ -1270,7 +1276,11 @@ def _render_tecan_process_result(request: HttpRequest, today: str, csv_abs_path:
     # 3) 构建 STD/QC 单元（仅实施列偏移，不做“让位”）
     # std_qc_items = _build_curve_and_qc_cells(curve_points, qc_groups, qc_levels, file_basename)
 
-    # 从『工作清单』表取 QC 名称池 —— 
+    # 从『工作清单』表取 STD 和QC 名称池 —— 
+    std_names_pool = df_mapping_wc.loc[
+        df_mapping_wc["Code"].astype(str).str.startswith("STD", na=False), "Name"
+    ].astype(str).tolist()
+
     qc_names_pool = df_mapping_wc.loc[
         df_mapping_wc["Code"].astype(str).str.startswith("QC", na=False), "Name"
     ].astype(str).tolist()
@@ -1278,10 +1288,13 @@ def _render_tecan_process_result(request: HttpRequest, today: str, csv_abs_path:
     # —— 传给新版 _build_curve_and_qc_cells —— 
     std_qc_items = _build_curve_and_qc_cells(
         curve_points=curve_points,
+        std_names_pool=std_names_pool,
         qc_groups=qc_groups,
         qc_levels=qc_levels,
         qc_names_pool=qc_names_pool
     )
+
+    ic(std_qc_items)
 
     # 3.1 先按 A1→H1→A2… 的竖向填充得到基础坐标
     std_qc_coords = _linear_fill_vertical_from_A1(len(std_qc_items))
@@ -1295,6 +1308,8 @@ def _render_tecan_process_result(request: HttpRequest, today: str, csv_abs_path:
         {"row": r, "col": c, "text": it["label"], "kind": it["kind"]}
         for it, (r, c) in zip(std_qc_items, std_qc_coords)
     ]
+
+    ic(std_qc_cells)
 
     # 4) 临床样品
     project_dir = request.session.get("tecan_project_dir") or _safe_dirname(

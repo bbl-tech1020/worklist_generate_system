@@ -90,4 +90,54 @@
         </form>
     </div>
 </div>
+
+
+<script>
+  (function () {
+    // 只在这两个输入框里启用拦截
+    function isBarcodeInputFocused() {
+      const el = document.activeElement;
+      if (!el) return false;
+      if (el.tagName !== 'INPUT') return false;
+      const name = el.getAttribute('name') || '';
+      return name.startsWith('new_') || name.startsWith('confirm_old_');
+    }
+  
+    // 判断是否为打开 DevTools 的快捷键
+    function shouldBlockDevtoolsShortcut(e) {
+      // F12
+      if (e.key === 'F12' || e.code === 'F12') return true;
+  
+      // Ctrl + Shift + I/J/C
+      const k = (e.key || '').toUpperCase();
+      if (e.ctrlKey && e.shiftKey && (k === 'I' || k === 'J' || k === 'C')) return true;
+  
+      return false;
+    }
+  
+    // capture=true：尽可能抢先拦截
+    document.addEventListener('keydown', function (e) {
+      if (!isBarcodeInputFocused()) return;
+  
+      if (shouldBlockDevtoolsShortcut(e)) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.stopImmediatePropagation) e.stopImmediatePropagation();
+      }
+    }, true);
+  
+    document.addEventListener('keyup', function (e) {
+      if (!isBarcodeInputFocused()) return;
+  
+      if (shouldBlockDevtoolsShortcut(e)) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.stopImmediatePropagation) e.stopImmediatePropagation();
+      }
+    }, true);
+  
+  })();
+  </script>
+  
+
 {% endblock %}

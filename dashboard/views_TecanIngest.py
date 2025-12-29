@@ -348,6 +348,8 @@ def tecaningest(request: HttpRequest) -> HttpResponse:
     request.session["tecan_instrument_num"]  = request.POST.get("instrument_num", "").strip()
     request.session["tecan_systerm_num"]     = request.POST.get("systerm_num", "").strip()
 
+    request.session["tecan_injection_plate"] = request.POST.get("injection_plate", "").strip()
+
     # 1) 解析 CSV
     try:
         df = _parse_tecan_csv_abs(saved_scan_abs)
@@ -412,6 +414,7 @@ def tecaningest(request: HttpRequest) -> HttpResponse:
             "today": today,
             "project_id": project_id,
             "original_filename": os.path.basename(saved_scan_abs),
+            "injection_plate": request.POST.get("injection_plate", "").strip(),
         })
 
     # === 修改：无冲突 → 原样复制到“当天/processed/”，保持原 CSV 格式 ===  
@@ -428,6 +431,9 @@ def tecan_resolve_duplicates(request: HttpRequest) -> HttpResponse:
     # 先从 POST 取；取不到再从 session 兜底
     project_id = (request.POST.get("project_id")
                   or request.session.get("tecan_project_id"))
+
+    if "injection_plate" in request.POST:
+        request.session["tecan_injection_plate"] = request.POST.get("injection_plate", "").strip()
     
     rel_path = request.session.get("tecan_pending_file")
     today    = request.session.get("tecan_pending_date")
@@ -559,6 +565,7 @@ def tecan_resolve_duplicates(request: HttpRequest) -> HttpResponse:
             "cross_mains": sorted(set(df.loc[df["MainBarcode"].isin(history), "MainBarcode"].astype(str))),
             "today": today,
             "project_id": project_id,
+            "injection_plate": (request.POST.get("injection_plate", "").strip() or (request.session.get("tecan_injection_plate") or "").strip()),
             "original_filename": os.path.basename(saved_scan_abs),
             # —— 改成 4 个简单变量，模板里直接判断，不再出现 `.get` 写法 —— 
             "errors_rowids": error_rows,      # 需高亮行（确认不一致/隐藏原值不一致）
@@ -949,6 +956,7 @@ def _apply_mapping_to_table(
     name_to_barcodes: dict[str, deque],
     barcode_to_well: dict[str, tuple[str, int]],
     locator_info: dict | None = None,
+    project_name: str | None = None,
     injection_plate: str | None = None,
     instrument_name: str | None = None,
     set_name: str | None = None,       
@@ -1061,7 +1069,10 @@ def _apply_mapping_to_table(
                             if sval == "{{Well_Number}}":
                                 return f"{injection_plate}:{well_num}" if injection_plate else well_num
                             else:
-                                return f"{injection_plate}-{well_pos}" if injection_plate else well_pos
+                                if project_name == "PCA":
+                                    return f"{injection_plate}:{well_pos}" if injection_plate else well_pos
+                                else:
+                                    return f"{injection_plate}-{well_pos}" if injection_plate else well_pos
                         else:
                             if sval == "{{Well_Number}}":
                                 return well_num
@@ -1078,7 +1089,10 @@ def _apply_mapping_to_table(
                                 if sval == "{{Well_Number}}":
                                     return f"{injection_plate}:{well_num}" if injection_plate else well_num
                                 else:
-                                    return f"{injection_plate}-{well_pos}" if injection_plate else well_pos
+                                    if project_name == "PCA":
+                                        return f"{injection_plate}:{well_pos}" if injection_plate else well_pos
+                                    else:
+                                        return f"{injection_plate}-{well_pos}" if injection_plate else well_pos
                             else:
                                 if sval == "{{Well_Number}}":
                                     return well_num
@@ -1094,7 +1108,10 @@ def _apply_mapping_to_table(
                             if sval == "{{Well_Number}}":
                                 return f"{injection_plate}:{well_num}" if injection_plate else well_num
                             else:
-                                return f"{injection_plate}-{well_pos}" if injection_plate else well_pos
+                                if project_name == "PCA":
+                                    return f"{injection_plate}:{well_pos}" if injection_plate else well_pos
+                                else:
+                                    return f"{injection_plate}-{well_pos}" if injection_plate else well_pos
                         else:
                             if sval == "{{Well_Number}}":
                                 return well_num
@@ -1216,7 +1233,9 @@ def _render_tecan_process_result(request: HttpRequest, today: str, csv_abs_path:
                     or request.session.get("tecan_systerm_num")
                     or "")
 
-    injection_plate = request.POST.get("injection_plate") if 'injection_plate' in request.POST else None
+    injection_plate = ((request.POST.get("injection_plate") or "").strip()
+                    or (request.session.get("tecan_injection_plate") or "").strip()
+                    or "")
     today_str  = timezone.localtime().strftime("%Y%m%d")
     year       = today_str[:4]
     yearmonth  = today_str[:6]
@@ -1558,17 +1577,56 @@ def _render_tecan_process_result(request: HttpRequest, today: str, csv_abs_path:
         name_to_barcodes=name_to_barcodes,
         barcode_to_well=barcode_to_well,
         locator_info=locator_info,
+        project_name=project_name,
         injection_plate=injection_plate,
         instrument_name=instrument_name,
         set_name=set_name,                     
         output_file=output_file                  
     )
 
+    # Thermo 专用：若第一列存在完全相同的多行值，则改成 原值-1、原值-2、…（仅对重复值生效）——
+    # 判断当前仪器是否 Thermo（InstrumentConfiguration.instrument_name 中包含 "Thermo"）
+    vendor_name = str(getattr(instrument_config, "instrument_name", "")).lower()
+    if "thermo" in vendor_name:
+        # 第一列的列名
+        first_col_name = worklist_table.columns[0]
+        # 统一按字符串处理
+        s = worklist_table[first_col_name].astype(str)
+
+        # 统计每个值出现次数，用于只对“重复值”做处理
+        vc = s.map(s.value_counts())
+        # 对同值分组做累加计数：0,1,2,...  -> 我们需要 1,2,3,...
+        order = s.groupby(s).cumcount() + 1
+
+        # 只改“出现次数 > 1”的那些值；出现 1 次的保持不变
+        mask = vc > 1
+        worklist_table.loc[mask, first_col_name] = s[mask] + "-" + order[mask].astype(str)
+
     # 关联后台参数设置中设置的进样体积
     for col in ["SmplInjVol", "Injection volume"]:
-        if col in worklist_table.columns:
+        if col in worklist_table.columns and injection_vol != "":
             worklist_table[col] = injection_vol
+    
+    # 进样盘
+    if "PlatePos" in worklist_table.columns:
+        worklist_table["PlatePos"] = injection_plate
 
+    # 将第一列内容中含有‘X’关键词的行（即定位孔），整行移到第一列内容为‘DB4’的这一行后
+    # X 行
+    col = worklist_table.columns[0]
+    x_rows = worklist_table[worklist_table[col].astype(str).str.contains('X', na=False)]
+
+    # DB4 行索引
+    db4_idx = worklist_table.index[worklist_table[col] == 'DB4'][0]
+
+    # 原表删除 X 行
+    df = worklist_table.drop(x_rows.index)
+
+    # 重新拼接（看起来像“原地替换”）
+    worklist_table = pd.concat(
+        [df.loc[:db4_idx], x_rows, df.loc[db4_idx + 1:]],
+        ignore_index=True
+    )
 
     # 6) 导出给模板（动态表头/行）
     txt_headers = list(worklist_table.columns)
@@ -1579,7 +1637,7 @@ def _render_tecan_process_result(request: HttpRequest, today: str, csv_abs_path:
 
     header_meta = {
         "test_date": timezone.localtime().strftime("%Y-%m-%d"),
-        "plate_no": plate_number,
+        "plate_no": f"X{plate_number}",
         "instrument_num": instrument_num,
         "injection_plate": injection_plate,
         "today_str": today_str,

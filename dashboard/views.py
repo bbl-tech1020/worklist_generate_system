@@ -145,6 +145,24 @@ def get_injection_plates(request):
     return JsonResponse({"plates": plates})
 
 
+@require_GET
+def get_systerm_nums(request):
+    project_name   = request.GET.get("project_name", "").strip()
+    instrument_num = request.GET.get("instrument_num", "").strip()
+
+    if not project_name or not instrument_num:
+        return JsonResponse({"systerm_nums": []})
+
+    # 取该项目 + 上机仪器下，已配置过的所有系统号（去重、排序）
+    nums = (SamplingConfiguration.objects
+            .filter(project_name=project_name, default_upload_instrument=instrument_num)
+            .values_list("systerm_num", flat=True)
+            .distinct())
+
+    nums = sorted([n for n in nums if n])  # 过滤空值
+    return JsonResponse({"systerm_nums": nums})
+
+
 # Manual
 def Manual_sampling(request):
     return render(request, 'dashboard/sampling/Manual.html')
@@ -514,6 +532,24 @@ def download_export(request, platform, date_name, project, filename):
     resp["Content-Disposition"] = f"attachment; filename*=UTF-8''{escape_uri_path(filename)}"
     return resp
 
+# 文件下载页面排序函数
+TS_RE = re.compile(r"_(\d{8}_\d{6})_")  # 匹配 _20251219_094634_
+def file_sort_key(fname: str):
+    # 1) 提取时间戳：没有时间戳的放最后
+    m = TS_RE.search(fname)
+    ts = m.group(1) if m else "99999999_999999"
+
+    # 2) 同一时间戳内的类型优先级：OnboardingList → WorkSheet → 其他
+    if fname.startswith("OnboardingList_"):
+        kind = 0
+    elif fname.startswith("WorkSheet_"):
+        kind = 1
+    else:
+        kind = 9
+
+    # 3) 最后用文件名兜底，保证稳定排序
+    return (ts, kind, fname)
+
 
 def file_download(request):
     """
@@ -560,7 +596,7 @@ def file_download(request):
                         for proj in proj_dirs:
                             proj_path = os.path.join(d_path, proj)
                             files = []
-                            for fname in sorted(os.listdir(proj_path)):
+                            for fname in sorted(os.listdir(proj_path), key=file_sort_key):
                                 fpath = os.path.join(proj_path, fname)
                                 if not os.path.isfile(fpath):
                                     continue
@@ -606,7 +642,7 @@ def file_download(request):
                     continue
 
                 files = []
-                for fname in sorted(os.listdir(proj_path)):
+                for fname in sorted(os.listdir(proj_path), key=file_sort_key):
                     fpath = os.path.join(proj_path, fname)
                     ext = fname.lower()
                     if not os.path.isfile(fpath):
@@ -625,6 +661,12 @@ def file_download(request):
 
     return render(request, "dashboard/file_download.html", {"groups": groups})
 
+
+def file_download_history(request):
+    return render(request, "dashboard/file_download_history.html")
+
+def file_replace(request):
+    return render(request, "dashboard/file_replace.html")
 
 # 3 后台参数配置
 def project_config(request):
@@ -1577,6 +1619,23 @@ def ProcessResult(request):
         if "PlatePos" in worklist_table.columns:
             worklist_table["PlatePos"] = injection_plate
 
+        # 将第一列内容中含有‘X’关键词的行（即定位孔），整行移到第一列内容为‘DB4’的这一行后
+        # X 行
+        col = worklist_table.columns[0]
+        x_rows = worklist_table[worklist_table[col].astype(str).str.contains('X', na=False)]
+
+        # DB4 行索引
+        db4_idx = worklist_table.index[worklist_table[col] == 'DB4'][0]
+
+        # 原表删除 X 行
+        df = worklist_table.drop(x_rows.index)
+
+        # 重新拼接（看起来像“原地替换”）
+        worklist_table = pd.concat(
+            [df.loc[:db4_idx], x_rows, df.loc[db4_idx + 1:]],
+            ignore_index=True
+        )
+
         # 过滤掉 报错信息表 warn_level == 16384 的条码
         exclude_barcodes = {
             str(r.get("origin_barcode")).strip()
@@ -1589,7 +1648,8 @@ def ProcessResult(request):
             # 统一按字符串比对；将第一列等于这些条码的行删除
             mask_keep = ~worklist_table[first_col_name].astype(str).isin(exclude_barcodes)
             worklist_table = worklist_table[mask_keep]
-   
+
+        # IGF1项目需要删除以 DB 和 Test 开头的行，但保留 DB3。同时将 DB3 替换为 Blank，然后把STD0的孔位赋值给Blank
         if project_name == 'IGF1':
             # 获取第一列列名（不管叫什么）
             col = worklist_table.columns[0]
@@ -1613,6 +1673,9 @@ def ProcessResult(request):
 
         if 'VialPos' in worklist_table.columns:
             worklist_table = format_vialpos_column(worklist_table, "VialPos")
+        
+        if '级别' in worklist_table.columns:
+            worklist_table = format_vialpos_column(worklist_table, "级别")
 
         worklist_records = worklist_table.to_dict(orient="records")
 
@@ -1658,8 +1721,6 @@ def ProcessResult(request):
             Position.append(pos); Status.append(stat); OriginBarcode.append(bc); Warm.append(w)
             parts = str(bc).split("-", 1)
             CutBarcode.append(parts[0]); SubBarcode.append("-" + parts[1] if len(parts) == 2 else "")
-        
-        ic(OriginBarcode)
 
         # 从 Warm 取 Xn
         plate_no_int = 1
@@ -1793,8 +1854,6 @@ def export_files(request):
     platform = str(payload.get("platform", "NewPlatform"))
     base_dir = settings.DOWNLOAD_ROOT
 
-    ic(project)
-
     if platform == 'NIMBUS' or platform == 'Tecan' or platform == '手工取样':
         target_dir = os.path.join(base_dir, platform, today_str, project)
     else:
@@ -1853,11 +1912,11 @@ def export_files(request):
     # 7) 生成PDF
     header = payload.get("header") or {}
     plate_no = header.get("plate_no", "") 
-    plate_suffix = f"_{plate_no}" if str(plate_no) else ""
+    plate_suffix = f"{plate_no}" if str(plate_no) else ""
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    pdf_fname = f"WorkSheet_{instrument_num}_{systerm_num}_{project}_{timestamp}{plate_suffix}_GZ.pdf"
+    pdf_fname = f"{plate_suffix}_WorkSheet_{instrument_num}_{systerm_num}_{project}_{timestamp}_{plate_suffix}_GZ.pdf"
     pdf_path = os.path.join(target_dir, pdf_fname)
     
     try:
@@ -1892,7 +1951,7 @@ def export_files(request):
     if instrument_name.lower() == "sciex":
         # Sciex：导出制表符分隔的 .txt
         # txt_fname = f"OnboardingList_{timestamp}{plate_suffix}.txt"
-        txt_fname = f"OnboardingList_{instrument_num}_{systerm_num}_{project}_{timestamp}{plate_suffix}_GZ.txt"
+        txt_fname = f"{plate_suffix}_OnboardingList_{instrument_num}_{systerm_num}_{project}_{timestamp}_{plate_suffix}_GZ.txt"
         txt_path = os.path.join(target_dir, txt_fname)
         df.to_csv(txt_path, sep="\t", index=False, encoding="utf-8")
         worklist_url_key = "txt_url"
@@ -1900,16 +1959,15 @@ def export_files(request):
 
     elif instrument_name.lower() == "thermo" or instrument_name.lower() == "agilent":
         # thermo和agilent：导出逗号分隔的 .csv
-        # csv_fname = f"OnboardingList_{timestamp}{plate_suffix}.csv"
-        csv_fname = f"OnboardingList_{instrument_num}_{systerm_num}_{project}_{timestamp}{plate_suffix}_GZ.csv"
+        csv_fname = f"{plate_suffix}_OnboardingList_{instrument_num}_{systerm_num}_{project}_{timestamp}_{plate_suffix}_GZ.csv"
         csv_path = os.path.join(target_dir, csv_fname)
-        df.to_csv(csv_path, sep=",", index=False, encoding="utf-8")
+        df.to_csv(csv_path, sep=",", index=False, encoding="gbk")
         worklist_url_key = "csv_url"
         worklist_url_val = f"{settings.DOWNLOAD_URL}{today_str}/{project}/{csv_fname}"
 
     else:
         # 其它厂家：维持原有 .xlsx
-        xlsx_fname = f"OnboardingList_{instrument_num}_{systerm_num}_{project}_{timestamp}{plate_suffix}_GZ.xlsx"
+        xlsx_fname = f"{plate_suffix}_OnboardingList_{instrument_num}_{systerm_num}_{project}_{timestamp}_{plate_suffix}_GZ.xlsx"
         xlsx_path = os.path.join(target_dir, xlsx_fname)
         with pd.ExcelWriter(xlsx_path, engine="xlsxwriter") as writer:
             df.to_excel(writer, sheet_name="Worklist", index=False)
@@ -1920,7 +1978,7 @@ def export_files(request):
     resp = {
         "ok": True,
         "message": "导出完成",
-        "pdf_url": f"{settings.DOWNLOAD_URL}{today_str}/{project}/工作清单_{timestamp}{plate_suffix}.pdf",
+        "pdf_url": f"{settings.DOWNLOAD_URL}{today_str}/{project}/工作清单_{timestamp}_{plate_suffix}.pdf",
     }
     resp[worklist_url_key] = worklist_url_val
     return JsonResponse(resp)

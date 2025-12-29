@@ -5,6 +5,7 @@
   <div class="container-fluid">
     <h1 class="navbar-brand">Tecan取样</h1>
   </div>
+  {% include "dashboard/partials/user_toolbar.html" %}
 </header>
 {% endblock %}
 
@@ -48,11 +49,6 @@
           <label class="form-label">系统号</label>
           <select class="form-select" id="systerm_num" name="systerm_num">
             <option value="">请选择</option>
-            <option value="S0">S0</option>
-            <option value="S1">S1</option>
-            <option value="S2">S2</option>
-            <option value="S3">S3</option>
-            <option value="S4">S4</option>
           </select>
         </div>
 
@@ -134,6 +130,10 @@
         .then(res => res.json())
         .then(data => {
           instrumentInput.value = data.default_upload_instrument || '';
+
+          // ✅ 显式刷新系统号（不要依赖 input 事件）
+          refreshSystermDropdown();
+
           refreshPlateDropdown();
         });
     });
@@ -336,26 +336,75 @@
       });
   }
 
-  // 项目变更 → 写入默认仪器后再刷新盘号
-  document.getElementById('project-select').addEventListener('change', function () {
-    const projectId = this.value;
-    const projectName = this.options[this.selectedIndex]?.text || '';
 
-    // 同步项目名称到隐藏字段
-    document.getElementById('project-name').value = projectName;
-    
-    if (!projectId) return;
+  // === 关联系统号（仿照 NIMBUS） ===
+  function refreshSystermDropdown() {
+    const projectSelect   = document.getElementById('project-select');
+    const instrumentInput = document.getElementById('instrument_num');
+    const systermSelect   = document.getElementById('systerm_num');
 
-    fetch(`get_project_detail/${projectId}/`)
+    const projectName   = projectSelect.options[projectSelect.selectedIndex]?.text || '';
+    const instrumentNum = instrumentInput.value.trim();
+
+    // 重置
+    systermSelect.innerHTML = '<option value="">请选择</option>';
+    systermSelect.dataset.hasConfig = "0";
+
+    // 条件不足不查
+    if (!projectName || !instrumentNum) return;
+
+    fetch("{% url 'get_systerm_nums' %}?project_name=" + encodeURIComponent(projectName) +
+          "&instrument_num=" + encodeURIComponent(instrumentNum))
       .then(res => res.json())
       .then(data => {
-        document.getElementById('instrument_num').value = data.default_upload_instrument || '';
-        refreshPlateDropdown(); // 写入仪器后刷新盘号
+        const nums = data.systerm_nums || [];
+
+        if (nums.length > 0) {
+          nums.forEach(n => {
+            const opt = document.createElement('option');
+            opt.value = n;
+            opt.textContent = n;
+            systermSelect.appendChild(opt);
+          });
+
+          systermSelect.dataset.hasConfig = "1";
+
+          // ✅ 只有一个系统号时自动填充，并刷新盘号
+          if (nums.length === 1) {
+            systermSelect.value = nums[0];
+            refreshPlateDropdown();
+          }
+        } else {
+          systermSelect.dataset.hasConfig = "0";
+        }
+      })
+      .catch(() => {
+        systermSelect.dataset.hasConfig = "0";
       });
+  }
+
+
+  // === 系统号下拉提示（未配置时提示） ===
+  document.getElementById('systerm_num').addEventListener('mousedown', function () {
+    const projectSelect = document.getElementById('project-select');
+    const instrumentNum = document.getElementById('instrument_num').value.trim();
+    const projectName = projectSelect.options[projectSelect.selectedIndex]?.text || '';
+
+    if (!projectName || !instrumentNum) {
+      alert("请先选择项目名称并填写上机仪器，再选择系统号。");
+      return;
+    }
+    if (this.dataset.hasConfig !== "1") {
+      alert("该项目 + 上机仪器未在【项目参数配置】中设置系统号，请先去后台配置。");
+    }
   });
 
   // 用户手动修改仪器时，也刷新盘号
-  document.getElementById('instrument_num').addEventListener('input', refreshPlateDropdown);
+  document.getElementById('instrument_num').addEventListener('input', function () {
+    refreshSystermDropdown();
+    refreshPlateDropdown();
+  });
+
   document.getElementById('systerm_num').addEventListener('change', refreshPlateDropdown);
 
 

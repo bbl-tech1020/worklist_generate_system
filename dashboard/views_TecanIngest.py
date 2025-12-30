@@ -1536,9 +1536,7 @@ def _render_tecan_process_result(request: HttpRequest, today: str, csv_abs_path:
                     continue
                 s = (cell.get("sample_text") or "").strip()
                 if s:
-                    out.append(s)
-                    
-                
+                    out.append(s)   
         return out
 
     ClinicalSample = _clinical_barcodes_in_plate_order(worksheet_table)

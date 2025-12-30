@@ -665,7 +665,54 @@ def file_download(request):
 def file_download_history(request):
     return render(request, "dashboard/file_download_history.html")
 
+# 收集当前‘文件下载’页面中已有的上机列表文件名，用于后续匹配和替换
+def _index_onboarding_files(root: str) -> dict:
+    """
+    扫描 DOWNLOAD_ROOT，建立 {filename: absolute_path} 的索引。
+    上机列表文件名规则：文件名中包含 'OnboardingList' 关键词。
+    """
+    idx = {}
+    for dirpath, _, filenames in os.walk(root):
+        for fn in filenames:
+            if "OnboardingList" in fn:
+                idx[fn] = os.path.join(dirpath, fn)
+    return idx
+
+
 def file_replace(request):
+    if request.method == "POST":
+        upload = request.FILES.get("replace_file")
+        if not upload:
+            return render(request, "dashboard/error.html", {
+                "message": "未检测到上传文件，请先选择需要替换的上机列表文件。"
+            })
+
+        # 只取文件名，避免携带路径（安全）
+        uploaded_name = Path(upload.name).name
+
+        # 建立“已有上机列表文件名索引”
+        root = settings.DOWNLOAD_ROOT
+        os.makedirs(root, exist_ok=True)  # 与 file_download 一致 :contentReference[oaicite:3]{index=3}
+        exist_map = _index_onboarding_files(root)
+
+        # 校验：上传文件名必须存在于文件下载列表中
+        target_path = exist_map.get(uploaded_name)
+        if not target_path:
+            return render(request, "dashboard/error.html", {
+                "message": f"上传文件名【{uploaded_name}】在“文件下载”中未找到同名上机列表文件，请确认文件名必须完全一致。"
+            })
+
+        # ✅ 到这里说明满足需求 1：同名文件存在
+        # 先把目标路径保存下来（后续真正替换时会用到）
+        # 当前阶段你可以先把它传回页面做提示，或写入 session：
+        request.session["file_replace_target_path"] = target_path
+
+        return render(request, "dashboard/file_replace.html", {
+            "match_filename": uploaded_name,
+            "match_path": target_path,
+        })
+
+    # GET：正常打开页面
     return render(request, "dashboard/file_replace.html")
 
 # 3 后台参数配置
@@ -1670,6 +1717,43 @@ def ProcessResult(request):
 
             # 把STD0的孔位赋值给Blank
             worklist_table.loc[worklist_table[col] == "Blank", col3] = val
+
+        # AE项目上机时，需将临床样品的条码替换为实验号  
+        is_ae_project = ("AE" in str(project_name).upper())
+
+        MAIN_BARCODE_RE = re.compile(r"^(\d{8,})")  # 8位以上数字开头，按你条码长度可调
+
+        def _main_barcode(val: str) -> str:
+            """
+            从 '01000086089-01' 提取主条码 '01000086089'
+            若不是数字条码，返回空串
+            """
+            s = str(val).strip()
+            m = MAIN_BARCODE_RE.match(s)
+            return m.group(1) if m else ""
+
+        if is_ae_project:
+            first_col = worklist_table.columns[0]
+
+            def _to_exp_no(val):
+                raw = str(val).strip()
+                if not raw:
+                    return raw
+
+                mb = _main_barcode(raw)
+                if not mb:
+                    # X1 / DB1 / STD0 等
+                    return raw
+
+                names = barcode_to_names.get(mb)
+                if names:
+                    # ✅ 只替换显示，保留子条码后缀（避免用户看不出是哪支）
+                    # 例如：VD5674（01000086089-01）
+                    return f"{names[0]}"
+
+                return raw
+
+            worklist_table[first_col] = worklist_table[first_col].map(_to_exp_no)
 
         if 'VialPos' in worklist_table.columns:
             worklist_table = format_vialpos_column(worklist_table, "VialPos")

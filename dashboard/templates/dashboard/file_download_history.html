@@ -1,4 +1,3 @@
-
 {% extends 'dashboard/index.html' %}
 {% load static %}
 
@@ -9,9 +8,210 @@
   </div>
   {% include "dashboard/partials/user_toolbar.html" %}
 </header>
+
+<style>
+  ul {
+    list-style: none;
+    padding-left: 20px
+  }
+
+  .folder {
+    cursor: pointer;
+    font-weight: 700;
+    font-size: 18px;
+    margin: 8px 0
+  }
+
+  .file {
+    margin-left: 25px;
+    font-size: 16px;
+    color: #333;
+    margin-top: 8px;
+    display: block
+  }
+
+  .hidden {
+    display: none
+  }
+
+  /* ✅ 新增：加大顶级平台间距 */
+  #fileTree>ul>li {
+    margin-top: 25px;
+  }
+
+  /* ✅ 仅加大 Starlet 内部一级目录之间的间距（工作清单和上机列表、取样指令） */
+  #fileTree>ul>li:nth-child(2)>ul>li {
+    margin-top: 18px;
+    /* 可调大，比如 24px */
+  }
+
+  #fileTree>ul>li:nth-child(2)>ul>li:first-child {
+    margin-top: 0;
+    /* 第一个（工作清单和上机列表）不加额外间距 */
+  }
+
+  /* ===== 文件操作按钮区 ===== */
+  .file-download-wrapper {
+    position: relative;   /* 作为定位参照 */
+  }
+
+  /* 按钮脱离文档流 */
+  .file-action-bar {
+    position: absolute;
+    top: 0;
+    right: 0;
+    display: flex;
+    gap: 16px;
+  }
+
+  /* 文件树不再被顶下来 */
+  #fileTree {
+    margin-top: 0;
+  }
+
+  .file-action-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 18px;
+    font-size: 15px;
+    font-weight: 600;
+    border-radius: 6px;
+    text-decoration: none;
+    cursor: pointer;
+    transition: all 0.2s ease;
+  }
+
+  .btn-replace {
+    background-color: #e3f2fd;
+    color: #1565c0;
+    border: 1px solid #90caf9;
+  }
+
+  .btn-replace:hover {
+    background-color: #bbdefb;
+  }
+
+  .btn-history {
+    background-color: #f1f8e9;
+    color: #33691e;
+    border: 1px solid #aed581;
+  }
+
+  .btn-history:hover {
+    background-color: #dcedc8;
+  }
+</style>
 {% endblock %}
 
 {% block content %}
 
 
+<div class="file-download-wrapper">
+  <div class="file-action-bar" style="margin-bottom:16px;">
+    <a href="{% url 'file_download' %}" class="file-action-btn btn-replace">⬅ 返回文件下载</a>
+  </div>
+
+  <div id="fileTree">
+    <ul>
+      {% for g in groups %}
+      <li>
+        <span class="folder">📁 {{ g.group }}</span>
+        <ul class="hidden">
+
+          {% if g.categories %}
+          <!-- Starlet（有 categories） -->
+          {% for cat in g.categories %}
+          <li>
+            <span class="folder">📁 {{ cat.category }}</span>
+            <ul class="hidden">
+              {% for day in cat.days %}
+              <li>
+                <span class="folder">📁 {{ day.date }}</span>
+                <ul class="hidden">
+
+                  {% if day.files %}
+                  {% for f in day.files %}
+                  {% if f.force_download %}
+                  <li><a class="file" href="{{ f.url }}" download="{{ f.name }}">📄 {{ f.name }}</a></li>
+                  {% else %}
+                  <li><a class="file" href="{{ f.url }}" target="_blank">📄 {{ f.name }}</a></li>
+                  {% endif %}
+                  {% empty %}
+                  <li class="file">（暂无文件）</li>
+                  {% endfor %}
+                  {% else %}
+                  {% for proj in day.projects %}
+                  <li>
+                    <span class="folder">📁 {{ proj.name }}</span>
+                    <ul class="hidden">
+                      {% for f in proj.files %}
+                      {% if f.force_download %}
+                      <li><a class="file" href="{{ f.url }}" download="{{ f.name }}">📄 {{ f.name }}</a></li>
+                      {% else %}
+                      <li><a class="file" href="{{ f.url }}" target="_blank">📄 {{ f.name }}</a></li>
+                      {% endif %}
+                      {% empty %}
+                      <li class="file">（暂无文件）</li>
+                      {% endfor %}
+                    </ul>
+                  </li>
+                  {% endfor %}
+                  {% endif %}
+
+                </ul>
+              </li>
+              {% empty %}
+              <li class="file">（暂无文件）</li>
+              {% endfor %}
+            </ul>
+          </li>
+          {% endfor %}
+
+          {% else %}
+          <!-- 其他平台（旧三层） -->
+          {% for day in g.days %}
+          <li>
+            <span class="folder">📁 {{ day.date }}</span>
+            <ul class="hidden">
+              {% for proj in day.projects %}
+              <li>
+                <span class="folder">📁 {{ proj.name }}</span>
+                <ul class="hidden">
+                  {% for f in proj.files %}
+                  {% if f.force_download %}
+                  <li><a class="file" href="{{ f.url }}" download="{{ f.name }}">📄 {{ f.name }}</a></li>
+                  {% else %}
+                  <li><a class="file" href="{{ f.url }}" target="_blank">📄 {{ f.name }}</a></li>
+                  {% endif %}
+                  {% empty %}
+                  <li class="file">（暂无文件）</li>
+                  {% endfor %}
+                </ul>
+              </li>
+              {% endfor %}
+            </ul>
+          </li>
+          {% empty %}
+          <li class="file">（暂无文件）</li>
+          {% endfor %}
+          {% endif %}
+
+        </ul>
+      </li>
+      {% empty %}
+      <li>暂无历史导出文件</li>
+      {% endfor %}
+    </ul>
+  </div>
+</div>
+
+<script>
+  document.querySelectorAll("#fileTree .folder").forEach(el => {
+    el.addEventListener("click", () => {
+      const next = el.nextElementSibling;
+      if (next) next.classList.toggle("hidden");
+    });
+  });
+</script>
 {% endblock %}

@@ -129,31 +129,56 @@
                 <span class="folder">📁 {{ day.date }}</span>
                 <ul class="hidden">
 
-                  {# 取样指令：日期下直接是文件 #}
+                  <!-- 取样指令：日期下直接是文件  -->
                   {% if day.files %}
-                  {% for f in day.files %}
-                  {% if f.force_download %}
-                  <li><a class="file" href="{{ f.url }}" download="{{ f.name }}">📄 {{ f.name }}</a></li>
+                    {% for f in day.files %}
+                      {% if f.force_download %}
+                        <li>
+                          <a class="file" href="{{ f.url }}" download="{{ f.name }}">📄 
+                            {{ f.name }}
+                          </a>
+                        </li>
+                      {% else %}
+                        <li><a class="file" href="{{ f.url }}" target="_blank">📄 {{ f.name }}</a></li>
+                        {% endif %}
+                      {% empty %}
+                      <li class="file">（暂无文件）</li>
+                    {% endfor %}
                   {% else %}
-                  <li><a class="file" href="{{ f.url }}" target="_blank">📄 {{ f.name }}</a></li>
-                  {% endif %}
-                  {% empty %}
-                  <li class="file">（暂无文件）</li>
-                  {% endfor %}
-                  {% else %}
-                  {# 工作清单和上机列表：日期下有项目层 #}
+
+                  <!-- 工作清单和上机列表：日期下有项目层  -->
                   {% for proj in day.projects %}
                   <li>
                     <span class="folder">📁 {{ proj.name }}</span>
                     <ul class="hidden">
                       {% for f in proj.files %}
-                      {% if f.force_download %}
-                      <li><a class="file" href="{{ f.url }}" download="{{ f.name }}">📄 {{ f.name }}</a></li>
-                      {% else %}
-                      <li><a class="file" href="{{ f.url }}" target="_blank">📄 {{ f.name }}</a></li>
-                      {% endif %}
-                      {% empty %}
-                      <li class="file">（暂无文件）</li>
+                        {% if f.force_download %}
+                          <li>
+                            <a class="file" href="{{ f.url }}" download="{{ f.name }}">📄 
+                              
+                              {% if f.name|slice:":8" == "Replace_" %}
+                                <span style="color:#dc3545;font-weight:700;">{{ f.name }}</span>
+                              {% else %}
+                                {{ f.name }}
+                              {% endif %}
+
+                            </a>
+                          </li>
+                        {% else %}
+                          <li>
+                            <a class="file" href="{{ f.url }}" target="_blank">📄 
+
+                              {% if f.name|slice:":8" == "Replace_" %}
+                                <span style="color:#dc3545;font-weight:700;">{{ f.name }}</span>
+                              {% else %}
+                                {{ f.name }}
+                              {% endif %}
+
+                            </a>
+                          </li>
+                        {% endif %}
+                        {% empty %}
+                        <li class="file">（暂无文件）</li>
                       {% endfor %}
                     </ul>
                   </li>
@@ -170,6 +195,7 @@
           {% endfor %}
 
           {% else %}
+
           <!--  其他平台（旧三层） -->
           {% for day in g.days %}
           <li>
@@ -180,13 +206,34 @@
                 <span class="folder">📁 {{ proj.name }}</span>
                 <ul class="hidden">
                   {% for f in proj.files %}
-                  {% if f.force_download %}
-                  <li><a class="file" href="{{ f.url }}" download="{{ f.name }}">📄 {{ f.name }}</a></li>
-                  {% else %}
-                  <li><a class="file" href="{{ f.url }}" target="_blank">📄 {{ f.name }}</a></li>
-                  {% endif %}
-                  {% empty %}
-                  <li class="file">（暂无文件）</li>
+                    {% if f.force_download %}
+                      <li>
+                        <a class="file" href="{{ f.url }}" download="{{ f.name }}">📄 
+                          
+                          {% if f.name|slice:":8" == "Replace_" %}
+                            <span style="color:#dc3545;font-weight:700;">{{ f.name }}</span>
+                          {% else %}
+                            {{ f.name }}
+                          {% endif %}
+
+                        </a>
+                      </li>
+                    {% else %}
+                      <li>
+                        <a class="file" href="{{ f.url }}" target="_blank">📄 
+
+                          {% if f.name|slice:":8" == "Replace_" %}
+                            <span style="color:#dc3545;font-weight:700;">{{ f.name }}</span>
+                          {% else %}
+                            {{ f.name }}
+                          {% endif %}
+
+                        </a>
+                      </li>
+                    {% endif %}
+
+                    {% empty %}
+                    <li class="file">（暂无文件）</li>
                   {% endfor %}
                 </ul>
               </li>

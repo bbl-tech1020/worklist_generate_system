@@ -540,9 +540,9 @@ def file_sort_key(fname: str):
     ts = m.group(1) if m else "99999999_999999"
 
     # 2) 同一时间戳内的类型优先级：OnboardingList → WorkSheet → 其他
-    if fname.startswith("OnboardingList_"):
+    if "OnboardingList" in fname:
         kind = 0
-    elif fname.startswith("WorkSheet_"):
+    elif "WorkSheet" in fname:
         kind = 1
     else:
         kind = 9
@@ -550,7 +550,7 @@ def file_sort_key(fname: str):
     # 3) 最后用文件名兜底，保证稳定排序
     return (ts, kind, fname)
 
-
+HISTORY_DIRNAME = "历史文件"
 def file_download(request):
     """
     展示 downloads 目录结构。
@@ -563,6 +563,10 @@ def file_download(request):
     groups = []  # 输出给模板
 
     for platform in sorted(os.listdir(root)):  # 平台层
+        # ✅ 新增：跳过历史目录（避免在主文件下载页显示）
+        if platform == HISTORY_DIRNAME:   # HISTORY_DIRNAME = "历史文件"
+            continue
+
         p_path = os.path.join(root, platform)
         if not os.path.isdir(p_path):
             continue
@@ -663,20 +667,213 @@ def file_download(request):
 
 
 def file_download_history(request):
-    return render(request, "dashboard/file_download_history.html")
+    """
+    展示历史文件目录结构：DOWNLOAD_ROOT/历史文件/...
+    结构与 file_download() 保持一致，便于复用模板渲染。
+    """
+    root = settings.DOWNLOAD_ROOT
+    os.makedirs(root, exist_ok=True)
+
+    hist_root = os.path.join(root, HISTORY_DIRNAME)
+    os.makedirs(hist_root, exist_ok=True)
+
+    groups = []
+
+    for platform in sorted(os.listdir(hist_root)):  # 历史平台层
+        p_path = os.path.join(hist_root, platform)
+        if not os.path.isdir(p_path):
+            continue
+
+        # —— Starlet：多一层“类别”（工作清单和上机列表 / 取样指令）——
+        if platform == "Starlet":
+            category_names = ["工作清单和上机列表", "取样指令"]
+            categories = []
+
+            for cat in category_names:
+                c_path = os.path.join(p_path, cat)
+                if not os.path.isdir(c_path):
+                    continue
+
+                days = []
+                for date_name in sorted(os.listdir(c_path), reverse=True):
+                    d_path = os.path.join(c_path, date_name)
+                    if not (DATE_RE.match(date_name) and os.path.isdir(d_path)):
+                        continue
+
+                    proj_dirs = sorted([
+                        s for s in os.listdir(d_path)
+                        if os.path.isdir(os.path.join(d_path, s))
+                    ])
+
+                    if proj_dirs:
+                        projects = []
+                        for proj in proj_dirs:
+                            proj_path = os.path.join(d_path, proj)
+                            files = []
+                            for fname in sorted(os.listdir(proj_path), key=file_sort_key):
+                                fpath = os.path.join(proj_path, fname)
+                                ext = fname.lower()
+                                if not os.path.isfile(fpath):
+                                    continue
+                                files.append({
+                                    "name": fname,
+                                    "url": f"{settings.DOWNLOAD_URL}{HISTORY_DIRNAME}/{platform}/{cat}/{date_name}/{proj}/{fname}",
+                                    "force_download": ext.endswith((".pdf", ".txt", ".xlsx", ".xls", ".csv")),
+                                })
+                            projects.append({"name": proj, "files": files})
+                        days.append({"date": date_name, "projects": projects})
+                    else:
+                        files = []
+                        for fname in sorted(os.listdir(d_path)):
+                            fpath = os.path.join(d_path, fname)
+                            ext = fname.lower()
+                            if not os.path.isfile(fpath):
+                                continue
+                            files.append({
+                                "name": fname,
+                                "url": f"{settings.DOWNLOAD_URL}{HISTORY_DIRNAME}/{platform}/{cat}/{date_name}/{fname}",
+                                "force_download": ext.endswith((".pdf", ".txt", ".xlsx", ".xls", ".csv")),
+                            })
+                        days.append({"date": date_name, "files": files})
+
+                categories.append({"category": cat, "days": days})
+
+            groups.append({"group": platform, "categories": categories})
+            continue
+
+        # —— 其他平台（旧三层）：平台 / 日期 / 项目 / 文件 ——
+        days = []
+        for date_name in sorted(os.listdir(p_path), reverse=True):
+            d_path = os.path.join(p_path, date_name)
+            if not (DATE_RE.match(date_name) and os.path.isdir(d_path)):
+                continue
+
+            projects = []
+            for proj in sorted(os.listdir(d_path)):
+                proj_path = os.path.join(d_path, proj)
+                if not os.path.isdir(proj_path):
+                    continue
+
+                files = []
+                for fname in sorted(os.listdir(proj_path), key=file_sort_key):
+                    fpath = os.path.join(proj_path, fname)
+                    ext = fname.lower()
+                    if not os.path.isfile(fpath):
+                        continue
+                    files.append({
+                        "name": fname,
+                        "url": f"{settings.DOWNLOAD_URL}{HISTORY_DIRNAME}/{platform}/{date_name}/{proj}/{fname}",
+                        "force_download": ext.endswith((".pdf", ".txt", ".xlsx", ".xls", ".csv")),
+                    })
+
+                projects.append({"name": proj, "files": files})
+
+            days.append({"date": date_name, "projects": projects})
+
+        groups.append({"group": platform, "days": days})
+
+    return render(request, "dashboard/file_download_history.html", {"groups": groups})
+
 
 # 收集当前‘文件下载’页面中已有的上机列表文件名，用于后续匹配和替换
 def _index_onboarding_files(root: str) -> dict:
-    """
-    扫描 DOWNLOAD_ROOT，建立 {filename: absolute_path} 的索引。
-    上机列表文件名规则：文件名中包含 'OnboardingList' 关键词。
-    """
     idx = {}
+    hist_root = os.path.join(root, HISTORY_DIRNAME)
+
     for dirpath, _, filenames in os.walk(root):
+        # 跳过历史目录
+        if os.path.abspath(dirpath).startswith(os.path.abspath(hist_root) + os.sep):
+            continue
+
         for fn in filenames:
             if "OnboardingList" in fn:
                 idx[fn] = os.path.join(dirpath, fn)
     return idx
+
+# 历史目录路径：把旧文件移动进去
+def _history_path_for(abs_path: str, download_root: str) -> str:
+    """
+    将 DOWNLOAD_ROOT 下的文件 abs_path，映射到 DOWNLOAD_ROOT/历史文件/ 下的同相对路径。
+    例如：
+      DOWNLOAD_ROOT/NIMBUS/2025-12-29/25OHD/OnboardingList_xxx.txt
+    -> DOWNLOAD_ROOT/历史文件/NIMBUS/2025-12-29/25OHD/OnboardingList_xxx.txt
+    """
+    rel = os.path.relpath(abs_path, download_root)
+    return os.path.join(download_root, HISTORY_DIRNAME, rel)
+
+# 解析分隔符 + 读取表格（只要能稳定分列即可）
+def _guess_delimiter(line: str) -> str:
+    tab = line.count("\t")
+    comma = line.count(",")
+    semi = line.count(";")
+    if tab >= comma and tab >= semi:
+        return "\t"
+    if comma >= semi:
+        return ","
+    return ";"
+
+# 孔位清洗逻辑（与前端一致：只取最后一段）
+_SPLIT_VIAL_RE = re.compile(r"[\s:\-_]+")
+def _clean_vialpos(raw: str) -> str:
+    s = (raw or "").strip()
+    if not s:
+        return ""
+    parts = [p for p in _SPLIT_VIAL_RE.split(s) if p]
+    return parts[-1] if parts else s
+
+# 把用户输入的孔位规范化（支持 A1(1) / A1 / a1 / 1）
+_WELL_RE = re.compile(r"^([A-H])\s*([1-9]|1[0-2])$", re.I)
+def _num_to_well(n: int) -> str | None:
+    if not (1 <= n <= 96):
+        return None
+    row = chr(ord("A") + (n - 1) // 12)
+    col = (n - 1) % 12 + 1
+    return f"{row}{col}"
+
+def _well_to_num(well: str) -> int | None:
+    m = _WELL_RE.match((well or "").strip())
+    if not m:
+        return None
+    row = m.group(1).upper()
+    col = int(m.group(2))
+    row_idx = ord(row) - ord("A")
+    return row_idx * 12 + col
+
+def _normalize_user_vialpos(s: str) -> dict:
+    """
+    返回：
+      {ok: True, well: "A1", num: 1}
+    支持输入：A1(1)、A1、a1、1、01
+    """
+    raw = (s or "").strip()
+    if not raw:
+        return {"ok": False}
+
+    raw = raw.replace("（", "(").replace("）", ")").strip()
+
+    paren_num = None
+    pm = re.match(r"^(.*)\(\s*(\d+)\s*\)\s*$", raw)
+    if pm:
+        raw = (pm.group(1) or "").strip()
+        paren_num = int(pm.group(2))
+
+    # 纯数字
+    if re.fullmatch(r"\d+", raw):
+        n = int(raw)
+        well = _num_to_well(n)
+        if not well:
+            return {"ok": False}
+        if paren_num is not None and paren_num != n:
+            return {"ok": False}
+        return {"ok": True, "well": well, "num": n}
+
+    # A1-H12
+    n = _well_to_num(raw.upper())
+    if not n:
+        return {"ok": False}
+    if paren_num is not None and paren_num != n:
+        return {"ok": False}
+    return {"ok": True, "well": _num_to_well(n), "num": n}
 
 
 def file_replace(request):
@@ -687,40 +884,183 @@ def file_replace(request):
                 "message": "未检测到上传文件，请先选择需要替换的上机列表文件。"
             })
 
-        # 只取文件名，避免携带路径（安全）
         uploaded_name = Path(upload.name).name
 
-        # 建立“已有上机列表文件名索引”
         root = settings.DOWNLOAD_ROOT
-        os.makedirs(root, exist_ok=True)  # 与 file_download 一致 :contentReference[oaicite:3]{index=3}
-        exist_map = _index_onboarding_files(root)
+        os.makedirs(root, exist_ok=True)
 
-        # 校验：上传文件名必须存在于文件下载列表中
+        # 建立“已有上机列表文件名索引”
+        exist_map = _index_onboarding_files(root)  # 文件名包含 OnboardingList :contentReference[oaicite:6]{index=6}
         target_path = exist_map.get(uploaded_name)
         if not target_path:
             return render(request, "dashboard/error.html", {
                 "message": f"上传文件名【{uploaded_name}】在“文件下载”中未找到同名上机列表文件，请确认文件名必须完全一致。"
             })
 
-        # ✅ 到这里说明满足需求 1：同名文件存在
-        # 先把目标路径保存下来（后续真正替换时会用到）
-        # 当前阶段你可以先把它传回页面做提示，或写入 session：
-        request.session["file_replace_target_path"] = target_path
+        replace_reason = (request.POST.get("replace_reason") or "").strip()
 
-        return render(request, "dashboard/file_replace.html", {
-            "match_filename": uploaded_name,
-            "match_path": target_path,
+        # ===== 只先实现：已用孔位替换 used =====
+        if replace_reason == "used":
+            used_vialpos = request.POST.getlist("used_vialpos[]")
+            used_old     = request.POST.getlist("used_old_barcode[]")
+            used_new     = request.POST.getlist("used_new_barcode[]")
+
+            # 基本校验：三列长度一致
+            if not (len(used_vialpos) == len(used_old) == len(used_new)):
+                return render(request, "dashboard/error.html", {
+                    "message": "提交数据不完整：孔位/旧条码/新条码行数不一致。"
+                })
+
+            # 过滤空行（允许用户多加空行）
+            entries = []
+            for vp, old, new in zip(used_vialpos, used_old, used_new):
+                vp = (vp or "").strip()
+                old = (old or "").strip()
+                new = (new or "").strip()
+                if not (vp or old or new):
+                    continue
+                if not new:
+                    return render(request, "dashboard/error.html", {
+                        "message": "存在未填写的新条码/实验号，请补全后再提交。"
+                    })
+                entries.append({"vialpos": vp, "old": old, "new": new})
+
+            if not entries:
+                return render(request, "dashboard/error.html", {
+                    "message": "未检测到任何有效替换行，请填写后再提交。"
+                })
+
+            # 读取目标文件
+            with open(target_path, "r", encoding="utf-8", errors="replace") as f:
+                text = f.read()
+
+            lines = [l for l in text.splitlines() if l.strip() != ""]
+            if len(lines) < 2:
+                return render(request, "dashboard/error.html", {
+                    "message": f"上机列表文件内容不足，无法替换：{uploaded_name}"
+                })
+
+            delimiter = _guess_delimiter(lines[0])
+            header = lines[0].split(delimiter)
+
+            # 找 VialPos 列（匹配 'vialpos' 或 'vial position'，大小写不敏感）
+            def _norm_h(h: str) -> str:
+                return (h or "").strip().lower().replace("% header=", "").strip()
+
+            headers_norm = [_norm_h(h) for h in header]
+            vial_idx = -1
+            for i, h in enumerate(headers_norm):
+                if h == "vialpos" or h == "vial position":
+                    vial_idx = i
+                    break
+                    
+            if vial_idx == -1:
+                return render(request, "dashboard/error.html", {
+                    "message": f"未找到孔位列（VialPos / Vial position），无法替换：{uploaded_name}"
+                })
+
+            rows = []
+            for i in range(1, len(lines)):
+                cols = lines[i].split(delimiter)
+                # 补齐列数，避免越界
+                if len(cols) < len(header):
+                    cols = cols + [""] * (len(header) - len(cols))
+                rows.append(cols)
+
+            # 执行替换：仅替换第一列（index=0）
+            def _row_match(cols: list[str], entry: dict) -> bool:
+                # 1) 优先用 old 匹配第一列（如果 old 有填）
+                old = entry["old"]
+                if old and (cols[0] or "").strip() == old:
+                    return True
+
+                # 2) 用 vialpos 匹配 VialPos 列（支持 A1(1)/A1/a1/1）
+                vp_in = entry["vialpos"]
+                if not vp_in:
+                    return False
+
+                norm = _normalize_user_vialpos(vp_in)
+                vp_cell_raw = (cols[vial_idx] or "").strip()
+                vp_clean = _clean_vialpos(vp_cell_raw)
+
+                # 兼容：文件里可能是 "A1" / "1" / "Rack-...-A1"
+                vp_clean_up = vp_clean.upper()
+
+                if norm.get("ok"):
+                    if vp_clean_up == norm["well"]:
+                        return True
+                    if vp_clean == str(norm["num"]):
+                        return True
+
+                # 兜底：如果用户输入本身就是 "A1" 或 "1"，也直接比一次
+                if vp_clean_up == vp_in.strip().upper():
+                    return True
+                if vp_clean == vp_in.strip():
+                    return True
+
+                return False
+
+            replaced = 0
+            for entry in entries:
+                hit = False
+                for cols in rows:
+                    if _row_match(cols, entry):
+                        cols[0] = entry["new"]  # ✅ 只替换第一列
+                        replaced += 1
+                        hit = True
+                        break
+                if not hit:
+                    return render(request, "dashboard/error.html", {
+                        "message": f"未找到可替换行：孔位={entry['vialpos']} / 当前条码={entry['old']}"
+                    })
+
+            # 生成新文件名：Replace_ + 原文件名（防重名）
+            dir_path = os.path.dirname(target_path)
+            base = os.path.basename(target_path)
+            new_name = f"Replace_{base}"
+            new_path = os.path.join(dir_path, new_name)
+
+            if os.path.exists(new_path):
+                ts = timezone.now().strftime("%Y%m%d_%H%M%S")
+                stem, ext = os.path.splitext(new_name)
+                new_name = f"{stem}_{ts}{ext}"
+                new_path = os.path.join(dir_path, new_name)
+
+            # 写入新文件（保持原分隔符）
+            out_lines = []
+            out_lines.append(delimiter.join(header))
+            for cols in rows:
+                out_lines.append(delimiter.join(cols))
+            out_text = "\n".join(out_lines) + "\n"
+
+            with open(new_path, "w", encoding="utf-8") as f:
+                f.write(out_text)
+
+            # 把旧文件移动到历史目录
+            hist_path = _history_path_for(target_path, root)
+            os.makedirs(os.path.dirname(hist_path), exist_ok=True)
+            os.replace(target_path, hist_path)
+
+            # ✅ 完成：下载目录里将只剩 Replace_ 文件（新文件名出现在文件下载页）
+            # 建议直接回到文件下载页
+            return redirect("file_download")
+
+        # 其他类型（nouse）暂不实现
+        return render(request, "dashboard/error.html", {
+            "message": "当前仅实现：已用孔位替换（used）。未用孔位替换（nouse）暂未实现。"
         })
 
     # GET：打开页面时，把“文件下载页已有的上机列表文件名”传给前端
     root = settings.DOWNLOAD_ROOT
     os.makedirs(root, exist_ok=True)
-    exist_map = _index_onboarding_files(root)  # 规则：文件名包含 OnboardingList :contentReference[oaicite:2]{index=2}
+    exist_map = _index_onboarding_files(root)
     onboarding_filenames = sorted(exist_map.keys())
 
     return render(request, "dashboard/file_replace.html", {
         "onboarding_filenames": onboarding_filenames
     })
+
+
 
 # 3 后台参数配置
 def project_config(request):

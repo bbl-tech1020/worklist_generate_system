@@ -120,7 +120,10 @@
                 <label class="form-label">替换文件</label>
                 <!-- ✅ 补上 id，后续你写联动逻辑会更方便 -->
                 <input type="file" class="form-control" id="replace_file" name="replace_file">
-                <div class="hint">请上传需要替换的上机列表文件</div>
+                <div class="hint">请上传需要替换的上机列表文件(必须与‘文件下载’页面中已存在的任一上机列表文件名相同)</div>
+
+                <!-- ✅ 新增：文件名校验提示 -->
+                <div id="filename-check-msg" class="hint" style="display:none;"></div>
             </div>
 
             <div class="mb-3">
@@ -141,9 +144,9 @@
                     <table class="table table-sm table-bordered align-middle used-table">
                         <thead class="table-light">
                             <tr>
-                                <th style="width: 34%;">当前条码</th>
                                 <th style="width: 16%;">孔位（VialPos）</th>
-                                <th style="width: 34%;">新条码</th>
+                                <th style="width: 34%;">当前条码或实验号</th>
+                                <th style="width: 34%;">新条码或实验号</th>
                                 <th style="width: 16%;">操作</th>
                             </tr>
                         </thead>
@@ -153,7 +156,10 @@
                     </table>
                 </div>
 
-                <div class="hint">说明：孔位（VialPos）后续会在输入“当前条码”后自动从上传文件中匹配带出；现在先展示占位。</div>
+                <div class="hint">说明1：上传的替换文件的文件名必须与‘文件下载’页面中已存在的任意一个上机列表的文件名相同</div>
+                <div class="hint">说明2：当前条码的匹配规则：精确匹配。不能只扫或者输入主条码（Tecan取样平台全部采用实验号上机，输入实验号也可以进行匹配）</div>
+                <div class="hint">说明3：替换时，只会替换第一列的内容。其余列内容不替换（针对IGF-1项目，第6列内容与第1列内容完全相同，是否需要替换？）</div>
+                <div class="hint">说明4：替换后的新文件会取代‘文件下载’页面中的旧文件，同时文件名标红并在后面备注‘更新’。旧文件需点击‘历史文件’查阅</div>
             </div>
 
             <!-- ✅ 未用孔位替换区域（nouse） -->
@@ -164,7 +170,7 @@
                     <table class="table table-sm table-bordered align-middle nouse-table">
                         <thead class="table-light">
                             <tr>
-                                <th style="width: 40%;">新条码</th>
+                                <th style="width: 40%;">新条码或实验号</th>
                                 <th style="width: 30%;">孔位（VialPos）</th>
                                 <th style="width: 30%;">操作</th>
                             </tr>
@@ -175,7 +181,15 @@
                     </table>
                 </div>
 
-                <div class="hint">说明：未用孔位替换需要手动填写“新条码”和“孔位”，可点击“添加”增加多条。</div>
+                <div class="hint">未用孔位的识别逻辑：</div>
+                <div class="hint">1 NIMBUS的逻辑：孔位列中未在1-96或A1-H12中出现的孔位，或者第一列内容为‘NOTUBE’的孔位</div>
+                <div class="hint">2 Starlet的逻辑：孔位列中未在1-96或A1-H12中出现的孔位，或者第一列内容为‘NOTUBE’的孔位</div>
+                <div class="hint">3 Tecan的逻辑：</div>
+                <div class="hint">3.1 起始列为第1列：孔位列中未在1-96或A1-H12中出现的孔位，或者第一列内容为‘’的孔位</div>
+                <div class="hint">3.2 起始列为第N列：孔位列中未在N-96或AN-H12中出现的孔位，或者第一列内容为‘’的孔位(起始列的识别逻辑：抓取孔位列中最小的数字)</div>
+                <div class="hint">4 未用孔位替换时，不止替换第一列的内容，其余列的内容也会进行替换</div>
+                <div class="hint">5 比对样和稀释样的命名规则</div>
+
             </div>
 
 
@@ -185,15 +199,54 @@
 
         </div>
     </div>
+
 </form>
+
+<!-- 把后端传来的文件名列表注入到页面 -->
+{{ onboarding_filenames|json_script:"onboarding-filenames" }}
 
 <script>
     document.addEventListener('DOMContentLoaded', () => {
         // 解析用户上传的上机列表
         const replaceFileInput = document.getElementById('replace_file');
 
+        // ✅ 读入后端传来的“文件下载页已有 OnboardingList 文件名列表”
+        const existingNames = new Set(
+            JSON.parse(document.getElementById('onboarding-filenames').textContent || '[]')
+        );
+
+        // 控件引用
+        const msgEl = document.getElementById('filename-check-msg');
+        const submitBtn = document.querySelector('#replace-form button[type="submit"]');
+
+        // ✅ 统一控制：是否允许后续操作
+        function setAllowed(ok, message, isError = true) {
+            // 提示
+            if (message) {
+                msgEl.style.display = 'block';
+                msgEl.textContent = message;
+                msgEl.style.color = isError ? '#dc3545' : '#198754'; // 红/绿
+            } else {
+                msgEl.style.display = 'none';
+            }
+
+            // 禁用/启用替换类型选择 + 提交按钮
+            replaceReasonSelect.disabled = !ok;
+            submitBtn.disabled = !ok;
+
+            // 不允许时：隐藏面板、清空表格，避免“继续填了再提交”
+            if (!ok) {
+                usedPanel.style.display = 'none';
+                nousePanel.style.display = 'none';
+                replaceReasonSelect.value = '';
+                usedTbody.innerHTML = '';
+                nouseTbody.innerHTML = '';
+            }
+        }
+
         // 条码 -> 孔位 的映射表
         let barcodeToVialPos = new Map();
+        let vialPosToBarcode = new Map(); // ✅ 新增：孔位 -> 条码/实验号
         let parsedOK = false;
 
         // 识别分隔符：逗号/制表符/分号（你们文件有时是 \t）
@@ -222,6 +275,69 @@
             // 按常见分隔符切
             const parts = s.split(/[\s:\-_]+/).filter(Boolean);
             return parts.length ? parts[parts.length - 1] : s;
+        }
+
+        // ====== 96孔位工具：1~96 <-> A1~H12 ======
+        function numToWell(n) {
+            const num = Number(n);
+            if (!Number.isInteger(num) || num < 1 || num > 96) return null;
+            const row = String.fromCharCode('A'.charCodeAt(0) + Math.floor((num - 1) / 12));
+            const col = ((num - 1) % 12) + 1;
+            return `${row}${col}`; // e.g. A1
+        }
+
+        function wellToNum(well) {
+            const s = (well || '').trim().toUpperCase();
+            const m = s.match(/^([A-H])\s*([1-9]|1[0-2])$/);
+            if (!m) return null;
+            const rowIdx = m[1].charCodeAt(0) - 'A'.charCodeAt(0); // 0..7
+            const col = Number(m[2]); // 1..12
+            return rowIdx * 12 + col; // 1..96
+        }
+
+        // 用户输入可能是 "A1" / "a1" / "1" / " 01 "，归一化为 {num, well, ok}
+        function normalizeUserVialPosInput(input) {
+            let raw = (input || '').trim();
+            if (!raw) return { ok: false };
+
+            // 统一括号 + 统一大小写
+            raw = raw.replace(/（/g, '(').replace(/）/g, ')').toUpperCase();
+
+            // 允许形如 A1(1) / 1(1) 的输入：提取括号里的数字并做一致性校验
+            let parenNum = null;
+            const pm = raw.match(/^(.*)\(\s*(\d+)\s*\)\s*$/);
+            if (pm) {
+                raw = (pm[1] || '').trim();
+                parenNum = Number(pm[2]);
+                if (!Number.isFinite(parenNum)) return { ok: false };
+            }
+
+            // 纯数字：1~96（允许输入 1 或 01）
+            if (/^\d+$/.test(raw)) {
+                const n = Number(raw);
+                const well = numToWell(n);
+                if (!well) return { ok: false };
+                // 如果用户输入了括号数字，则要求括号数字与孔位数字一致
+                if (parenNum !== null && parenNum !== n) return { ok: false };
+                return { ok: true, num: n, well, kind: 'num' };
+            }
+
+            // A1~H12（不区分大小写）
+            const n = wellToNum(raw);
+            if (!n) return { ok: false };
+            if (parenNum !== null && parenNum !== n) return { ok: false };
+            return { ok: true, num: n, well: numToWell(n), kind: 'well' };
+        }
+
+
+        function formatVialPosDisplay(nOrWellOrRaw) {
+            // 输入可以是数值、A1、或清洗后的 raw（如 "1" / "A1"）
+            const raw = (nOrWellOrRaw ?? '').toString().trim();
+            if (!raw) return '';
+            const norm = normalizeUserVialPosInput(raw);
+            if (norm.ok) return `${norm.well}(${norm.num})`; // ✅ A1(1) 形式
+            // 如果 raw 不是标准形式，原样返回（兜底）
+            return raw;
         }
 
         // 解析文件：第一列为条码列；孔位列名可能是 VialPos / Vial position
@@ -262,15 +378,50 @@
             barcodeToVialPos = new Map();
 
             const file = e.target.files && e.target.files[0];
-            if (!file) return;
+            if (!file) {
+                setAllowed(false, '请先选择需要替换的上机列表文件。');
+                return;
+            }
 
+            const uploadedName = (file.name || '').trim();
+
+            // ✅ 1) 文件名必须在“文件下载页上机列表文件名集合”中
+            if (!existingNames.has(uploadedName)) {
+                setAllowed(false, `文件名不匹配：文件下载页未找到同名上机列表文件【${uploadedName}】；请确认文件名需完全一致。`);
+                return;
+            }
+
+            // ✅ 通过文件名校验：允许后续操作（但替换逻辑仍需要解析成功）
+            setAllowed(true, `文件名校验通过：已匹配到【${uploadedName}】`, false);
+
+            // ✅ 2) 继续执行你原本的解析逻辑
             const text = await file.text();
             const res = parseOnboardingText(text);
             if (!res.ok) {
                 alert('解析失败：' + res.msg);
+                // 解析失败也要禁止后续（否则用户可以继续填并提交）
+                setAllowed(false, '文件内容解析失败，无法继续。');
                 return;
             }
             barcodeToVialPos = res.map;
+
+            // ✅ 构建孔位 -> 条码/实验号（支持 A1 与 1 两类 key）
+            vialPosToBarcode = new Map();
+            for (const [barcode, vialClean] of barcodeToVialPos.entries()) {
+                const cleaned = (vialClean || '').toString().trim();
+                if (!cleaned) continue;
+
+                // 1) 先记一份 raw key（兼容文件里就是 "A1" 或 "1" 的情况）
+                vialPosToBarcode.set(cleaned.toUpperCase?.() ? cleaned.toUpperCase() : cleaned, barcode);
+
+                // 2) 如果能归一化，则同时写两种 key："A1" 和 "1"
+                const norm = normalizeUserVialPosInput(cleaned);
+                if (norm.ok) {
+                    vialPosToBarcode.set(norm.well, barcode);        // A1
+                    vialPosToBarcode.set(String(norm.num), barcode); // 1
+                }
+            }
+
             parsedOK = true;
         });
 
@@ -287,24 +438,27 @@
             tr.innerHTML = `
                 <td>
                 <input type="text"
-                        class="form-control form-control-sm barcode-input"
-                        name="used_old_barcode[]"
-                        placeholder="请输入当前条码">
-                </td>
-                <td>
-                    <input type="text"
-                        class="form-control form-control-sm readonly-pill used-vialpos"
+                        class="form-control form-control-sm barcode-input used-vialpos-input"
                         name="used_vialpos[]"
-                        placeholder="自动关联"
-                        readonly>
-                    <div class="vialpos-hint">条码不在上机列表中</div>
+                        placeholder="如 A1 / a1 / 1">
+                <div class="vialpos-hint">孔位不在上机列表中</div>
                 </td>
+
+                <td>
+                <input type="text"
+                        class="form-control form-control-sm barcode-input used-old-input"
+                        name="used_old_barcode[]"
+                        placeholder="请输入当前条码或实验号">
+                <div class="vialpos-hint used-old-hint">条码/实验号不在上机列表中</div>
+                </td>
+
                 <td>
                 <input type="text"
                         class="form-control form-control-sm barcode-input"
                         name="used_new_barcode[]"
-                        placeholder="请输入新条码">
+                        placeholder="请输入新条码或实验号">
                 </td>
+
                 <td class="text-center">
                 <div class="op-btns">
                     <button type="button" class="btn btn-outline-primary btn-sm btn-add">添加</button>
@@ -313,33 +467,98 @@
                 </td>
             `;
 
-            const oldInput = tr.querySelector('input[name="used_old_barcode[]"]');
-            const vialInput = tr.querySelector('.used-vialpos');
-            const hint = tr.querySelector('.vialpos-hint');
+            const vialInput = tr.querySelector('.used-vialpos-input');
+            const oldInput = tr.querySelector('.used-old-input');
+            const vialHint = tr.querySelector('td:nth-child(1) .vialpos-hint');
+            const oldHint = tr.querySelector('.used-old-hint');
 
-            oldInput.addEventListener('input', () => {
-            const code = oldInput.value.trim();
-
-            // 先清理状态
-            vialInput.value = '';
-            vialInput.classList.remove('vialpos-invalid');
-            hint.classList.remove('show');
-
-            if (!code) return;
-
-            // 未上传/未解析成功，先不做匹配（你也可以提示）
-            if (!parsedOK) return;
-
-            const vialPos = barcodeToVialPos.get(code);
-            if (!vialPos) {
-                // 找不到：孔位标红 + 显示提示
-                vialInput.classList.add('vialpos-invalid');
-                hint.classList.add('show');
-                return;
+            function clearError(el, hintEl) {
+                el.classList.remove('vialpos-invalid');
+                hintEl.classList.remove('show');
+            }
+            function setError(el, hintEl) {
+                el.classList.add('vialpos-invalid');
+                hintEl.classList.add('show');
             }
 
-            // 找到：写入孔位（已做 cleanVialPos 截盘号）
-            vialInput.value = vialPos;
+            function finalizeVialInputFormat() {
+                const raw = vialInput.value.trim();
+                if (!raw) return;
+
+                const norm = normalizeUserVialPosInput(raw);
+                if (!norm.ok) return; // 不合法不改写
+
+                // ✅ 完成输入后才格式化
+                vialInput.value = `${norm.well}(${norm.num})`;
+            }
+
+
+            // ===== A) 输入“当前条码/实验号” -> 匹配孔位 =====
+            oldInput.addEventListener('input', () => {
+                const code = oldInput.value.trim();
+
+                // 清理状态
+                clearError(oldInput, oldHint);
+                clearError(vialInput, vialHint);
+                vialInput.value = '';
+
+                if (!code) return;
+                if (!parsedOK) return;
+
+                const vialPosClean = barcodeToVialPos.get(code);
+                if (!vialPosClean) {
+                    setError(oldInput, oldHint);
+                    return;
+                }
+
+                // ✅ 显示为 A1(1)...H12(96)
+                vialInput.value = formatVialPosDisplay(vialPosClean);
+            });
+
+            // ===== B) 输入“孔位” -> 反查条码/实验号 =====
+            vialInput.addEventListener('input', () => {
+                const raw = vialInput.value.trim();
+
+                // 清理状态
+                clearError(vialInput, vialHint);
+                clearError(oldInput, oldHint);
+                oldInput.value = '';
+
+                if (!raw) return;
+                if (!parsedOK) return;
+
+                // 用户输入归一化（支持 A1/a1 或 1..96）
+                const norm = normalizeUserVialPosInput(raw);
+                if (!norm.ok) {
+                    vialHint.textContent = '格式非法：允许 A1(1)/A1/a1/1';
+                    setError(vialInput, vialHint);
+                    return;
+                }
+
+                // ✅ 先把孔位框“统一渲染”为 A1(1) 形式（第4点要求）
+                // vialInput.value = `${norm.well}(${norm.num})`;
+
+                // 反查 key：优先 well、num
+                const hit =
+                    vialPosToBarcode.get(norm.well) ||
+                    vialPosToBarcode.get(String(norm.num));
+
+                if (!hit) {
+                    vialHint.textContent = '孔位不在上机列表中';
+                    setError(vialInput, vialHint);
+                    return;
+                }
+
+                oldInput.value = hit;
+            });
+
+            vialInput.addEventListener('blur', finalizeVialInputFormat);
+            vialInput.addEventListener('change', finalizeVialInputFormat);
+            vialInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    e.preventDefault();       // 防止表单直接提交
+                    finalizeVialInputFormat();
+                }
             });
 
             // 添加：新增一行
@@ -355,6 +574,7 @@
 
             return tr;
         }
+
 
         // ===== 未用孔位替换（nouse）行 =====
         function createNouseRow() {
@@ -420,7 +640,15 @@
             }
         });
 
-
+        document.getElementById('replace-form').addEventListener('submit', (ev) => {
+            if (submitBtn.disabled) {
+                ev.preventDefault();
+                alert('文件名未匹配或文件未解析成功，无法提交。');
+            }
+        });
     });
+
+
+
 </script>
 {% endblock %}

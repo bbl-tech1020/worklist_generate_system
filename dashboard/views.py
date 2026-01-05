@@ -712,8 +712,15 @@ def file_replace(request):
             "match_path": target_path,
         })
 
-    # GET：正常打开页面
-    return render(request, "dashboard/file_replace.html")
+    # GET：打开页面时，把“文件下载页已有的上机列表文件名”传给前端
+    root = settings.DOWNLOAD_ROOT
+    os.makedirs(root, exist_ok=True)
+    exist_map = _index_onboarding_files(root)  # 规则：文件名包含 OnboardingList :contentReference[oaicite:2]{index=2}
+    onboarding_filenames = sorted(exist_map.keys())
+
+    return render(request, "dashboard/file_replace.html", {
+        "onboarding_filenames": onboarding_filenames
+    })
 
 # 3 后台参数配置
 def project_config(request):

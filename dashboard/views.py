@@ -877,93 +877,6 @@ def _normalize_user_vialpos(s: str) -> dict:
     return {"ok": True, "well": _num_to_well(n), "num": n}
 
 
-# ===== 未用孔位识别（nouse）辅助 =====
-def _extract_platform_from_target_path(target_path: str, download_root: str) -> str:
-    """
-    从 DOWNLOAD_ROOT 下的文件绝对路径推断平台名：
-    - 普通：DOWNLOAD_ROOT/<platform>/...
-    - Starlet：DOWNLOAD_ROOT/Starlet/工作清单和上机列表/...
-    """
-    rel = os.path.relpath(target_path, download_root)
-    parts = rel.split(os.sep)
-    return parts[0] if parts else ""
-
-
-def _parse_vialpos_cell_to_num(vp_clean: str) -> int | None:
-    """
-    将清洗后的 vialpos（可能是 '75' 或 'A3'）转为数字 1..96（或 Tecan n..n+79），
-    返回 None 表示无法识别为数值孔位。
-    """
-    s = (vp_clean or "").strip()
-    if not s:
-        return None
-    # 纯数字
-    if re.fullmatch(r"\d+", s):
-        return int(s)
-    # A1-H12
-    n = _well_to_num(s.upper())
-    return n
-
-
-def _guess_tecan_start_n(rows: list[list[str]], vial_idx: int) -> int:
-    """
-    Tecan 起始列 n 的识别逻辑：抓取孔位列中最小的数字（你给的规则）。
-    注意：孔位列可能是数字，也可能是 A1-H12；都转成 num 后取 min。
-    若取不到，则默认 1。
-    """
-    nums = []
-    for cols in rows:
-        vp_clean = _clean_vialpos((cols[vial_idx] or "").strip())
-        n = _parse_vialpos_cell_to_num(vp_clean)
-        if n is not None:
-            nums.append(n)
-    return min(nums) if nums else 1
-
-
-def _is_valid_vialpos_for_platform(vp_clean: str, platform: str, tecan_start_n: int | None) -> bool:
-    """
-    判断一个孔位（vp_clean 已经清洗）是否属于“有效孔位集合”：
-    - NIMBUS / Starlet：1..96 或 A1..H12
-    - Tecan：
-        - 若 start_n == 1：同上
-        - 若 start_n == n：有效为 n..(n+79)（共80个） 或 A{n}..H12（共80个）
-    """
-    platform = (platform or "").strip()
-
-    # 统一把 vp_clean 尝试转成数字
-    n = _parse_vialpos_cell_to_num(vp_clean)
-
-    # NIMBUS / Starlet：必须能识别且在 1..96
-    if platform in ("NIMBUS", "Starlet"):
-        return (n is not None) and (1 <= n <= 96)
-
-    # Tecan
-    if platform == "Tecan":
-        start_n = tecan_start_n or 1
-        if start_n <= 1:
-            return (n is not None) and (1 <= n <= 96)
-        # start_n > 1：有效孔位共 80 个：start_n .. start_n+79
-        return (n is not None) and (start_n <= n <= start_n + 79)
-
-    # 其他平台：按 1..96 宽松处理
-    return (n is not None) and (1 <= n <= 96)
-
-
-def _is_unused_row(cols: list[str], platform: str, vial_idx: int, tecan_start_n: int | None) -> bool:
-    """
-    未用孔位判定：
-    1) 第一列（条码/实验号）为 NOTUBE（大小写不敏感）
-    或
-    2) 孔位列不在有效孔位集合内
-    """
-    first = (cols[0] or "").strip().upper()
-    if first == "NOTUBE":
-        return True
-
-    vp_clean = _clean_vialpos((cols[vial_idx] or "").strip())
-    return not _is_valid_vialpos_for_platform(vp_clean, platform, tecan_start_n)
-
-
 def file_replace(request):
     if request.method == "POST":
         upload = request.FILES.get("replace_file")
@@ -1169,22 +1082,19 @@ def file_replace(request):
                     cols = cols + [""] * (len(header) - len(cols))
                 rows.append(cols)
 
-            # 推断平台 + tecan start_n
-            platform = _extract_platform_from_target_path(target_path, root)
-            tecan_start_n = None
-            if platform == "Tecan":
-                tecan_start_n = _guess_tecan_start_n(rows, vial_idx)
-
-            # 找一条“临床样品行”作为模板（不是 NOTUBE 且孔位有效）
+            # 找一条“临床样品行”作为模板：第一列不是 NOTUBE 即可
             template_row = None
             for cols in rows:
-                if not _is_unused_row(cols, platform, vial_idx, tecan_start_n):
+                first = (cols[0] or "").strip().upper()
+                if first and first != "NOTUBE":
                     template_row = cols
                     break
+
             if template_row is None:
                 return render(request, "dashboard/error.html", {
-                    "message": "未找到可用于复制的临床样品行（非 NOTUBE 且孔位有效），无法执行未用孔位替换。"
+                    "message": "未找到可用于复制的模板行（第一列非 NOTUBE），无法执行未用孔位替换。"
                 })
+
 
             # 根据用户输入孔位定位行
             def _match_row_by_vialpos(cols: list[str], vp_in: str) -> bool:
@@ -1229,16 +1139,24 @@ def file_replace(request):
                         hit_cols = cols
                         break
 
+                # ★ 新增：若文件中缺失该孔位行，则创建新行（复制 template_row）并 append
                 if hit_cols is None:
-                    return render(request, "dashboard/error.html", {
-                        "message": f"未找到该孔位对应的行：孔位={vp_in}"
-                    })
+                    # 复制一行模板，保证列数一致
+                    hit_cols = list(template_row)
 
-                # 必须验证这是“未用孔位”
-                if not _is_unused_row(hit_cols, platform, vial_idx, tecan_start_n):
-                    return render(request, "dashboard/error.html", {
-                        "message": f"孔位【{vp_in}】不是未用孔位（可能已用/孔位有效且非 NOTUBE），为避免误操作已终止。"
-                    })
+                    # 规范化孔位写入：优先写成 1..96 数字（与你文件中 VialPos=9/21/33... 风格一致）
+                    norm = _normalize_user_vialpos(vp_in)  
+                    if norm.get("ok"):
+                        hit_cols[vial_idx] = str(norm["num"])
+                    else:
+                        # 兜底：直接写用户输入（如 A10 / A10(10)）
+                        hit_cols[vial_idx] = vp_in.strip()
+
+                    # 第一列先填 NOTUBE 占位（可选），后面会被 hit_cols[0]=entry["new"] 覆盖
+                    if len(hit_cols) > 0 and not (hit_cols[0] or "").strip():
+                        hit_cols[0] = "NOTUBE"
+
+                    rows.append(hit_cols)
 
                 # 执行替换：除第一列和孔位列之外，其他列复制模板行；再覆盖第一列为新条码；孔位列保持原值
                 old_vp_val = hit_cols[vial_idx]
@@ -1251,6 +1169,187 @@ def file_replace(request):
                 hit_cols[vial_idx] = old_vp_val
 
                 replaced += 1
+
+        
+        # ===== 孔位删除 delete =====
+        elif replace_reason == "delete":
+            del_vialpos = request.POST.getlist("delete_vialpos[]")
+            del_code    = request.POST.getlist("delete_barcode[]")
+
+            if len(del_vialpos) != len(del_code):
+                return render(request, "dashboard/error.html", {
+                    "message": "提交数据不完整：孔位/条码行数不一致。"
+                })
+
+            entries = []
+            for vp, code in zip(del_vialpos, del_code):
+                vp = (vp or "").strip()
+                code = (code or "").strip()
+
+                # 允许其中一列为空（前端会自动回填），但至少要有一个
+                if not (vp or code):
+                    continue
+
+                entries.append({"vialpos": vp, "code": code})
+
+            if not entries:
+                return render(request, "dashboard/error.html", {
+                    "message": "未检测到任何有效删除行，请填写后再提交。"
+                })
+
+            # 读取目标文件
+            with open(target_path, "r", encoding="utf-8", errors="replace") as f:
+                text = f.read()
+
+            lines = [l for l in text.splitlines() if l.strip() != ""]
+            if len(lines) < 2:
+                return render(request, "dashboard/error.html", {
+                    "message": f"上机列表文件内容不足，无法删除：{uploaded_name}"
+                })
+
+            delimiter = _guess_delimiter(lines[0])
+            header = lines[0].split(delimiter)
+
+            def _norm_h(h: str) -> str:
+                return (h or "").strip().lower().replace("% header=", "").strip()
+
+            headers_norm = [_norm_h(h) for h in header]
+
+            vial_idx = -1
+            for i, h in enumerate(headers_norm):
+                if h == "vialpos" or h == "vial position":
+                    vial_idx = i
+                    break
+            if vial_idx == -1:
+                return render(request, "dashboard/error.html", {
+                    "message": f"未找到孔位列（VialPos / Vial position），无法删除：{uploaded_name}"
+                })
+
+            # rows：保持列数与 header 一致
+            rows = []
+            for i in range(1, len(lines)):
+                cols = lines[i].split(delimiter)
+                if len(cols) < len(header):
+                    cols = cols + [""] * (len(header) - len(cols))
+                rows.append(cols)
+
+            # 建索引：barcode -> row
+            # 第一列为 barcode/实验号列（你们系统约定）
+            barcode_to_row = {}
+            for cols in rows:
+                code0 = (cols[0] or "").strip()
+                if code0:
+                    barcode_to_row[code0] = cols
+
+            def _match_row_by_vialpos(cols: list[str], vp_in: str) -> bool:
+                vp_in = (vp_in or "").strip()
+                if not vp_in:
+                    return False
+
+                norm = _normalize_user_vialpos(vp_in)
+                vp_cell_raw = (cols[vial_idx] or "").strip()
+                vp_clean = _clean_vialpos(vp_cell_raw)
+                vp_clean_up = vp_clean.upper()
+
+                if norm.get("ok"):
+                    if vp_clean_up == norm["well"]:
+                        return True
+                    if vp_clean == str(norm["num"]):
+                        return True
+
+                # 兜底直接比
+                if vp_clean_up == vp_in.upper():
+                    return True
+                if vp_clean == vp_in:
+                    return True
+                return False
+
+            # 防重复（同一提交）
+            seen_keys = set()
+            deleted = 0
+
+            for entry in entries:
+                vp_in = entry["vialpos"]
+                code_in = entry["code"]
+
+                key = (vp_in.strip().upper() if vp_in else "") + "|" + (code_in.strip())
+                if key in seen_keys:
+                    return render(request, "dashboard/error.html", {
+                        "message": f"提交中存在重复删除行：孔位={vp_in}, 条码/实验号={code_in}"
+                    })
+                seen_keys.add(key)
+
+                hit_cols = None
+
+                # 优先用 code 命中（更快）
+                if code_in:
+                    hit_cols = barcode_to_row.get(code_in)
+
+                # 若没命中，再用孔位命中
+                if hit_cols is None and vp_in:
+                    for cols in rows:
+                        if _match_row_by_vialpos(cols, vp_in):
+                            hit_cols = cols
+                            break
+
+                if hit_cols is None:
+                    return render(request, "dashboard/error.html", {
+                        "message": f"未在上机列表中找到要删除的记录：孔位={vp_in} 条码/实验号={code_in}"
+                    })
+
+                # 若两列都填了，校验一致性（防误删）
+                if vp_in:
+                    ok = _match_row_by_vialpos(hit_cols, vp_in)
+                    if not ok:
+                        return render(request, "dashboard/error.html", {
+                            "message": f"孔位与条码/实验号不匹配：孔位={vp_in} 条码/实验号={code_in}"
+                        })
+
+                if code_in:
+                    code0 = (hit_cols[0] or "").strip()
+                    if code0 != code_in:
+                        return render(request, "dashboard/error.html", {
+                            "message": f"孔位与条码/实验号不匹配：孔位={vp_in} 条码/实验号={code_in}"
+                        })
+
+                # ✅ 执行“删除”：将第一列置为 NOTUBE，其余列清空（保留孔位列）
+                old_vp_val = hit_cols[vial_idx]
+                for j in range(len(hit_cols)):
+                    if j == vial_idx:
+                        continue
+                    hit_cols[j] = ""
+                hit_cols[0] = "NOTUBE"
+                hit_cols[vial_idx] = old_vp_val
+
+                deleted += 1
+
+            # 生成新文件（Replace_）
+            dir_path = os.path.dirname(target_path)
+            base = os.path.basename(target_path)
+            new_name = f"Replace_{base}"
+            new_path = os.path.join(dir_path, new_name)
+
+            if os.path.exists(new_path):
+                ts = timezone.now().strftime("%Y%m%d_%H%M%S")
+                stem, ext = os.path.splitext(new_name)
+                new_name = f"{stem}_{ts}{ext}"
+                new_path = os.path.join(dir_path, new_name)
+
+            out_lines = [delimiter.join(header)]
+            for cols in rows:
+                out_lines.append(delimiter.join(cols))
+            out_text = "\n".join(out_lines) + "\n"
+
+            with open(new_path, "w", encoding="utf-8") as f:
+                f.write(out_text)
+
+            # 旧文件入历史目录
+            hist_path = _history_path_for(target_path, root)
+            os.makedirs(os.path.dirname(hist_path), exist_ok=True)
+            os.replace(target_path, hist_path)
+
+            return redirect("file_download")
+
 
         else:
             pass

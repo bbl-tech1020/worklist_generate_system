@@ -39,7 +39,8 @@
 
     /* ===== 表头美化 ===== */
     .used-table thead th,
-    .nouse-table thead th {
+    .nouse-table thead th,
+    .delete-table thead th {
         font-size: 16px;
         /* 表头字体变大 */
         font-weight: 700;
@@ -52,12 +53,14 @@
 
     /* ===== 表体输入框美化 ===== */
     .used-table tbody td,
-    .nouse-table tbody td {
+    .nouse-table tbody td,
+    .delete-table tbody td {
         vertical-align: middle;
     }
 
     .used-table input.form-control,
-    .nouse-table input.form-control {
+    .nouse-table input.form-control,
+    .delete-table input.form-control {
         height: 40px;
         /* 输入框高度 */
         font-size: 15px;
@@ -72,7 +75,8 @@
 
     /* ===== 操作按钮（添加 / 删除）放大 ===== */
     .used-table .btn,
-    .nouse-table .btn {
+    .nouse-table .btn,
+    .delete-table .btn {
         font-size: 14px;
         padding: 6px 14px;
         min-width: 64px;
@@ -80,7 +84,8 @@
 
     /* 操作列居中 */
     .used-table td:last-child,
-    .nouse-table td:last-child {
+    .nouse-table td:last-child,
+    .delete-table td:last-child {
         text-align: center;
     }
 
@@ -149,6 +154,7 @@
                     <option value="">请选择替换操作</option>
                     <option value="used">已用孔位替换（如扫错条码）</option>
                     <option value="nouse">未用孔位替换（如样本量不足，存在剩余孔位）</option>
+                    <option value="delete">孔位删除</option>
                 </select>
                 <input type="hidden" id="project-name" name="project_name">
             </div>
@@ -174,9 +180,10 @@
                 </div>
 
                 <div class="hint">说明1：上传的替换文件的文件名必须与‘文件下载’页面中已存在的任意一个上机列表的文件名相同</div>
-                <div class="hint">说明2：当前条码的匹配规则：精确匹配。不能只扫或者输入主条码（Tecan取样平台全部采用实验号上机，输入实验号也可以进行匹配）</div>
-                <div class="hint">说明3：替换时，只会替换第一列的内容。其余列内容不替换（针对IGF-1项目，第6列内容与第1列内容完全相同，是否需要替换？）</div>
-                <div class="hint">说明4：替换后的新文件会取代‘文件下载’页面中的旧文件，同时文件名标红并在后面备注‘更新’。旧文件需点击‘历史文件’查阅</div>
+                <div class="hint">说明2：当前条码或实验号的匹配规则：精确匹配（必须输入完整条码或实验号，不能只输入主条码，但不区分大小写）</div>
+                <div class="hint">说明3：用于替换的新条码或实验号，不能与当天已生成的任一条码或实验号一致</div>
+                <div class="hint">说明4：替换时，只会替换上机列表中的第一列的内容。其余列内容不替换（针对IGF-1项目，第6列内容与第1列内容完全相同，也会同步进行替换）</div>
+                <div class="hint">说明5：替换后的新文件会取代‘文件下载’页面中的旧文件，旧文件会移动到‘历史文件’路径下，需在‘文件下载’页面点击‘历史文件’查阅</div>
             </div>
 
             <!-- ✅ 未用孔位替换区域（nouse） -->
@@ -209,6 +216,28 @@
                 <div class="hint">4 未用孔位替换时，不止替换第一列的内容，其余列的内容也会进行替换</div>
                 <div class="hint">5 比对样和稀释样的命名规则</div>
 
+            </div>
+
+            <!-- ✅ 孔位删除区域 -->
+            <div id="delete-panel" style="display:none;">
+                <div class="replace-title">孔位删除</div>
+
+                <div class="table-responsive">
+                    <table class="table table-sm table-bordered align-middle delete-table">
+                        <thead class="table-light">
+                            <tr>
+                                <th style="width: 30%;">孔位（VIALPOS）</th>
+                                <th style="width: 55%;">条码或实验号</th>
+                                <th style="width: 15%;">操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="delete-tbody"></tbody>
+                    </table>
+                </div>
+
+                <div class="hint">
+                    说明：孔位或条码/实验号二选一输入即可，另一列会自动匹配；输入内容必须存在于已上传的上机列表中。
+                </div>
             </div>
 
 
@@ -562,6 +591,10 @@
         const nousePanel = document.getElementById('nouse-panel');
         const nouseTbody = document.getElementById('nouse-tbody');
 
+        const deletePanel = document.getElementById('delete-panel');
+        const deleteTbody = document.getElementById('delete-tbody');
+
+        // ===== 已用孔位替换（used）行 =====
         function createUsedRow() {
             const tr = document.createElement('tr');
             tr.innerHTML = `
@@ -803,6 +836,128 @@
             return tr;
         }
 
+        // ===== 孔位删除（delete）行 =====
+        function createDeleteRow() {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+                <td>
+                    <input type="text"
+                        class="form-control form-control-sm barcode-input delete-vialpos-input"
+                        name="delete_vialpos[]"
+                        placeholder="如 A1 / 1 / A1(1)">
+                    <div class="vialpos-hint delete-vialpos-hint">孔位不在上机列表中</div>
+                </td>
+
+                <td>
+                    <input type="text"
+                        class="form-control form-control-sm barcode-input delete-code-input"
+                        name="delete_barcode[]"
+                        placeholder="请输入条码或实验号">
+                    <div class="vialpos-hint delete-code-hint">条码/实验号不在上机列表中</div>
+                </td>
+
+                <td class="text-center">
+                    <div class="op-btns">
+                        <button type="button" class="btn btn-outline-primary btn-sm btn-add">添加</button>
+                        <button type="button" class="btn btn-outline-danger btn-sm btn-del">删除</button>
+                    </div>
+                </td>
+            `;
+
+            const vialInput = tr.querySelector('.delete-vialpos-input');
+            const codeInput = tr.querySelector('.delete-code-input');
+            const vialHint = tr.querySelector('.delete-vialpos-hint');
+            const codeHint = tr.querySelector('.delete-code-hint');
+
+            function clearError(el, hintEl) {
+                el.classList.remove('vialpos-invalid');
+                hintEl.classList.remove('show');
+            }
+            function setError(el, hintEl, msg) {
+                if (msg) hintEl.textContent = msg;
+                el.classList.add('vialpos-invalid');
+                hintEl.classList.add('show');
+            }
+
+            function finalizeVialInputFormat() {
+                const raw = vialInput.value.trim();
+                if (!raw) return;
+                const norm = normalizeUserVialPosInput(raw);
+                if (!norm.ok) return;
+                vialInput.value = `${norm.well}(${norm.num})`;
+            }
+
+            // A) 输入条码/实验号 -> 匹配孔位（必须存在）
+            codeInput.addEventListener('input', () => {
+                const code = codeInput.value.trim();
+
+                clearError(codeInput, codeHint);
+                clearError(vialInput, vialHint);
+
+                if (!code) return;
+
+                if (!parsedOK) {
+                    setError(codeInput, codeHint, '请先上传并解析上机列表文件');
+                    return;
+                }
+
+                const vp = barcodeToVialPos.get(code);
+                if (!vp) {
+                    setError(codeInput, codeHint, '条码/实验号不在上机列表中');
+                    return;
+                }
+
+                // 反填孔位
+                vialInput.value = vp;
+                finalizeVialInputFormat();
+            });
+
+            // B) 输入孔位 -> 匹配条码/实验号（必须存在）
+            vialInput.addEventListener('input', () => {
+                const raw = vialInput.value.trim();
+
+                clearError(vialInput, vialHint);
+                clearError(codeInput, codeHint);
+
+                if (!raw) return;
+
+                if (!parsedOK) {
+                    setError(vialInput, vialHint, '请先上传并解析上机列表文件');
+                    return;
+                }
+
+                const norm = normalizeUserVialPosInput(raw);
+                if (!norm.ok) {
+                    setError(vialInput, vialHint, '孔位格式不合法（如 A1 / 1 / A1(1)）');
+                    return;
+                }
+
+                const hit =
+                    vialPosToBarcode.get(norm.well) ||
+                    vialPosToBarcode.get(String(norm.num));
+
+                if (!hit) {
+                    setError(vialInput, vialHint, '孔位不在上机列表中');
+                    return;
+                }
+
+                codeInput.value = hit;
+            });
+
+            vialInput.addEventListener('blur', finalizeVialInputFormat);
+
+            tr.querySelector('.btn-add').addEventListener('click', () => {
+                deleteTbody.appendChild(createDeleteRow());
+            });
+
+            tr.querySelector('.btn-del').addEventListener('click', () => {
+                if (deleteTbody.children.length <= 1) return;
+                tr.remove();
+            });
+
+            return tr;
+        }
+
 
         // ===== 根据 replace_reason 切换显示 =====
         replaceReasonSelect.addEventListener('change', () => {
@@ -811,24 +966,34 @@
             if (val === 'used') {
                 usedPanel.style.display = 'block';
                 nousePanel.style.display = 'none';
+                deletePanel.style.display = 'none';
 
-                // 默认一行（若你 used 已经做了，这段按你的实际保留/删除）
                 if (usedTbody.children.length === 0) {
                     usedTbody.appendChild(createUsedRow());
                 }
             } else if (val === 'nouse') {
                 usedPanel.style.display = 'none';
                 nousePanel.style.display = 'block';
+                deletePanel.style.display = 'none';
 
-                // 默认一行
                 if (nouseTbody.children.length === 0) {
                     nouseTbody.appendChild(createNouseRow());
+                }
+            } else if (val === 'delete') {
+                usedPanel.style.display = 'none';
+                nousePanel.style.display = 'none';
+                deletePanel.style.display = 'block';
+
+                if (deleteTbody.children.length === 0) {
+                    deleteTbody.appendChild(createDeleteRow());
                 }
             } else {
                 usedPanel.style.display = 'none';
                 nousePanel.style.display = 'none';
+                deletePanel.style.display = 'none';
             }
         });
+
 
         document.getElementById('replace-form').addEventListener('submit', (ev) => {
             if (submitBtn.disabled) {

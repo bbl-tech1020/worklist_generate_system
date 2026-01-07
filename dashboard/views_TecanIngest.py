@@ -1646,6 +1646,7 @@ def _render_tecan_process_result(request: HttpRequest, today: str, csv_abs_path:
         "project_name": project_name,
         "project_name_full": project_name_full,
         "instrument_num": instrument_num,
+        "systerm_num": systerm_num,
         "platform": 'Tecan',
         "txt_headers": txt_headers,
         "worklist_records": worklist_records,

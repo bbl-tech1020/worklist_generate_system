@@ -532,6 +532,7 @@ def download_export(request, platform, date_name, project, filename):
     resp["Content-Disposition"] = f"attachment; filename*=UTF-8''{escape_uri_path(filename)}"
     return resp
 
+
 # 文件下载页面排序函数
 TS_RE = re.compile(r"_(\d{8}_\d{6})_")  # 匹配 _20251219_094634_
 def file_sort_key(fname: str):
@@ -876,6 +877,93 @@ def _normalize_user_vialpos(s: str) -> dict:
     return {"ok": True, "well": _num_to_well(n), "num": n}
 
 
+# ===== 未用孔位识别（nouse）辅助 =====
+def _extract_platform_from_target_path(target_path: str, download_root: str) -> str:
+    """
+    从 DOWNLOAD_ROOT 下的文件绝对路径推断平台名：
+    - 普通：DOWNLOAD_ROOT/<platform>/...
+    - Starlet：DOWNLOAD_ROOT/Starlet/工作清单和上机列表/...
+    """
+    rel = os.path.relpath(target_path, download_root)
+    parts = rel.split(os.sep)
+    return parts[0] if parts else ""
+
+
+def _parse_vialpos_cell_to_num(vp_clean: str) -> int | None:
+    """
+    将清洗后的 vialpos（可能是 '75' 或 'A3'）转为数字 1..96（或 Tecan n..n+79），
+    返回 None 表示无法识别为数值孔位。
+    """
+    s = (vp_clean or "").strip()
+    if not s:
+        return None
+    # 纯数字
+    if re.fullmatch(r"\d+", s):
+        return int(s)
+    # A1-H12
+    n = _well_to_num(s.upper())
+    return n
+
+
+def _guess_tecan_start_n(rows: list[list[str]], vial_idx: int) -> int:
+    """
+    Tecan 起始列 n 的识别逻辑：抓取孔位列中最小的数字（你给的规则）。
+    注意：孔位列可能是数字，也可能是 A1-H12；都转成 num 后取 min。
+    若取不到，则默认 1。
+    """
+    nums = []
+    for cols in rows:
+        vp_clean = _clean_vialpos((cols[vial_idx] or "").strip())
+        n = _parse_vialpos_cell_to_num(vp_clean)
+        if n is not None:
+            nums.append(n)
+    return min(nums) if nums else 1
+
+
+def _is_valid_vialpos_for_platform(vp_clean: str, platform: str, tecan_start_n: int | None) -> bool:
+    """
+    判断一个孔位（vp_clean 已经清洗）是否属于“有效孔位集合”：
+    - NIMBUS / Starlet：1..96 或 A1..H12
+    - Tecan：
+        - 若 start_n == 1：同上
+        - 若 start_n == n：有效为 n..(n+79)（共80个） 或 A{n}..H12（共80个）
+    """
+    platform = (platform or "").strip()
+
+    # 统一把 vp_clean 尝试转成数字
+    n = _parse_vialpos_cell_to_num(vp_clean)
+
+    # NIMBUS / Starlet：必须能识别且在 1..96
+    if platform in ("NIMBUS", "Starlet"):
+        return (n is not None) and (1 <= n <= 96)
+
+    # Tecan
+    if platform == "Tecan":
+        start_n = tecan_start_n or 1
+        if start_n <= 1:
+            return (n is not None) and (1 <= n <= 96)
+        # start_n > 1：有效孔位共 80 个：start_n .. start_n+79
+        return (n is not None) and (start_n <= n <= start_n + 79)
+
+    # 其他平台：按 1..96 宽松处理
+    return (n is not None) and (1 <= n <= 96)
+
+
+def _is_unused_row(cols: list[str], platform: str, vial_idx: int, tecan_start_n: int | None) -> bool:
+    """
+    未用孔位判定：
+    1) 第一列（条码/实验号）为 NOTUBE（大小写不敏感）
+    或
+    2) 孔位列不在有效孔位集合内
+    """
+    first = (cols[0] or "").strip().upper()
+    if first == "NOTUBE":
+        return True
+
+    vp_clean = _clean_vialpos((cols[vial_idx] or "").strip())
+    return not _is_valid_vialpos_for_platform(vp_clean, platform, tecan_start_n)
+
+
 def file_replace(request):
     if request.method == "POST":
         upload = request.FILES.get("replace_file")
@@ -953,7 +1041,7 @@ def file_replace(request):
                 if h == "vialpos" or h == "vial position":
                     vial_idx = i
                     break
-                    
+
             if vial_idx == -1:
                 return render(request, "dashboard/error.html", {
                     "message": f"未找到孔位列（VialPos / Vial position），无法替换：{uploaded_name}"
@@ -1014,41 +1102,190 @@ def file_replace(request):
                         "message": f"未找到可替换行：孔位={entry['vialpos']} / 当前条码={entry['old']}"
                     })
 
-            # 生成新文件名：Replace_ + 原文件名（防重名）
-            dir_path = os.path.dirname(target_path)
-            base = os.path.basename(target_path)
-            new_name = f"Replace_{base}"
+        # ===== 未用孔位替换 nouse =====
+        elif replace_reason == "nouse":
+            nouse_new = request.POST.getlist("nouse_new_barcode[]")
+            nouse_vp  = request.POST.getlist("nouse_vialpos[]")
+
+            if len(nouse_new) != len(nouse_vp):
+                return render(request, "dashboard/error.html", {
+                    "message": "提交数据不完整：新条码/孔位行数不一致。"
+                })
+
+            entries = []
+            for new_code, vp in zip(nouse_new, nouse_vp):
+                new_code = (new_code or "").strip()
+                vp = (vp or "").strip()
+                if not (new_code or vp):
+                    continue
+                if not new_code:
+                    return render(request, "dashboard/error.html", {
+                        "message": "存在未填写的新条码/实验号，请补全后再提交。"
+                    })
+                if not vp:
+                    return render(request, "dashboard/error.html", {
+                        "message": "存在未填写的孔位（VialPos），请补全后再提交。"
+                    })
+                entries.append({"new": new_code, "vialpos": vp})
+
+            if not entries:
+                return render(request, "dashboard/error.html", {
+                    "message": "未检测到任何有效替换行，请填写后再提交。"
+                })
+
+            # 读取目标文件
+            with open(target_path, "r", encoding="utf-8", errors="replace") as f:
+                text = f.read()
+
+            lines = [l for l in text.splitlines() if l.strip() != ""]
+            if len(lines) < 2:
+                return render(request, "dashboard/error.html", {
+                    "message": f"上机列表文件内容不足，无法替换：{uploaded_name}"
+                })
+
+            delimiter = _guess_delimiter(lines[0])
+            header = lines[0].split(delimiter)
+
+            def _norm_h(h: str) -> str:
+                return (h or "").strip().lower().replace("% header=", "").strip()
+
+            headers_norm = [_norm_h(h) for h in header]
+
+            vial_idx = -1
+            for i, h in enumerate(headers_norm):
+                if h == "vialpos" or h == "vial position":
+                    vial_idx = i
+                    break
+
+            if vial_idx == -1:
+                return render(request, "dashboard/error.html", {
+                    "message": f"未找到孔位列（VialPos / Vial position），无法替换：{uploaded_name}"
+                })
+
+            rows = []
+            for i in range(1, len(lines)):
+                cols = lines[i].split(delimiter)
+                if len(cols) < len(header):
+                    cols = cols + [""] * (len(header) - len(cols))
+                rows.append(cols)
+
+            # 推断平台 + tecan start_n
+            platform = _extract_platform_from_target_path(target_path, root)
+            tecan_start_n = None
+            if platform == "Tecan":
+                tecan_start_n = _guess_tecan_start_n(rows, vial_idx)
+
+            # 找一条“临床样品行”作为模板（不是 NOTUBE 且孔位有效）
+            template_row = None
+            for cols in rows:
+                if not _is_unused_row(cols, platform, vial_idx, tecan_start_n):
+                    template_row = cols
+                    break
+            if template_row is None:
+                return render(request, "dashboard/error.html", {
+                    "message": "未找到可用于复制的临床样品行（非 NOTUBE 且孔位有效），无法执行未用孔位替换。"
+                })
+
+            # 根据用户输入孔位定位行
+            def _match_row_by_vialpos(cols: list[str], vp_in: str) -> bool:
+                vp_in = (vp_in or "").strip()
+                if not vp_in:
+                    return False
+
+                norm = _normalize_user_vialpos(vp_in)
+                vp_cell_raw = (cols[vial_idx] or "").strip()
+                vp_clean = _clean_vialpos(vp_cell_raw)
+                vp_clean_up = vp_clean.upper()
+
+                if norm.get("ok"):
+                    if vp_clean_up == norm["well"]:
+                        return True
+                    if vp_clean == str(norm["num"]):
+                        return True
+
+                # 兜底直接比
+                if vp_clean_up == vp_in.upper():
+                    return True
+                if vp_clean == vp_in:
+                    return True
+                return False
+
+            replaced = 0
+            used_vps_seen = set()
+
+            for entry in entries:
+                vp_in = entry["vialpos"]
+                # 防止重复孔位（同一次提交）
+                vp_key = vp_in.strip().upper()
+                if vp_key in used_vps_seen:
+                    return render(request, "dashboard/error.html", {
+                        "message": f"提交中存在重复孔位：{vp_in}"
+                    })
+                used_vps_seen.add(vp_key)
+
+                hit_cols = None
+                for cols in rows:
+                    if _match_row_by_vialpos(cols, vp_in):
+                        hit_cols = cols
+                        break
+
+                if hit_cols is None:
+                    return render(request, "dashboard/error.html", {
+                        "message": f"未找到该孔位对应的行：孔位={vp_in}"
+                    })
+
+                # 必须验证这是“未用孔位”
+                if not _is_unused_row(hit_cols, platform, vial_idx, tecan_start_n):
+                    return render(request, "dashboard/error.html", {
+                        "message": f"孔位【{vp_in}】不是未用孔位（可能已用/孔位有效且非 NOTUBE），为避免误操作已终止。"
+                    })
+
+                # 执行替换：除第一列和孔位列之外，其他列复制模板行；再覆盖第一列为新条码；孔位列保持原值
+                old_vp_val = hit_cols[vial_idx]
+                for j in range(len(hit_cols)):
+                    if j == 0 or j == vial_idx:
+                        continue
+                    hit_cols[j] = template_row[j]
+
+                hit_cols[0] = entry["new"]
+                hit_cols[vial_idx] = old_vp_val
+
+                replaced += 1
+
+        else:
+            pass
+        
+        # 生成新文件名：Replace_ + 原文件名（防重名）
+        dir_path = os.path.dirname(target_path)
+        base = os.path.basename(target_path)
+        new_name = f"Replace_{base}"
+        new_path = os.path.join(dir_path, new_name)
+
+        if os.path.exists(new_path):
+            ts = timezone.now().strftime("%Y%m%d_%H%M%S")
+            stem, ext = os.path.splitext(new_name)
+            new_name = f"{stem}_{ts}{ext}"
             new_path = os.path.join(dir_path, new_name)
 
-            if os.path.exists(new_path):
-                ts = timezone.now().strftime("%Y%m%d_%H%M%S")
-                stem, ext = os.path.splitext(new_name)
-                new_name = f"{stem}_{ts}{ext}"
-                new_path = os.path.join(dir_path, new_name)
+        # 写入新文件（保持原分隔符）
+        out_lines = []
+        out_lines.append(delimiter.join(header))
+        for cols in rows:
+            out_lines.append(delimiter.join(cols))
+        out_text = "\n".join(out_lines) + "\n"
 
-            # 写入新文件（保持原分隔符）
-            out_lines = []
-            out_lines.append(delimiter.join(header))
-            for cols in rows:
-                out_lines.append(delimiter.join(cols))
-            out_text = "\n".join(out_lines) + "\n"
+        with open(new_path, "w", encoding="utf-8") as f:
+            f.write(out_text)
 
-            with open(new_path, "w", encoding="utf-8") as f:
-                f.write(out_text)
+        # 把旧文件移动到历史目录
+        hist_path = _history_path_for(target_path, root)
+        os.makedirs(os.path.dirname(hist_path), exist_ok=True)
+        os.replace(target_path, hist_path)
 
-            # 把旧文件移动到历史目录
-            hist_path = _history_path_for(target_path, root)
-            os.makedirs(os.path.dirname(hist_path), exist_ok=True)
-            os.replace(target_path, hist_path)
+        # ✅ 完成：下载目录里将只剩 Replace_ 文件（新文件名出现在文件下载页）
+        # 建议直接回到文件下载页
+        return redirect("file_download")
 
-            # ✅ 完成：下载目录里将只剩 Replace_ 文件（新文件名出现在文件下载页）
-            # 建议直接回到文件下载页
-            return redirect("file_download")
-
-        # 其他类型（nouse）暂不实现
-        return render(request, "dashboard/error.html", {
-            "message": "当前仅实现：已用孔位替换（used）。未用孔位替换（nouse）暂未实现。"
-        })
 
     # GET：打开页面时，把“文件下载页已有的上机列表文件名”传给前端
     root = settings.DOWNLOAD_ROOT
@@ -1059,7 +1296,6 @@ def file_replace(request):
     return render(request, "dashboard/file_replace.html", {
         "onboarding_filenames": onboarding_filenames
     })
-
 
 
 # 3 后台参数配置
@@ -2269,7 +2505,6 @@ def export_files(request):
         payload = all_payload  # 旧结构：单板
 
     # 1) 目录设置
-
     if payload["platform"]!="Tecan" and payload["platform"]!="手工取样":
         if payload["testing_day"] == "today":
             today_str  = timezone.localtime().strftime("%Y-%m-%d")

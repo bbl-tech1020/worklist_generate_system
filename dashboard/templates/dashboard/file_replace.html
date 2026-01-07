@@ -108,6 +108,23 @@
     .vialpos-hint.show {
         display: block;
     }
+
+    /* nouse 即时提示：通过/不通过两种颜色 */
+    .vialpos-hint.ok {
+        color: #198754;
+    }
+
+    .vialpos-hint.err {
+        color: #dc3545;
+    }
+
+    /* 未用孔位集合摘要展示 */
+    .unused-summary {
+        margin-top: 8px;
+        font-size: 13px;
+        color: #6c757d;
+        word-break: break-all;
+    }
 </style>
 
 <form method="post" enctype="multipart/form-data" id="replace-form">
@@ -181,6 +198,8 @@
                     </table>
                 </div>
 
+                <div id="unused-summary" class="unused-summary" style="display:none;"></div>
+
                 <div class="hint">未用孔位的识别逻辑：</div>
                 <div class="hint">1 NIMBUS的逻辑：孔位列中未在1-96或A1-H12中出现的孔位，或者第一列内容为‘NOTUBE’的孔位</div>
                 <div class="hint">2 Starlet的逻辑：孔位列中未在1-96或A1-H12中出现的孔位，或者第一列内容为‘NOTUBE’的孔位</div>
@@ -249,6 +268,11 @@
         let vialPosToBarcode = new Map(); // ✅ 新增：孔位 -> 条码/实验号
         let parsedOK = false;
 
+        // ===== 未用孔位集合（用于 nouse 即时提示）=====
+        let unusedVialPosKeys = new Set();   // 存 key：A1 / "1" 这种，方便快速判断
+        let unusedVialPosShow = [];          // 存展示用：A1(1)、B3(15)...
+        const unusedSummaryEl = document.getElementById('unused-summary');
+
         // 识别分隔符：逗号/制表符/分号（你们文件有时是 \t）
         function guessDelimiter(line) {
             const tab = (line.match(/\t/g) || []).length;
@@ -295,6 +319,7 @@
             return rowIdx * 12 + col; // 1..96
         }
 
+
         // 用户输入可能是 "A1" / "a1" / "1" / " 01 "，归一化为 {num, well, ok}
         function normalizeUserVialPosInput(input) {
             let raw = (input || '').trim();
@@ -330,6 +355,15 @@
         }
 
 
+        function numToWell(num) {
+            const n = parseInt(num, 10);
+            if (!Number.isFinite(n) || n < 1 || n > 96) return '';
+            const row = String.fromCharCode('A'.charCodeAt(0) + Math.floor((n - 1) / 12));
+            const col = ((n - 1) % 12) + 1;
+            return `${row}${col}`;
+        }
+
+
         function formatVialPosDisplay(nOrWellOrRaw) {
             // 输入可以是数值、A1、或清洗后的 raw（如 "1" / "A1"）
             const raw = (nOrWellOrRaw ?? '').toString().trim();
@@ -362,15 +396,109 @@
             }
 
             const map = new Map();
+            const rows = []; // ★ 新增：保留逐行信息，后续计算未用孔位集合要用
+
             for (let i = 1; i < lines.length; i++) {
                 const cols = lines[i].split(delimiter);
                 const barcode = (cols[barcodeIdx] || '').trim();
                 const vialRaw = (cols[vialIdx] || '').trim();
                 if (!barcode) continue;
-                map.set(barcode, cleanVialPos(vialRaw));
+
+                const vialClean = cleanVialPos(vialRaw);
+                map.set(barcode, vialClean);
+
+                rows.push({
+                    barcode,
+                    vialClean,
+                });
             }
-            return { ok: true, map };
+
+            return { ok: true, map, rows };
         }
+
+
+        // 新增：计算“未用孔位集合”的函数（核心逻辑）
+        function computeUnusedVialPosSets(rows) {
+            // 清空旧结果
+            unusedVialPosKeys = new Set();
+            unusedVialPosShow = [];
+
+            // 1) 收集“实际出现”的孔位：只统计 1..96 / A1..H12
+            const observedNums = new Set(); // 只放 1..96
+            let minCol = 99;
+
+            for (const r of rows) {
+                const vial = (r.vialClean || '').toString().trim();
+                if (!vial) continue;
+
+                const norm = normalizeUserVialPosInput(vial); // 只认 1..96 / A1..H12
+                if (!norm.ok) continue;
+
+                // 只统计 1..96
+                if (norm.num >= 1 && norm.num <= 96) {
+                    observedNums.add(norm.num);
+                    const col = ((norm.num - 1) % 12) + 1;
+                    if (col < minCol) minCol = col;
+                }
+            }
+
+            // 2) 推断取样起始列 startCol
+            // - NIMBUS/Starlet：通常 minCol=1
+            // - Tecan：若最小列号 > 1，则起始列 = minCol（你需求的逻辑）
+            let startCol = 1;
+            if (minCol >= 2 && minCol <= 12) startCol = minCol;
+
+            // 3) 构造“应出现孔位集合”（1..96 中，列号 >= startCol）
+            const expectedNums = new Set();
+            for (let num = 1; num <= 96; num++) {
+                const col = ((num - 1) % 12) + 1;
+                if (col >= startCol) expectedNums.add(num);
+            }
+
+            // 4) 未用孔位 = expectedNums - observedNums （缺失的）
+            const missingNums = [];
+            for (const num of expectedNums) {
+                if (!observedNums.has(num)) missingNums.push(num);
+            }
+            missingNums.sort((a, b) => a - b);
+
+            // 5) 额外：如果存在 NOTUBE 行，且孔位在 expected 范围内，也应视为未用（可选，但通常符合直觉）
+            // 注意：这不会把 >96 算进去，因为 normalizeUserVialPosInput 不认 >96
+            for (const r of rows) {
+                const barcode = (r.barcode || '').trim().toUpperCase();
+                if (barcode !== 'NOTUBE') continue;
+                const vial = (r.vialClean || '').toString().trim();
+                const norm = normalizeUserVialPosInput(vial);
+                if (!norm.ok) continue;
+                const col = ((norm.num - 1) % 12) + 1;
+                if (col >= startCol) {
+                    // NOTUBE 的孔位虽然“出现了”，但按业务认为也可加入未用集合
+                    if (!missingNums.includes(norm.num)) missingNums.push(norm.num);
+                }
+            }
+            missingNums.sort((a, b) => a - b);
+
+            // 6) 写入 unusedVialPosKeys / unusedVialPosShow
+            // key 同时存 num 和 well，方便用户输入 84 或 H12 都能命中
+            for (const num of missingNums) {
+                const well = numToWell(num); // 需要你已有/新增的 numToWell
+                unusedVialPosKeys.add(String(num));
+                unusedVialPosKeys.add(well);
+                unusedVialPosShow.push(`${well}(${num})`);
+            }
+
+            // 7) 更新 UI 摘要
+            if (unusedVialPosShow.length > 0) {
+                const preview = unusedVialPosShow.slice(0, 30).join('、');
+                const more = unusedVialPosShow.length > 30 ? ` ...（还有 ${unusedVialPosShow.length - 30} 个）` : '';
+                unusedSummaryEl.style.display = 'block';
+                unusedSummaryEl.textContent = `起始列推断为第 ${startCol} 列；未用孔位（缺失）共 ${unusedVialPosShow.length} 个。示例：${preview}${more}`;
+            } else {
+                unusedSummaryEl.style.display = 'block';
+                unusedSummaryEl.textContent = `起始列推断为第 ${startCol} 列；未检测到缺失孔位。`;
+            }
+        }
+
 
         // 上传文件后解析建立映射
         replaceFileInput.addEventListener('change', async (e) => {
@@ -422,6 +550,7 @@
                 }
             }
 
+            computeUnusedVialPosSets(res.rows || []);   // ★ 新增：算出未用孔位集合
             parsedOK = true;
         });
 
@@ -588,17 +717,77 @@
                 </td>
                 <td>
                     <input type="text"
-                        class="form-control form-control-sm barcode-input"
+                        class="form-control form-control-sm barcode-input nouse-vialpos-input"
                         name="nouse_vialpos[]"
-                        placeholder="请输入孔位（VialPos）">
+                        placeholder="请输入孔位（如 A1 / 1 / A1(1)）">
+                    <div class="vialpos-hint nouse-vialpos-hint"> </div>
                 </td>
                 <td class="text-center">
                     <div class="op-btns">
-                    <button type="button" class="btn btn-outline-primary btn-sm btn-add">添加</button>
-                    <button type="button" class="btn btn-outline-danger btn-sm btn-del">删除</button>
+                        <button type="button" class="btn btn-outline-primary btn-sm btn-add">添加</button>
+                        <button type="button" class="btn btn-outline-danger btn-sm btn-del">删除</button>
                     </div>
                 </td>
-                `;
+            `;
+
+            const vialInput = tr.querySelector('.nouse-vialpos-input');
+            const hintEl = tr.querySelector('.nouse-vialpos-hint');
+
+            function showHint(text, ok) {
+                hintEl.textContent = text;
+                hintEl.classList.add('show');
+                hintEl.classList.toggle('ok', !!ok);
+                hintEl.classList.toggle('err', !ok);
+                vialInput.classList.toggle('vialpos-invalid', !ok);
+            }
+            function hideHint() {
+                hintEl.textContent = '';
+                hintEl.classList.remove('show', 'ok', 'err');
+                vialInput.classList.remove('vialpos-invalid');
+            }
+
+            // ★ 即时提示：输入孔位时就判断是否为“未用孔位”
+            vialInput.addEventListener('input', () => {
+                const raw = vialInput.value.trim();
+                if (!raw) {
+                    hideHint();
+                    return;
+                }
+                if (!parsedOK) {
+                    showHint('请先上传并解析上机列表文件', false);
+                    return;
+                }
+
+                // 允许 A1/a1/1/A1(1)
+                const norm = normalizeUserVialPosInput(raw);
+                let hit = false;
+
+                if (norm.ok) {
+                    // 用 well 或 num 去命中未用集合
+                    hit = unusedVialPosKeys.has(norm.well) || unusedVialPosKeys.has(String(norm.num));
+                } else {
+                    // norm 不ok，用 raw 兜底
+                    const k = raw.toUpperCase ? raw.toUpperCase() : raw;
+                    hit = unusedVialPosKeys.has(k);
+                }
+
+                if (hit) {
+                    showHint('✅ 该孔位识别为“未用孔位”，可以替换', true);
+                } else {
+                    showHint('❌ 该孔位未识别为“未用孔位”（可能是已用孔位或输入有误）', false);
+                }
+            });
+
+            // 失焦时把输入规范化
+            vialInput.addEventListener('blur', () => {
+                const raw = vialInput.value.trim();
+                if (!raw) return;
+
+                const norm = normalizeUserVialPosInput(raw);
+                if (!norm.ok) return;
+
+                vialInput.value = `${norm.well}(${norm.num})`;
+            });
 
             // 添加一行
             tr.querySelector('.btn-add').addEventListener('click', () => {
@@ -613,6 +802,7 @@
 
             return tr;
         }
+
 
         // ===== 根据 replace_reason 切换显示 =====
         replaceReasonSelect.addEventListener('change', () => {

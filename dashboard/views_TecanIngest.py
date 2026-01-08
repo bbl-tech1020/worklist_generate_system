@@ -15,6 +15,7 @@ from django.shortcuts import render
 from .models import *
 
 import os
+import json
 import pandas as pd
 import re
 from icecream import ic
@@ -57,37 +58,144 @@ def _safe_dirname(name: str) -> str:
     s = s.strip("._-")
     return s or "project"
 
-
-def _save_station_first_only(today: str, f, project_dir: str) -> str:
+def _extract_station_pairs_from_upload(f) -> list[tuple[str, str]]:
     """
-    在 media/tecan/{today}/station 目录下：只保留当天“第一份”岗位清单。
-    - 若目录已有任意文件，则直接返回该文件路径，不再保存新的；
-    - 若目录为空，保存当前上传的文件；
-    - 文件名固定：station_{today}.<ext>（沿用上传扩展名，默认为 .xlsx）
-    返回：最终保留的绝对路径
+    从岗位清单表中提取 (主条码, 实验号)。
+    兼容：
+      - xls/xlsx（优先）
+      - csv（兜底）
+    允许列名为：主条码/实验号；若不存在则尝试 子条码/实验号（兼容旧格式）
     """
-    base_dir = os.path.join(settings.MEDIA_ROOT, "tecan", today, project_dir,"station")
-    _ensure_dir(base_dir)
+    name = (getattr(f, "name", "") or "").lower()
 
-    # 目录已有文件 -> 保留第一份，直接返回
-    existing = [os.path.join(base_dir, name) for name in os.listdir(base_dir)
-                if os.path.isfile(os.path.join(base_dir, name))]
-    if existing:
-        # 返回第一份（按文件名排序保证稳定）
-        existing.sort()
-        return existing[0]
+    # 读取成 DataFrame
+    try:
+        if name.endswith((".xls", ".xlsx")):
+            df = pd.read_excel(f, dtype=str)
+        elif name.endswith(".csv"):
+            df = pd.read_csv(f, dtype=str, encoding="utf-8", engine="python")
+        else:
+            # 尝试按 excel 读一次
+            df = pd.read_excel(f, dtype=str)
+    except Exception:
+        # 最后兜底：读 bytes 再让 pandas 猜
+        bio = io.BytesIO(f.read())
+        df = pd.read_excel(bio, dtype=str)
 
-    # 目录为空 -> 保存第一份
-    _, ext = os.path.splitext(getattr(f, "name", "") or "")
-    ext = ext if ext else ".xlsx"
-    filename = f"station_{today}{ext}"
-    abs_path = os.path.join(base_dir, filename)
+    # 列名清洗
+    df.columns = [str(c).strip() for c in df.columns]
 
-    with open(abs_path, "wb") as w:
-        for chunk in f.chunks():
-            w.write(chunk)
+    mb_col = "主条码" if "主条码" in df.columns else ("子条码" if "子条码" in df.columns else None)
+    sn_col = "实验号" if "实验号" in df.columns else None
+    if not mb_col or not sn_col:
+        return []
 
-    return abs_path
+    pairs = []
+    for _, r in df.iterrows():
+        mb = (str(r.get(mb_col) or "")).strip()
+        sn = (str(r.get(sn_col) or "")).strip()
+        if not mb or not sn:
+            continue
+        pairs.append((mb, sn))
+    return pairs
+
+
+def _save_station_store_daily(pairs: list[tuple[str, str]]) -> dict:
+    """
+    将 pairs 合并保存到：DOWNLOAD_ROOT/岗位清单/YYYY-MM-DD/station_list.json
+    冲突不阻断：记录到 warning（json 最前面）
+    返回 summary：{saved, added_pairs, conflicts, path}
+    """
+    day_date = timezone.localdate()
+    day_dir = os.path.join(settings.DOWNLOAD_ROOT, "岗位清单", day_date.strftime("%Y-%m-%d"))
+    os.makedirs(day_dir, exist_ok=True)
+    path = os.path.join(day_dir, "station_list.json")
+
+    def load_store():
+        if not os.path.isfile(path):
+            return {"warning": [], "主条码->实验号列表": {}, "实验号->主条码": {}}
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                d = json.load(f)
+            if "warning" not in d:
+                d = {"warning": [], **d}
+            d.setdefault("主条码->实验号列表", {})
+            d.setdefault("实验号->主条码", {})
+            return d
+        except Exception:
+            return {"warning": [{"type": "load_error", "msg": f"读取失败，已重置：{os.path.basename(path)}"}],
+                    "主条码->实验号列表": {}, "实验号->主条码": {}}
+
+    def dedup_warning(existing, new_items):
+        seen = set()
+        out = []
+        for w in (existing or []) + (new_items or []):
+            if not isinstance(w, dict):
+                continue
+            key = (w.get("type"), w.get("experiment_no"), w.get("old_main_barcode"), w.get("new_main_barcode"), w.get("msg"))
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(w)
+        return out
+
+    store = load_store()
+    mb2sn = store.get("主条码->实验号列表", {}) or {}
+    sn2mb = store.get("实验号->主条码", {}) or {}
+
+    added_pairs = 0
+    conflict_cnt = 0
+    warnings_new = []
+
+    # 合并
+    for mb, sn in pairs:
+        mb = (mb or "").strip()
+        sn = (sn or "").strip()
+        if not mb or not sn:
+            continue
+
+        if sn in sn2mb:
+            old_mb = str(sn2mb.get(sn) or "").strip()
+            if old_mb and old_mb != mb:
+                conflict_cnt += 1
+                warnings_new.append({
+                    "type": "conflict",
+                    "experiment_no": sn,
+                    "old_main_barcode": old_mb,
+                    "new_main_barcode": mb,
+                    "msg": f"实验号 {sn} 当天已映射主条码 {old_mb}，本次上传为 {mb}，已忽略本次冲突行"
+                })
+                continue
+        else:
+            sn2mb[sn] = mb
+
+        exist_list = mb2sn.get(mb, [])
+        if not isinstance(exist_list, list):
+            exist_list = [str(exist_list)]
+        exist_set = set(str(x).strip() for x in exist_list if str(x).strip())
+
+        if sn not in exist_set:
+            exist_list.append(sn)
+            added_pairs += 1
+        mb2sn[mb] = exist_list
+
+    store["warning"] = dedup_warning(store.get("warning", []), warnings_new)
+    store["主条码->实验号列表"] = mb2sn
+    store["实验号->主条码"] = sn2mb
+
+    generated_at = timezone.localtime().strftime("%Y-%m-%d %H:%M:%S")
+    need_write = (added_pairs > 0) or (conflict_cnt > 0) or (not os.path.isfile(path))
+    if need_write:
+        ordered_out = {
+            "生成时间": generated_at,
+            "warning": store.get("warning", []),
+            "主条码->实验号列表": store.get("主条码->实验号列表", {}),
+            "实验号->主条码": store.get("实验号->主条码", {}),
+        }
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(ordered_out, f, ensure_ascii=False, indent=2)
+
+    return {"saved": need_write, "added_pairs": added_pairs, "conflicts": conflict_cnt, "path": path}
 
 
 def _read_raw_csv_lines(path: str) -> tuple[str, list[str], list[list[str]]]:
@@ -335,9 +443,18 @@ def tecaningest(request: HttpRequest) -> HttpResponse:
 
     # === 修改：保存到“当天/original” ===
     saved_scan_abs = _save_upload_to_media(f"tecan/{today}/{project_dir}/original", scan_file)
+    station_save_summary = None
     if station_file:
         station_map = _load_station_map_from_upload(station_file)  # ← 新函数
         request.session["tecan_station_map"] = station_map
+
+         # 【新增】保存每日岗位清单映射库（downloads/岗位清单/..）
+        try:
+            pairs = _extract_station_pairs_from_upload(station_file)
+            station_save_summary = _save_station_store_daily(pairs)
+        except Exception as e:
+            # 不阻断主流程
+            station_save_summary = {"saved": False, "added_pairs": 0, "conflicts": 0, "error": str(e)}
     else:
         request.session["tecan_station_map"] = {}
 
@@ -420,7 +537,13 @@ def tecaningest(request: HttpRequest) -> HttpResponse:
     # === 修改：无冲突 → 原样复制到“当天/processed/”，保持原 CSV 格式 ===  
     out_path = _write_processed_copy_from_original(saved_scan_abs, processed_dir)
 
-    return _render_tecan_process_result(request, today=today, csv_abs_path=out_path, project_id=project_id)
+    return _render_tecan_process_result(
+        request,
+        today=today,
+        csv_abs_path=out_path,
+        project_id=project_id,
+        station_save_summary=station_save_summary,   # ✅ 新增
+    )
 
 
 @csrf_protect
@@ -589,7 +712,13 @@ def tecan_resolve_duplicates(request: HttpRequest) -> HttpResponse:
         fix_map_by_rowid=fix_pairs,  # ← 只传 (old, new)
     )
 
-    return _render_tecan_process_result(request, today=today, csv_abs_path=out_path, project_id=project_id)
+    return _render_tecan_process_result(
+        request,
+        today=today,
+        csv_abs_path=out_path,
+        project_id=project_id,
+        station_save_summary=None, 
+    )
 
 
 @csrf_protect
@@ -1208,7 +1337,13 @@ def _build_clinical_cells_from_csv(csv_abs_path: str, start_offset: int, station
 
 
 # 组装“工作清单数据结构”并渲染页面
-def _render_tecan_process_result(request: HttpRequest, today: str, csv_abs_path: str, project_id: str) -> HttpResponse:
+def _render_tecan_process_result(
+    request: HttpRequest, 
+    today: str, 
+    csv_abs_path: str, 
+    project_id: str,
+    station_save_summary: dict | None = None,
+    ) -> HttpResponse:
     """
     生成页面所需的 96 孔板数据：
     - STD/QC：从 SamplingConfiguration 读取 curve_points / qc_groups / qc_levels
@@ -1240,7 +1375,8 @@ def _render_tecan_process_result(request: HttpRequest, today: str, csv_abs_path:
     year       = today_str[:4]
     yearmonth  = today_str[:6]
 
-    ic(injection_plate)
+    # ✅ 新增：确保模板能拿到 station_save_summary
+    station_save_summary = station_save_summary
 
     # 获取后台设置的项目参数，如果没设置报错并提示
     try:

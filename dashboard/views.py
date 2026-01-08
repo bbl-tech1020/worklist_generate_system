@@ -28,6 +28,7 @@ pd.set_option('display.max_rows', None)
 
 import os, io, logging
 import re
+import json
 from io import StringIO,BytesIO
 import openpyxl
 import xlwt
@@ -533,6 +534,18 @@ def download_export(request, platform, date_name, project, filename):
     return resp
 
 
+def _should_hide_in_download_page(fname: str) -> bool:
+    """
+    文件下载页面不展示的文件类型
+    - payload.json（用于重生成工作清单的数据源）
+    """
+    lower = (fname or "").lower().strip()
+    # 兼容两种：固定名 payload.json / 以及你们这种 *.payload.json
+    if lower == "payload.json" or lower.endswith(".payload.json"):
+        return True
+    return False
+
+
 # 文件下载页面排序函数
 TS_RE = re.compile(r"_(\d{8}_\d{6})_")  # 匹配 _20251219_094634_
 def file_sort_key(fname: str):
@@ -552,6 +565,7 @@ def file_sort_key(fname: str):
     return (ts, kind, fname)
 
 HISTORY_DIRNAME = "历史文件"
+STATION_DIRNAME = "岗位清单"
 def file_download(request):
     """
     展示 downloads 目录结构。
@@ -564,8 +578,8 @@ def file_download(request):
     groups = []  # 输出给模板
 
     for platform in sorted(os.listdir(root)):  # 平台层
-        # ✅ 新增：跳过历史目录（避免在主文件下载页显示）
-        if platform == HISTORY_DIRNAME:   # HISTORY_DIRNAME = "历史文件"
+        # ✅ 新增：跳过历史文件目录和岗位清单目录（避免在主文件下载页显示）
+        if platform == HISTORY_DIRNAME or platform == STATION_DIRNAME: 
             continue
 
         p_path = os.path.join(root, platform)
@@ -602,9 +616,14 @@ def file_download(request):
                             proj_path = os.path.join(d_path, proj)
                             files = []
                             for fname in sorted(os.listdir(proj_path), key=file_sort_key):
+                                if _should_hide_in_download_page(fname):    # ✅ 新增：隐藏 payload.json
+                                    continue
+
                                 fpath = os.path.join(proj_path, fname)
+                                ext = fname.lower()
                                 if not os.path.isfile(fpath):
                                     continue
+
                                 files.append({
                                     "name": fname,
                                     "url": f"{settings.DOWNLOAD_URL}{platform}/{cat}/{date_name}/{proj}/{fname}",
@@ -618,7 +637,12 @@ def file_download(request):
                         # 无项目层：平台 / 类别 / 日期 / 文件（用于“取样指令”）
                         files = []
                         for fname in sorted(os.listdir(d_path)):
+                            if _should_hide_in_download_page(fname):    # ✅ 新增
+                                continue
+
                             fpath = os.path.join(d_path, fname)
+                            ext = fname.lower() 
+
                             if not os.path.isfile(fpath):
                                 continue
                             files.append({
@@ -648,6 +672,9 @@ def file_download(request):
 
                 files = []
                 for fname in sorted(os.listdir(proj_path), key=file_sort_key):
+                    if _should_hide_in_download_page(fname):    # ✅ 新增
+                        continue
+
                     fpath = os.path.join(proj_path, fname)
                     ext = fname.lower()
                     if not os.path.isfile(fpath):
@@ -813,6 +840,45 @@ def _guess_delimiter(line: str) -> str:
         return ","
     return ";"
 
+
+# 识别：哪些列在“整张表”范围内与第 1 列（index 0）逐行完全相同
+def _detect_columns_equal_to_first(rows: list[list[str]]) -> list[int]:
+    """
+    rows: 解析后的二维表（含表头/数据行都可以；建议你传“数据行”）
+    返回：所有满足“每一行 col[i] == col[0]”的列索引 i（i>=1）
+    
+    判定规则（尽量稳妥）：
+    - 若某行缺少该列，视为“不相同”（直接淘汰该列）
+    - 比较时做 strip()，并将 None 视为空串
+    """
+    if not rows:
+        return []
+
+    # 计算最大列数
+    max_cols = max(len(r) for r in rows if r)
+    if max_cols <= 1:
+        return []
+
+    candidates = list(range(1, max_cols))  # 只看第2列起
+    keep = []
+
+    for ci in candidates:
+        ok = True
+        for r in rows:
+            if len(r) <= ci:
+                ok = False
+                break
+            v0 = (r[0] or "").strip()
+            vi = (r[ci] or "").strip()
+            if vi != v0:
+                ok = False
+                break
+        if ok:
+            keep.append(ci)
+
+    return keep
+
+
 # 孔位清洗逻辑（与前端一致：只取最后一段）
 _SPLIT_VIAL_RE = re.compile(r"[\s:\-_]+")
 def _clean_vialpos(raw: str) -> str:
@@ -968,6 +1034,9 @@ def file_replace(request):
                     cols = cols + [""] * (len(header) - len(cols))
                 rows.append(cols)
 
+            # ===== ✅ 新增：检测“与第一列逐行完全相同”的列，替换时需要联动更新 =====
+            same_as_first_cols = _detect_columns_equal_to_first(rows)
+
             # 执行替换：仅替换第一列（index=0）
             def _row_match(cols: list[str], entry: dict) -> bool:
                 # 1) 优先用 old 匹配第一列（如果 old 有填）
@@ -1006,7 +1075,15 @@ def file_replace(request):
                 hit = False
                 for cols in rows:
                     if _row_match(cols, entry):
-                        cols[0] = entry["new"]  # ✅ 只替换第一列
+
+                        # 1) 永远替换第一列
+                        cols[0] = entry["new"]
+
+                        # 2) ✅ 新增：联动替换“与第一列逐行完全相同”的列
+                        for j in same_as_first_cols:
+                            if 0 <= j < len(cols):
+                                cols[j] = entry["new"]
+
                         replaced += 1
                         hit = True
                         break
@@ -1014,6 +1091,7 @@ def file_replace(request):
                     return render(request, "dashboard/error.html", {
                         "message": f"未找到可替换行：孔位={entry['vialpos']} / 当前条码={entry['old']}"
                     })
+
 
         # ===== 未用孔位替换 nouse =====
         elif replace_reason == "nouse":
@@ -1911,6 +1989,161 @@ def ProcessResult(request):
     for bc, sn in zip(MainBarcode, SampleName):
         barcode_to_names[str(bc)].append(str(sn))
 
+
+    # 保存岗位清单中主条码和实验号映射的json数据（每天一份，不能重复）
+    def _station_store_path(day_date: date) -> str:
+        day_dir = os.path.join(settings.DOWNLOAD_ROOT, "岗位清单", day_date.strftime("%Y-%m-%d"))
+        os.makedirs(day_dir, exist_ok=True)
+        return os.path.join(day_dir, "station_list.json")
+
+    def _load_station_store(path: str) -> dict:
+        if not os.path.isfile(path):
+            # 保证 warning 在最前
+            return {"warning": [], "主条码->实验号列表": {}, "实验号->主条码": {}}
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            # 兼容缺字段
+            if "warning" not in data:
+                data = {"warning": [], **data}
+            data.setdefault("主条码->实验号列表", {})
+            data.setdefault("实验号->主条码", {})
+            return data
+        except Exception:
+            # 文件坏了就重新来（不阻断主流程）
+            return {"warning": [{"type": "load_error", "msg": f"读取失败，已重置：{os.path.basename(path)}"}],
+                    "主条码->实验号列表": {}, "实验号->主条码": {}}
+    
+    def _dedup_warning(existing: list, new_items: list) -> list:
+        # 用 (type, exp, old, new) 作为去重 key，避免 warning 越堆越多
+        seen = set()
+        out = []
+        for w in (existing or []) + (new_items or []):
+            if not isinstance(w, dict):
+                continue
+            key = (w.get("type"), w.get("experiment_no"), w.get("old_main_barcode"), w.get("new_main_barcode"), w.get("msg"))
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(w)
+        return out
+
+
+    def _merge_station_maps(store: dict, new_map: dict) -> tuple[dict, dict]:
+        """
+        store:
+          - 主条码->实验号列表: dict[str, list[str]]
+          - 实验号->主条码: dict[str, str]
+          - warning: list[dict]
+        new_map: barcode_to_names (dict[str, list[str]])
+        返回：(new_store, summary)
+        """
+        mb2sn = store.get("主条码->实验号列表", {}) or {}
+        sn2mb = store.get("实验号->主条码", {}) or {}
+        warnings_new = []
+
+        added_pairs = 0
+        conflict_cnt = 0
+
+        for mb, sns in (new_map or {}).items():
+            mb = (mb or "").strip()
+            if not mb:
+                continue
+
+            # 规范化 sns：去空/去重/保持顺序
+            seen_sn = set()
+            norm_sns = []
+            for sn in (sns or []):
+                sn = (str(sn) or "").strip()
+                if not sn or sn in seen_sn:
+                    continue
+                seen_sn.add(sn)
+                norm_sns.append(sn)
+            if not norm_sns:
+                continue
+
+            exist_list = mb2sn.get(mb, [])
+            if not isinstance(exist_list, list):
+                exist_list = [str(exist_list)]
+            exist_set = set(str(x).strip() for x in exist_list if str(x).strip())
+
+            # 逐实验号合并，并做“实验号->主条码”冲突检测
+            for sn in norm_sns:
+                if sn in sn2mb:
+                    # 已存在映射：若冲突则记录 warning 并跳过
+                    old_mb = str(sn2mb.get(sn) or "").strip()
+                    if old_mb and old_mb != mb:
+                        conflict_cnt += 1
+                        warnings_new.append({
+                            "type": "conflict",
+                            "experiment_no": sn,
+                            "old_main_barcode": old_mb,
+                            "new_main_barcode": mb,
+                            "msg": f"实验号 {sn} 当天已映射主条码 {old_mb}，本次上传为 {mb}，已忽略本次冲突行"
+                        })
+                        continue
+                    # old_mb == mb：完全重复 -> 忽略
+                else:
+                    # 新实验号：写入 sn->mb
+                    sn2mb[sn] = mb
+
+                # mb -> sn list：不存在则追加
+                if sn not in exist_set:
+                    exist_list.append(sn)
+                    exist_set.add(sn)
+                    added_pairs += 1
+
+            mb2sn[mb] = exist_list
+                    
+    
+        # warning 合并且去重（warning 必须在 json 最前面）
+        store["warning"] = _dedup_warning(store.get("warning", []), warnings_new)
+        store["主条码->实验号列表"] = mb2sn
+        store["实验号->主条码"] = sn2mb
+
+        summary = {
+            "added_pairs": added_pairs,
+            "conflicts": conflict_cnt,
+            "saved": False,
+        }
+        return store, summary
+
+
+    station_save_summary = None
+    generated_at = timezone.localtime().strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        store_path = _station_store_path(record_date)  # record_date 你前面已计算（today/tomorrow）
+        store = _load_station_store(store_path)
+        store2, summary = _merge_station_maps(store, barcode_to_names)
+
+        # 只有真的有新增/新增 warning 才写盘（避免无意义改动）
+        need_write = (summary["added_pairs"] > 0) or (summary["conflicts"] > 0) or (not os.path.isfile(store_path))
+        if need_write:
+            ordered_out = {
+                "生成时间": generated_at,
+                "warning": store2.get("warning", []),
+                "主条码->实验号列表": store2.get("主条码->实验号列表", {}),
+                "实验号->主条码": store2.get("实验号->主条码", {}),
+            }
+            with open(store_path, "w", encoding="utf-8") as f:
+                json.dump(ordered_out, f, ensure_ascii=False, indent=2)
+
+            summary["saved"] = True
+
+        station_save_summary = {
+            **summary,
+            "path": store_path,
+        }
+        logging.getLogger(__name__).warning(
+            "[station_list saved] path=%s added_pairs=%s conflicts=%s",
+            store_path, summary["added_pairs"], summary["conflicts"]
+        )
+    except Exception as e:
+        # 任何保存异常：不阻断主流程
+        logging.getLogger(__name__).warning("[station_list save failed] %s", e)
+        station_save_summary = {"saved": False, "added_pairs": 0, "conflicts": 0, "error": str(e)}
+
+
     # 曲线/质控映射（获取一一对应关系,供后续识别非临床样本,即曲线和质控）
     barcode_to_name = dict(zip(df_mapping_wc["Barcode"].astype(str), df_mapping_wc["Name"]))
 
@@ -2531,7 +2764,10 @@ def ProcessResult(request):
         "project_name_full": project_name_full,
         "platform": platform,
         "today_str": today_str,
-        "plates": plates_payload,                 # 模板循环多张卡片
+
+        # 模板循环多张卡片
+        "plates": plates_payload,
+        "station_save_summary": station_save_summary,                 
     })
 
 
@@ -2569,6 +2805,33 @@ def preview_export(request):
             **payload,   # 必须把 worksheet_table / error_rows / txt_headers / worklist_records / header 带进去
         },
     )
+
+# 导出pdf时，保存一份json文件用于存储payload中的数据，便于后续替换功能生成新的工作清单
+def _json_default(obj):
+    """让 json.dump 遇到不可序列化对象时兜底为字符串。"""
+    try:
+        # datetime/date 等常见类型优先转 ISO
+        if hasattr(obj, "isoformat"):
+            return obj.isoformat()
+    except Exception:
+        pass
+    return str(obj)
+
+def _dump_payload_json(target_dir: str, payload: dict, filename: str = "payload.json") -> str:
+    """
+    将 payload 保存为 JSON 文件（UTF-8，保留中文），与 PDF 同目录。
+    为避免写一半中断，使用 .tmp 原子替换。
+    返回写入的绝对路径。
+    """
+    os.makedirs(target_dir, exist_ok=True)
+    out_path = os.path.join(target_dir, filename)
+    tmp_path = out_path + ".tmp"
+
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2, default=_json_default)
+
+    os.replace(tmp_path, out_path)
+    return out_path
 
 
 # 导出pdf和excel
@@ -2683,6 +2946,8 @@ def export_files(request):
 
     pdf_fname = f"{plate_suffix}_WorkSheet_{instrument_num}_{systerm_num}_{project}_{timestamp}_{plate_suffix}_GZ.pdf"
     pdf_path = os.path.join(target_dir, pdf_fname)
+
+    payload_name = f"{Path(pdf_fname).stem}.payload.json"
     
     try:
         # 使用WeasyPrint生成PDF
@@ -2691,6 +2956,10 @@ def export_files(request):
             stylesheets=[pdf_css],
             font_config=font_config
         )
+
+        # ⭐ 新增：首次生成工作清单时，同时落盘保存 payload.json（与PDF同目录）
+        _dump_payload_json(target_dir, payload, filename=payload_name)
+
     except Exception as e:
         return JsonResponse({"ok": False, "message": f"PDF生成失败: {str(e)}"})
 

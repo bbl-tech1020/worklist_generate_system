@@ -147,6 +147,12 @@
             table-layout: fixed;
         }
 
+        /* 被替换/删除的孔位：整格标红（包含孔位号/实验号/条码/图标） */
+        .highlight-cell,
+        .highlight-cell * {
+            color: #d00 !important;
+            font-weight: 700;
+        }
     </style>
 </head>
 
@@ -188,7 +194,7 @@
                 <tr>
                     <td class="letters">{{ row_idx.0.letter }}</td>
                     {% for cell in row_idx %}
-                    <td>
+                    <td class="cell {% if cell.highlight %}highlight-cell{% endif %}">
                         {% if cell.locator %}
                         <div class="locator">{{ cell.locator_warm }}</div>
                         {% else %}

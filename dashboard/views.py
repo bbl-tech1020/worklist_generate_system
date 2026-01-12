@@ -829,6 +829,216 @@ def _history_path_for(abs_path: str, download_root: str) -> str:
     rel = os.path.relpath(abs_path, download_root)
     return os.path.join(download_root, HISTORY_DIRNAME, rel)
 
+
+# 从 OnboardingList 文件名推导 WorkSheet / payload 路径
+def _derive_worksheet_names_from_onboarding(onboarding_name: str) -> tuple[str, str]:
+    """
+    输入：X1_OnboardingList_... .txt/.csv
+    输出：
+      worksheet_pdf_name: X1_WorkSheet_... .pdf
+      worksheet_payload_name: X1_WorkSheet_... .payload.json
+    """
+    p = Path(onboarding_name)
+    stem = p.stem
+    # 统一按字段替换：OnboardingList -> WorkSheet
+    ws_stem = stem.replace("OnboardingList", "WorkSheet")
+    worksheet_pdf_name = f"{ws_stem}.pdf"
+    worksheet_payload_name = f"{ws_stem}.payload.json"
+    return worksheet_pdf_name, worksheet_payload_name
+
+
+# 生成 Replace_ 文件名（与上机列表替换一致，防重名）
+def _make_replace_name(dir_path: str, base_name: str) -> str:
+    new_name = f"Replace_{base_name}"
+    new_path = os.path.join(dir_path, new_name)
+    if os.path.exists(new_path):
+        ts = timezone.now().strftime("%Y%m%d_%H%M%S")
+        stem, ext = os.path.splitext(new_name)
+        new_name = f"{stem}_{ts}{ext}"
+    return new_name
+
+
+# 新增工具函数：条码解析（更新 cut/sub/origin）
+_BARCODE_SPLIT_RE = re.compile(r"^(.+?)(-\w+)?$")
+
+def _parse_barcode(new_code: str) -> tuple[str, str, str]:
+    """
+    输入: 2437871821-01 or 6810526380 or NOTUBE
+    输出: (cut_barcode, sub_barcode, origin_barcode)
+    """
+    s = (new_code or "").strip()
+    if not s:
+        return "", "", ""
+    if s.upper() == "NOTUBE":
+        return "NOTUBE", "", "NOTUBE"
+
+    m = _BARCODE_SPLIT_RE.match(s)
+    if not m:
+        return s, "", s
+    cut = m.group(1) or ""
+    sub = m.group(2) or ""
+    origin = f"{cut}{sub}" if sub else cut
+    return cut, sub, origin
+
+
+# 在 payload 里定位 cell，并写入 highlight
+def _build_cell_index(payload: dict) -> dict:
+    """
+    返回 well_str -> cell dict 的索引
+    """
+    idx = {}
+    for row in payload.get("worksheet_table", []):
+        for cell in row:
+            ws = (cell.get("well_str") or "").strip().upper()
+            if ws:
+                idx[ws] = cell
+    return idx
+
+def _mark_cell_highlight(cell: dict):
+    cell["highlight"] = True
+
+
+# 新增核心函数：对 payload 应用 used / nouse / delete，并保持 error_rows 不动
+_SAMPLE_RE = re.compile(r"[A-Za-z]")  # 含字母则更像“实验号/样本名”
+
+def _apply_replace_to_payload(payload: dict, replace_reason: str, entries: list[dict]) -> tuple[dict, list[str]]:
+    """
+    返回：修改后的 payload + 高亮孔位列表
+    注意：不改 error_rows（按你的需求“报错信息表不变”）
+    """
+    cell_index = _build_cell_index(payload)
+    highlighted = []
+
+    def get_cell_by_vialpos(vp: str):
+        norm = _normalize_user_vialpos(vp)
+        if norm.get("ok"):
+            return cell_index.get(norm["well"])
+        return None
+
+    for e in entries:
+        vp = e.get("vialpos", "")
+        cell = get_cell_by_vialpos(vp)
+
+        if not cell:
+            # 兜底：允许通过 old/code 在 payload 里匹配（可选）
+            key = (e.get("old") or e.get("code") or "").strip()
+            if key:
+                for c in cell_index.values():
+                    if key == (c.get("match_sample") or "").strip():
+                        cell = c; break
+                    if key == (c.get("origin_barcode") or "").strip():
+                        cell = c; break
+                    if key == (c.get("cut_barcode") or "").strip():
+                        cell = c; break
+
+        if not cell:
+            raise ValueError(f"未在工作清单payload中定位到孔位：{vp}")
+
+        # ===== 应用规则 =====
+        if replace_reason == "used":
+            new_val = (e.get("new") or "").strip()
+            old_val = (e.get("old") or "").strip()
+
+            # old 为空时，根据 new 判断更新实验号还是条码
+            if _SAMPLE_RE.search(new_val):  # 含字母：当作实验号
+                cell["match_sample"] = new_val
+            else:  # 当作条码
+                cut, sub, origin = _parse_barcode(new_val)
+                cell["cut_barcode"] = cut
+                cell["sub_barcode"] = sub
+                cell["origin_barcode"] = origin
+
+            # 你需求“孔位/条码/实验号替换”，因此即使 old 填的是实验号/条码，都以 new 覆盖显示
+            # （这里不强制校验 old 是否与 cell 现值一致，避免用户只按孔位替换时失败）
+            _mark_cell_highlight(cell)
+
+        elif replace_reason == "nouse":
+            new_val = (e.get("new") or "").strip()
+            if _SAMPLE_RE.search(new_val):
+                cell["match_sample"] = new_val
+            else:
+                cut, sub, origin = _parse_barcode(new_val)
+                cell["cut_barcode"] = cut
+                cell["sub_barcode"] = sub
+                cell["origin_barcode"] = origin
+            _mark_cell_highlight(cell)
+
+        elif replace_reason == "delete":
+            # 删除：恢复 NOTUBE / No match 显示
+            cell["match_sample"] = "No match"
+            cell["cut_barcode"] = "NOTUBE"
+            cell["sub_barcode"] = ""
+            cell["origin_barcode"] = "NOTUBE"
+            _mark_cell_highlight(cell)
+
+        else:
+            raise ValueError(f"未知 replace_reason: {replace_reason}")
+
+        highlighted.append((cell.get("well_str") or "").strip())
+
+    return payload, highlighted
+
+
+# 新增核心函数：渲染 export_pdf.html 并写 PDF（复用你现有 export_files 的 CSS/Font 配置）
+def _render_payload_to_pdf(payload: dict, out_pdf_path: str):
+    pdf_html = render_to_string("dashboard/export_pdf.html", payload)
+
+    font_config = FontConfiguration()
+    pdf_css = CSS(string="""
+        @page { size: A4; margin: 10mm; }
+        body { font-family: "Noto Sans CJK SC", "SimSun", sans-serif; font-size: 10px; }
+    """, font_config=font_config)
+
+    HTML(string=pdf_html).write_pdf(
+        out_pdf_path,
+        stylesheets=[pdf_css],
+        font_config=font_config
+    )
+
+# 新增：WorkSheet 替换总函数（找旧文件 → 生成 Replace_ 新文件 → 旧文件进历史）
+def _replace_worksheet_after_onboarding_replace(root: str, onboarding_uploaded_name: str,
+                                              replace_reason: str, entries: list[dict], target_dir: str):
+    """
+    root: DOWNLOAD_ROOT
+    target_dir: 上机列表所在目录（也就是 worksheet/pdf/payload 所在目录）
+    """
+    ws_pdf_name, ws_payload_name = _derive_worksheet_names_from_onboarding(onboarding_uploaded_name)
+
+    ws_pdf_path = os.path.join(target_dir, ws_pdf_name)
+    ws_payload_path = os.path.join(target_dir, ws_payload_name)
+
+    if not os.path.exists(ws_pdf_path):
+        raise FileNotFoundError(f"未找到对应工作清单PDF：{ws_pdf_name}")
+    if not os.path.exists(ws_payload_path):
+        raise FileNotFoundError(f"未找到对应payload.json：{ws_payload_name}")
+
+    # 1) 读取 payload
+    with open(ws_payload_path, "r", encoding="utf-8") as f:
+        payload = json.load(f)
+
+    # 2) 修改 payload + 标红
+    payload, _ = _apply_replace_to_payload(payload, replace_reason, entries)
+
+    # 3) 生成 Replace_ WorkSheet PDF
+    new_ws_pdf_name = _make_replace_name(target_dir, ws_pdf_name)
+    new_ws_pdf_path = os.path.join(target_dir, new_ws_pdf_name)
+
+    _render_payload_to_pdf(payload, new_ws_pdf_path)
+
+    # 4) 同步生成 Replace_ payload.json（与PDF同 stem）
+    new_payload_name = f"{Path(new_ws_pdf_name).stem}.payload.json"
+    _dump_payload_json(target_dir, payload, filename=new_payload_name)  # 你 views 里已有此函数
+
+    # 5) 旧 PDF + 旧 payload 进历史目录
+    hist_pdf_path = _history_path_for(ws_pdf_path, root)
+    os.makedirs(os.path.dirname(hist_pdf_path), exist_ok=True)
+    os.replace(ws_pdf_path, hist_pdf_path)
+
+    hist_payload_path = _history_path_for(ws_payload_path, root)
+    os.makedirs(os.path.dirname(hist_payload_path), exist_ok=True)
+    os.replace(ws_payload_path, hist_payload_path)
+
+
 # 解析分隔符 + 读取表格（只要能稳定分列即可）
 def _guess_delimiter(line: str) -> str:
     tab = line.count("\t")
@@ -1401,33 +1611,6 @@ def file_replace(request):
 
                 deleted += 1
 
-            # 生成新文件（Replace_）
-            dir_path = os.path.dirname(target_path)
-            base = os.path.basename(target_path)
-            new_name = f"Replace_{base}"
-            new_path = os.path.join(dir_path, new_name)
-
-            if os.path.exists(new_path):
-                ts = timezone.now().strftime("%Y%m%d_%H%M%S")
-                stem, ext = os.path.splitext(new_name)
-                new_name = f"{stem}_{ts}{ext}"
-                new_path = os.path.join(dir_path, new_name)
-
-            out_lines = [delimiter.join(header)]
-            for cols in rows:
-                out_lines.append(delimiter.join(cols))
-            out_text = "\n".join(out_lines) + "\n"
-
-            with open(new_path, "w", encoding="utf-8") as f:
-                f.write(out_text)
-
-            # 旧文件入历史目录
-            hist_path = _history_path_for(target_path, root)
-            os.makedirs(os.path.dirname(hist_path), exist_ok=True)
-            os.replace(target_path, hist_path)
-
-            return redirect("file_download")
-
 
         else:
             pass
@@ -1458,6 +1641,25 @@ def file_replace(request):
         hist_path = _history_path_for(target_path, root)
         os.makedirs(os.path.dirname(hist_path), exist_ok=True)
         os.replace(target_path, hist_path)
+
+        # ===== 新增：同步替换 WorkSheet PDF（工作清单）=====
+        try:
+            # 说明：
+            # - uploaded_name：用户上传的上机列表文件名（OnboardingList...）
+            # - replace_reason：used / nouse / delete
+            # - entries：三种分支都构造了 entries（孔位/旧/新）
+            # - dir_path：公共出口里已经有 dir_path = os.path.dirname(target_path)
+            _replace_worksheet_after_onboarding_replace(
+                root=root,
+                onboarding_uploaded_name=uploaded_name,
+                replace_reason=replace_reason,
+                entries=entries,
+                target_dir=dir_path,
+            )
+        except Exception as e:
+            return render(request, "dashboard/error.html", {
+                "message": f"上机列表替换成功，但工作清单替换失败：{str(e)}"
+            })
 
         # ✅ 完成：下载目录里将只剩 Replace_ 文件（新文件名出现在文件下载页）
         # 建议直接回到文件下载页

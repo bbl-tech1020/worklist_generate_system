@@ -803,6 +803,80 @@ def file_download_history(request):
     return render(request, "dashboard/file_download_history.html", {"groups": groups})
 
 
+# === 新增：收集当日已取样过的实验号(match_sample)与条码(origin_barcode) ===
+def _collect_today_sampled_codes() -> set[str]:
+    """
+    扫描 DOWNLOAD_ROOT 下“当日日期目录”内的所有 *.payload.json，
+    提取 worksheet_table 里的 match_sample / origin_barcode，合并成一个大集合返回（统一大写、去空）。
+    """
+    root = Path(settings.DOWNLOAD_ROOT)
+    if not root.exists():
+        return set()
+
+    today_str = timezone.localdate().strftime("%Y-%m-%d")
+    sampled: set[str] = set()
+
+    # 排除：历史文件、岗位清单
+    excluded_dirs = {HISTORY_DIRNAME, STATION_DIRNAME}
+
+    # 走全量递归：只要路径层级中包含 today_str，就认为是“当日日期子路径”
+    for dirpath, dirnames, filenames in os.walk(root):
+        p = Path(dirpath)
+
+        # 快速跳过排除目录
+        if any(part in excluded_dirs for part in p.parts):
+            continue
+
+        # 必须命中当日日期目录
+        if today_str not in p.parts:
+            continue
+
+        for fn in filenames:
+            lower = (fn or "").lower()
+            if not lower.endswith(".payload.json"):
+                continue
+
+            fpath = p / fn
+            try:
+                payload = json.loads(fpath.read_text(encoding="utf-8"))
+            except Exception:
+                # 单个文件坏了不影响整体
+                continue
+
+            table = payload.get("worksheet_table") or []
+            # worksheet_table: list[list[cell]]
+            for row in table:
+                if not isinstance(row, list):
+                    continue
+                for cell in row:
+                    if not isinstance(cell, dict):
+                        continue
+
+                    ms = (cell.get("match_sample") or "").strip()
+                    ob = (cell.get("origin_barcode") or "").strip()
+
+                    if ms:
+                        sampled.add(ms.upper())
+                    if ob:
+                        sampled.add(ob.upper())
+
+    return sampled
+
+
+# 给前端拉取当日集合（用于即时提示）
+@require_GET
+def file_replace_sampled_codes(request):
+    """
+    返回当日所有已取样过的条码/实验号集合（统一大写）。
+    前端用于“新条码或实验号”的重复校验提示。
+    """
+    codes = sorted(_collect_today_sampled_codes())
+    return JsonResponse({
+        "date": timezone.localdate().strftime("%Y-%m-%d"),
+        "codes": codes,
+    })
+
+
 # 收集当前‘文件下载’页面中已有的上机列表文件名，用于后续匹配和替换
 def _index_onboarding_files(root: str) -> dict:
     idx = {}
@@ -857,7 +931,6 @@ def _make_replace_name(dir_path: str, base_name: str) -> str:
         new_name = f"{stem}_{ts}{ext}"
     return new_name
 
-
 # 新增工具函数：条码解析（更新 cut/sub/origin）
 _BARCODE_SPLIT_RE = re.compile(r"^(.+?)(-\w+)?$")
 
@@ -880,8 +953,7 @@ def _parse_barcode(new_code: str) -> tuple[str, str, str]:
     origin = f"{cut}{sub}" if sub else cut
     return cut, sub, origin
 
-
-# 在 payload 里定位 cell，并写入 highlight
+# 新增工具函数：在 payload 里定位 cell，并写入 highlight
 def _build_cell_index(payload: dict) -> dict:
     """
     返回 well_str -> cell dict 的索引
@@ -979,6 +1051,7 @@ def _apply_replace_to_payload(payload: dict, replace_reason: str, entries: list[
     return payload, highlighted
 
 
+
 # 新增核心函数：渲染 export_pdf.html 并写 PDF（复用你现有 export_files 的 CSS/Font 配置）
 def _render_payload_to_pdf(payload: dict, out_pdf_path: str):
     pdf_html = render_to_string("dashboard/export_pdf.html", payload)
@@ -1037,6 +1110,7 @@ def _replace_worksheet_after_onboarding_replace(root: str, onboarding_uploaded_n
     hist_payload_path = _history_path_for(ws_payload_path, root)
     os.makedirs(os.path.dirname(hist_payload_path), exist_ok=True)
     os.replace(ws_payload_path, hist_payload_path)
+
 
 
 # 解析分隔符 + 读取表格（只要能稳定分列即可）
@@ -1207,6 +1281,7 @@ def file_replace(request):
                     "message": "未检测到任何有效替换行，请填写后再提交。"
                 })
 
+
             # 读取目标文件
             with open(target_path, "r", encoding="utf-8", errors="replace") as f:
                 text = f.read()
@@ -1333,6 +1408,7 @@ def file_replace(request):
                 return render(request, "dashboard/error.html", {
                     "message": "未检测到任何有效替换行，请填写后再提交。"
                 })
+
 
             # 读取目标文件
             with open(target_path, "r", encoding="utf-8", errors="replace") as f:

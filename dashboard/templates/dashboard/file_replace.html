@@ -242,6 +242,8 @@
 
 
             <div class="mt-3 submit-bar">
+                <div id="sampled-conflict-summary" class="alert alert-warning"
+                    style="display:none; margin: 0 0 10px 0;"></div>
                 <button type="submit" class="btn btn-primary">提交</button>
             </div>
 
@@ -615,10 +617,19 @@
                 </td>
 
                 <td>
-                <input type="text"
-                        class="form-control form-control-sm barcode-input"
+                    <input type="text"
+                        class="form-control form-control-sm barcode-input used-new-input"
                         name="used_new_barcode[]"
+                        data-confirmed="false"
+                        data-last-value=""
                         placeholder="请输入新条码或实验号">
+                    <div class="vialpos-hint new-code-hint" style="display:none;">
+                        <div class="hint-text"></div>
+                        <div class="mt-1">
+                            <button type="button" class="btn btn-sm btn-danger btn-confirm-replace">确认更换</button>
+                            <button type="button" class="btn btn-sm btn-secondary btn-reinput">重新输入</button>
+                        </div>
+                    </div>
                 </td>
 
                 <td class="text-center">
@@ -744,9 +755,18 @@
             tr.innerHTML = `
                 <td>
                     <input type="text"
-                        class="form-control form-control-sm barcode-input"
+                        class="form-control form-control-sm barcode-input nouse-new-input"
                         name="nouse_new_barcode[]"
+                        data-confirmed="false"
+                        data-last-value=""
                         placeholder="请输入新条码">
+                    <div class="vialpos-hint new-code-hint" style="display:none;">
+                        <div class="hint-text"></div>
+                        <div class="mt-1">
+                            <button type="button" class="btn btn-sm btn-danger btn-confirm-replace">确认更换</button>
+                            <button type="button" class="btn btn-sm btn-secondary btn-reinput">重新输入</button>
+                        </div>
+                    </div>
                 </td>
                 <td>
                     <input type="text"
@@ -835,6 +855,7 @@
 
             return tr;
         }
+
 
         // ===== 孔位删除（delete）行 =====
         function createDeleteRow() {
@@ -1001,6 +1022,146 @@
                 alert('文件名未匹配或文件未解析成功，无法提交。');
             }
         });
+
+
+        // === 新增：当日已取样过的条码/实验号集合 ===
+        let sampledCodes = new Set();
+
+        function normCode(v) {
+            return (v || '').toString().trim().toUpperCase();
+        }
+
+        async function loadSampledCodes() {
+            try {
+                const resp = await fetch("{% url 'file_replace_sampled_codes' %}", { cache: "no-store" });
+                if (!resp.ok) return;
+                const data = await resp.json();
+                const arr = data.codes || [];
+                sampledCodes = new Set(arr.map(normCode).filter(Boolean));
+            } catch (e) {
+                // 拉取失败则不做限制（但后端仍会兜底校验）
+                sampledCodes = new Set();
+            }
+        }
+
+        function validateOneNewInput(inputEl) {
+            const v = normCode(inputEl.value);
+            const hint = inputEl.closest('td')?.querySelector('.new-code-hint');
+            if (!hint) return true;
+
+            const textEl = hint.querySelector('.hint-text');
+
+            // 输入变更：只要用户改了内容，就视为“未确认”
+            // （避免用户确认了A，后来改成B仍然被放行）
+            if (inputEl.dataset.lastValue !== v) {
+                inputEl.dataset.confirmed = 'false';
+                inputEl.dataset.lastValue = v;
+            }
+
+            // 空值：隐藏提示，放行
+            if (!v) {
+                hint.style.display = 'none';
+                if (textEl) textEl.textContent = '';
+                inputEl.dataset.confirmed = 'false';
+                return true;
+            }
+
+            // 命中重复：未确认 -> 显示确认条；已确认 -> 放行
+            if (sampledCodes.has(v)) {
+                if (inputEl.dataset.confirmed === 'true') {
+                    hint.style.display = 'none';
+                    return true;
+                }
+                if (textEl) textEl.textContent = '该条码/实验号今日已取样过，请确认是否继续替换。';
+                hint.style.display = 'block';
+                return false;
+            }
+
+            // 不重复：隐藏提示，放行
+            hint.style.display = 'none';
+            if (textEl) textEl.textContent = '';
+            inputEl.dataset.confirmed = 'false';
+            return true;
+        }
+
+
+        function validateAllNewInputs() {
+            const inputs = Array.from(document.querySelectorAll('.used-new-input, .nouse-new-input'));
+
+            for (const ipt of inputs) {
+                const panel = ipt.closest('#used-panel, #nouse-panel');
+                if (panel && panel.style.display === 'none') continue;
+
+                const v = normCode(ipt.value);
+                if (!v) continue;
+
+                // 只拦截：重复 + 未确认
+                if (sampledCodes.has(v) && ipt.dataset.confirmed !== 'true') {
+                    // 触发一次显示提示（确保用户点提交时也能看到确认条）
+                    validateOneNewInput(ipt);
+                    return false;
+                }
+            }
+            return true;
+        }
+
+
+
+        // 输入时即时校验（事件委托，兼容你动态 add row）
+        (async () => {
+            await loadSampledCodes();
+
+            document.body.addEventListener('input', (e) => {
+                const t = e.target;
+                if (!t) return;
+                if (t.classList.contains('used-new-input') || t.classList.contains('nouse-new-input')) {
+                    validateOneNewInput(t);
+                    validateAllNewInputs();
+                }
+            });
+
+            // ✅【新增】点击“确认更换”：标记该输入已确认，隐藏提示
+            document.body.addEventListener('click', (e) => {
+                const btn = e.target;
+                if (!btn.classList.contains('btn-confirm-replace')) return;
+
+                const hint = btn.closest('.new-code-hint');
+                const input = hint?.closest('td')?.querySelector('input.used-new-input, input.nouse-new-input');
+                if (!input) return;
+
+                input.dataset.confirmed = 'true';
+                hint.style.display = 'none';
+            });
+
+            // ✅【新增】点击“重新输入”：清空输入、取消确认、隐藏提示
+            document.body.addEventListener('click', (e) => {
+                const btn = e.target;
+                if (!btn.classList.contains('btn-reinput')) return;
+
+                const hint = btn.closest('.new-code-hint');
+                const input = hint?.closest('td')?.querySelector('input.used-new-input, input.nouse-new-input');
+                if (!input) return;
+
+                input.value = '';
+                input.dataset.confirmed = 'false';
+                input.dataset.lastValue = '';
+                hint.style.display = 'none';
+                input.focus();
+            });
+
+            // 提交前兜底拦截（你模板里 form 的 id 是 replace-form）
+            const form = document.getElementById('replace-form');
+            if (form) {
+                form.addEventListener('submit', (e) => {
+                    const ok = validateAllNewInputs();
+                    if (!ok) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                    }
+                });
+            }
+        })();
+
     });
 
 

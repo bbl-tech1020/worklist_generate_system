@@ -36,6 +36,7 @@ urlpatterns = [
     path('dashboard/file_download/', views.file_download, name='file_download'),  # 文件下载
     path('dashboard/file_download_history/', views.file_download_history, name='file_download_history'),  # 历史文件下载
     path('dashboard/file_replace/', login_required(views.file_replace), name='file_replace'), # 文件替换
+    path("dashboard/file_replace_sampled_codes/", views.file_replace_sampled_codes, name="file_replace_sampled_codes"),
     
     path(
         "dashboard/downloads/<str:platform>/<str:date_name>/<str:project>/<path:filename>",

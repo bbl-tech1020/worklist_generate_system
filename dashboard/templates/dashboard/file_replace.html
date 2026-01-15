@@ -130,6 +130,23 @@
         color: #6c757d;
         word-break: break-all;
     }
+
+    /* ===== station_list 映射提示（匹配到实验号）===== */
+    .station-hint {
+        font-size: 12px;
+        margin-top: 4px;
+        display: none;
+        color: #198754;
+        /* 默认绿色 */
+    }
+
+    .station-hint.show {
+        display: block;
+    }
+
+    .station-hint.err {
+        color: #dc3545;
+    }
 </style>
 
 <form method="post" enctype="multipart/form-data" id="replace-form">
@@ -244,7 +261,7 @@
             <div class="mt-3 submit-bar">
                 <div id="sampled-conflict-summary" class="alert alert-warning"
                     style="display:none; margin: 0 0 10px 0;"></div>
-                <button type="submit" class="btn btn-primary">提交</button>
+                <button type="submit" class="btn btn-primary" id="submit-btn">提交</button>
             </div>
 
         </div>
@@ -267,7 +284,46 @@
 
         // 控件引用
         const msgEl = document.getElementById('filename-check-msg');
-        const submitBtn = document.querySelector('#replace-form button[type="submit"]');
+        const submitBtn = document.getElementById('submit-btn');
+
+        const projectNameInput = document.getElementById('project-name');
+        const SPECIAL_PROJECTS = new Set(['AE', 'CA', 'PCA', 'ZMNS']); // ZMNs 统一大写
+        let isSpecialProject = false;
+
+        function extractProjectFromFilename(fname) {
+            // 匹配：_S2_25OHD_20260108_
+            const m = (fname || '').match(/_S\d+_([A-Za-z0-9]+)_(\d{8})_/);
+            return m ? (m[1] || '').trim() : '';
+        }
+
+        // station lookup cache（避免频繁请求）
+        const stationCache = new Map();
+
+        async function lookupStationExperiment(code) {
+            const c = (code || '').trim();
+            if (!c) return { ok: false };
+
+            if (stationCache.has(c)) return stationCache.get(c);
+
+            const url = `/dashboard/file_replace_station_lookup/?code=${encodeURIComponent(c)}`;
+            try {
+                const resp = await fetch(url, { method: 'GET' });
+                const data = await resp.json();
+                stationCache.set(c, data);
+                return data;
+            } catch (e) {
+                const data = { ok: false, code: c, message: 'fetch failed' };
+                stationCache.set(c, data);
+                return data;
+            }
+        }
+
+        function setStationHint(hintEl, text, ok) {
+            if (!hintEl) return;
+            hintEl.textContent = text || '';
+            hintEl.classList.toggle('show', !!text);
+            hintEl.classList.toggle('err', ok === false);
+        }
 
         // ✅ 统一控制：是否允许后续操作
         function setAllowed(ok, message, isError = true) {
@@ -282,7 +338,8 @@
 
             // 禁用/启用替换类型选择 + 提交按钮
             replaceReasonSelect.disabled = !ok;
-            submitBtn.disabled = !ok;
+            baseAllowed = !!ok;
+            updateSubmitState();
 
             // 不允许时：隐藏面板、清空表格，避免“继续填了再提交”
             if (!ok) {
@@ -292,6 +349,50 @@
                 usedTbody.innerHTML = '';
                 nouseTbody.innerHTML = '';
             }
+        }
+
+        // ===== 解析项目名，用于“特殊项目 station_list 映射” =====
+        const proj = extractProjectFromFilename(uploadedName);
+        projectNameInput.value = proj || '';
+        isSpecialProject = (proj || '').toUpperCase() && SPECIAL_PROJECTS.has((proj || '').toUpperCase());
+
+        // ===== 提交按钮统一校验：只要任一可见校验不通过，则禁止提交 =====
+        let baseAllowed = false; // 仅代表“文件名校验通过”，不代表整表可提交
+
+        function isElementVisible(el) {
+            return !!(el && el.offsetParent !== null);
+        }
+
+        function isInVisiblePanel(el) {
+            const panel = el.closest('#used-panel, #nouse-panel, #delete-panel');
+            if (!panel) return true;
+            return panel.style.display !== 'none';
+        }
+
+        function updateSubmitState() {
+            // 必须：文件名校验通过 + 文件解析成功 + 已选择替换操作
+            if (!baseAllowed || !parsedOK || !replaceReasonSelect.value) {
+                submitBtn.disabled = true;
+                return;
+            }
+
+            // 1) 任一输入框处于“invalid”状态（红框）-> 禁止提交
+            const invalidInputs = Array.from(document.querySelectorAll('#replace-form .vialpos-invalid'))
+                .filter(el => isElementVisible(el) && isInVisiblePanel(el));
+            if (invalidInputs.length > 0) {
+                submitBtn.disabled = true;
+                return;
+            }
+
+            // 2) 任一“新条码/实验号重复确认条”仍在显示（未确认）-> 禁止提交
+            const pendingConfirm = Array.from(document.querySelectorAll('#replace-form .new-code-hint'))
+                .filter(el => isElementVisible(el) && isInVisiblePanel(el) && (el.style.display !== 'none'));
+            if (pendingConfirm.length > 0) {
+                submitBtn.disabled = true;
+                return;
+            }
+
+            submitBtn.disabled = false;
         }
 
         // 条码 -> 孔位 的映射表
@@ -583,6 +684,7 @@
 
             computeUnusedVialPosSets(res.rows || []);   // ★ 新增：算出未用孔位集合
             parsedOK = true;
+            updateSubmitState();
         });
 
         // 根据用户选择的功能模块弹出不同的面板
@@ -613,6 +715,7 @@
                         class="form-control form-control-sm barcode-input used-old-input"
                         name="used_old_barcode[]"
                         placeholder="请输入当前条码或实验号">
+                <div class="station-hint used-old-station"></div>
                 <div class="vialpos-hint used-old-hint">条码/实验号不在上机列表中</div>
                 </td>
 
@@ -623,6 +726,7 @@
                         data-confirmed="false"
                         data-last-value=""
                         placeholder="请输入新条码或实验号">
+                    <div class="station-hint used-new-station"></div>
                     <div class="vialpos-hint new-code-hint" style="display:none;">
                         <div class="hint-text"></div>
                         <div class="mt-1">
@@ -648,10 +752,12 @@
             function clearError(el, hintEl) {
                 el.classList.remove('vialpos-invalid');
                 hintEl.classList.remove('show');
+                updateSubmitState();
             }
             function setError(el, hintEl) {
                 el.classList.add('vialpos-invalid');
                 hintEl.classList.add('show');
+                updateSubmitState();
             }
 
             function finalizeVialInputFormat() {
@@ -760,6 +866,7 @@
                         data-confirmed="false"
                         data-last-value=""
                         placeholder="请输入新条码">
+                    <div class="station-hint used-new-station"></div>
                     <div class="vialpos-hint new-code-hint" style="display:none;">
                         <div class="hint-text"></div>
                         <div class="mt-1">
@@ -792,11 +899,13 @@
                 hintEl.classList.toggle('ok', !!ok);
                 hintEl.classList.toggle('err', !ok);
                 vialInput.classList.toggle('vialpos-invalid', !ok);
+                updateSubmitState();
             }
             function hideHint() {
                 hintEl.textContent = '';
                 hintEl.classList.remove('show', 'ok', 'err');
                 vialInput.classList.remove('vialpos-invalid');
+                updateSubmitState();
             }
 
             // ★ 即时提示：输入孔位时就判断是否为“未用孔位”
@@ -893,11 +1002,13 @@
             function clearError(el, hintEl) {
                 el.classList.remove('vialpos-invalid');
                 hintEl.classList.remove('show');
+                updateSubmitState();
             }
             function setError(el, hintEl, msg) {
                 if (msg) hintEl.textContent = msg;
                 el.classList.add('vialpos-invalid');
                 hintEl.classList.add('show');
+                updateSubmitState();
             }
 
             function finalizeVialInputFormat() {
@@ -1013,6 +1124,8 @@
                 nousePanel.style.display = 'none';
                 deletePanel.style.display = 'none';
             }
+
+            updateSubmitState();
         });
 
 
@@ -1074,11 +1187,13 @@
                 }
                 if (textEl) textEl.textContent = '该条码/实验号今日已取样过，请确认是否继续替换。';
                 hint.style.display = 'block';
+                updateSubmitState();
                 return false;
             }
 
             // 不重复：隐藏提示，放行
             hint.style.display = 'none';
+            updateSubmitState();
             if (textEl) textEl.textContent = '';
             inputEl.dataset.confirmed = 'false';
             return true;
@@ -1131,6 +1246,7 @@
 
                 input.dataset.confirmed = 'true';
                 hint.style.display = 'none';
+                updateSubmitState();
             });
 
             // ✅【新增】点击“重新输入”：清空输入、取消确认、隐藏提示
@@ -1146,6 +1262,7 @@
                 input.dataset.confirmed = 'false';
                 input.dataset.lastValue = '';
                 hint.style.display = 'none';
+                updateSubmitState();
                 input.focus();
             });
 

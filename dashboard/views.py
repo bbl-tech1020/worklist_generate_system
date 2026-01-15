@@ -566,6 +566,64 @@ def file_sort_key(fname: str):
 
 HISTORY_DIRNAME = "历史文件"
 STATION_DIRNAME = "岗位清单"
+
+# ===== 特殊项目：需要用 station_list.json 做“主条码 -> 实验号”映射 =====
+SPECIAL_PROJECTS = {"AE", "CA", "PCA", "ZMNS"}  # ZMNs 统一用大写比较
+
+# 从 OnboardingList 文件名中提取项目名，例如：
+# X6_OnboardingList_FXS-YZ04_S2_25OHD_20260108_060259_X6_GZ.txt -> 25OHD
+_PROJECT_RE = re.compile(r"_S\d+_([A-Za-z0-9]+)_(\d{8})_")
+
+def _extract_project_from_onboarding_filename(fname: str) -> str:
+    s = (fname or "").strip()
+    m = _PROJECT_RE.search(s)
+    return (m.group(1) or "").strip() if m else ""
+
+def _load_station_list_for_today() -> dict:
+    """
+    读取：DOWNLOAD_ROOT/岗位清单/{YYYY-MM-DD}/station_list.json
+    返回：station_list["主条码->实验号列表"]（若不存在则返回空 dict）
+    """
+    today_str = timezone.localdate().strftime("%Y-%m-%d")
+    fpath = os.path.join(settings.DOWNLOAD_ROOT, STATION_DIRNAME, today_str, "station_list.json")
+    if not os.path.exists(fpath):
+        return {}
+
+    try:
+        with open(fpath, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return {}
+
+    mapping = data.get("主条码->实验号列表") or {}
+    return mapping if isinstance(mapping, dict) else {}
+
+
+def _map_to_station_experiment(value: str, station_map: dict) -> tuple[bool, str, bool]:
+    """
+    无论 value 是什么，都尝试在 station_map 查实验号：
+    - 查到：mapped = 第一个实验号，found=True
+    - 查不到：mapped = 原输入 value，found=False
+    规则：永远不阻断（ok 永远 True）
+    返回：(ok, mapped_value, found)
+    """
+    v = (value or "").strip()
+    if not v:
+        return True, "", False
+
+    exp_list = station_map.get(v)
+    if isinstance(exp_list, list) and exp_list:
+        mapped = str(exp_list[0]).strip()
+        return True, mapped, True
+
+    # 查不到：用原输入替换（不阻断）
+    return True, v, False
+
+
+
+
+
+
 def file_download(request):
     """
     展示 downloads 目录结构。
@@ -875,6 +933,39 @@ def file_replace_sampled_codes(request):
         "date": timezone.localdate().strftime("%Y-%m-%d"),
         "codes": codes,
     })
+
+
+@require_GET
+def file_replace_station_lookup(request):
+    """
+    前端用：输入主条码 -> 返回实验号（来自 岗位清单/{today}/station_list.json）
+    返回格式：
+      { ok: true, code: "...", experiments: ["AE0001", ...], experiment: "AE0001" }
+      { ok: false, code: "...", message: "..." }
+    """
+    code = (request.GET.get("code") or "").strip()
+    if not code:
+        return JsonResponse({"ok": False, "code": "", "message": "missing code"})
+
+    station_map = _load_station_list_for_today()
+    exp_list = station_map.get(code)
+
+    if not (isinstance(exp_list, list) and exp_list):
+        return JsonResponse({
+            "ok": False,
+            "code": code,
+            "experiments": [],
+            "message": "not found"
+        })
+
+    exp_list = [str(x).strip() for x in exp_list if str(x).strip()]
+    return JsonResponse({
+        "ok": True,
+        "code": code,
+        "experiments": exp_list,
+        "experiment": exp_list[0] if exp_list else ""
+    })
+
 
 
 # 收集当前‘文件下载’页面中已有的上机列表文件名，用于后续匹配和替换
@@ -1237,6 +1328,10 @@ def file_replace(request):
 
         uploaded_name = Path(upload.name).name
 
+        project_name = _extract_project_from_onboarding_filename(uploaded_name)
+        is_special_project = project_name.strip().upper() in SPECIAL_PROJECTS
+        station_map = _load_station_list_for_today() if is_special_project else {}
+
         root = settings.DOWNLOAD_ROOT
         os.makedirs(root, exist_ok=True)
 
@@ -1275,6 +1370,16 @@ def file_replace(request):
                         "message": "存在未填写的新条码/实验号，请补全后再提交。"
                     })
                 entries.append({"vialpos": vp, "old": old, "new": new})
+
+            # ===== 特殊项目：条码/实验号 -> station_list 实验号 映射（后端兜底；查不到也放行）=====
+            if is_special_project:
+                for e in entries:
+                    _, mapped_old, found_old = _map_to_station_experiment(e.get("old", ""), station_map)
+                    _, mapped_new, found_new = _map_to_station_experiment(e.get("new", ""), station_map)
+
+                    # 查到则替换成实验号；查不到则保留原输入（mapped_* 已经是原值）
+                    e["old"] = mapped_old
+                    e["new"] = mapped_new
 
             if not entries:
                 return render(request, "dashboard/error.html", {
@@ -1403,6 +1508,12 @@ def file_replace(request):
                         "message": "存在未填写的孔位（VialPos），请补全后再提交。"
                     })
                 entries.append({"new": new_code, "vialpos": vp})
+            
+            # ===== 特殊项目：条码/实验号 -> station_list 实验号 映射（后端兜底；查不到也放行）=====
+            if is_special_project:
+                for e in entries:
+                    _, mapped_new, found_new = _map_to_station_experiment(e.get("new", ""), station_map)
+                    e["new"] = mapped_new
 
             if not entries:
                 return render(request, "dashboard/error.html", {

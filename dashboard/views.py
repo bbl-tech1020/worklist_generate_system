@@ -586,6 +586,12 @@ def _load_station_list_for_today() -> dict:
     """
     today_str = timezone.localdate().strftime("%Y-%m-%d")
     fpath = os.path.join(settings.DOWNLOAD_ROOT, STATION_DIRNAME, today_str, "station_list.json")
+
+    # ===== 临时排查用：打印实际查找路径与是否存在 =====
+    print("station_list lookup path =", fpath)
+    print("exists =", os.path.exists(fpath))
+    # ==========================================
+    
     if not os.path.exists(fpath):
         return {}
 

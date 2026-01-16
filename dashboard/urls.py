@@ -87,6 +87,8 @@ urlpatterns = [
     path('dashboard/TecanIngest/processed/manage/',  views_TecanIngest.tecan_manage_processed_file,  name='TecanProcessedManage'),
     path('dashboard/TecanIngest/processed/download/',views_TecanIngest.tecan_download_processed_file,name='TecanProcessedDownload'),
 
+    # 上机列表替换
+    path("dashboard/file_replace_station_lookup/", views.file_replace_station_lookup, name="file_replace_station_lookup"),
 
     path("dashboard/manual/", views.user_manual, name="user_manual"),
 ]

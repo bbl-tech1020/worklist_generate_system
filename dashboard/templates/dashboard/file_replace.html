@@ -147,6 +147,12 @@
     .station-hint.err {
         color: #dc3545;
     }
+
+    /* station_list 映射失败：仅标红提示，不影响提交 */
+    .station-miss {
+        border-color: #dc3545 !important;
+        box-shadow: 0 0 0 .2rem rgba(220, 53, 69, .15);
+    }
 </style>
 
 <form method="post" enctype="multipart/form-data" id="replace-form">
@@ -286,6 +292,7 @@
         const msgEl = document.getElementById('filename-check-msg');
         const submitBtn = document.getElementById('submit-btn');
 
+        let stationDate = '';
         const projectNameInput = document.getElementById('project-name');
         const SPECIAL_PROJECTS = new Set(['AE', 'CA', 'PCA', 'ZMNS']); // ZMNs 统一大写
         let isSpecialProject = false;
@@ -305,7 +312,8 @@
 
             if (stationCache.has(c)) return stationCache.get(c);
 
-            const url = `/dashboard/file_replace_station_lookup/?code=${encodeURIComponent(c)}`;
+            const url = `{% url 'file_replace_station_lookup' %}?code=${encodeURIComponent(c)}&date=${encodeURIComponent(stationDate || '')}`;
+
             try {
                 const resp = await fetch(url, { method: 'GET' });
                 const data = await resp.json();
@@ -324,6 +332,42 @@
             hintEl.classList.toggle('show', !!text);
             hintEl.classList.toggle('err', ok === false);
         }
+
+        // ===== station_list 实时映射：输入任意内容都尝试查实验号 =====
+        async function handleStationMapping(inputEl, hintEl) {
+            if (!hintEl || !inputEl) return;
+
+            // 非特殊项目：不做任何提示
+            if (!isSpecialProject) {
+                inputEl.dataset.mappedExp = '';
+                inputEl.classList.remove('station-miss');
+                setStationHint(hintEl, '', true);
+                return;
+            }
+
+            const raw = (inputEl.value || '').trim();
+            inputEl.dataset.mappedExp = '';
+            inputEl.classList.remove('station-miss');
+
+            if (!raw) {
+                setStationHint(hintEl, '', true);
+                return;
+            }
+
+            // 不论输入是什么，都尝试查 station_list
+            const data = await lookupStationExperiment(raw);
+
+            if (data && data.ok && data.experiment) {
+                inputEl.dataset.mappedExp = data.experiment; // 查到：提交时可覆盖
+                setStationHint(hintEl, `匹配实验号：${data.experiment}`, true);
+                return;
+            }
+
+            // 查不到：提示 + 红框，但不影响提交（关键：不要加 vialpos-invalid）
+            inputEl.classList.add('station-miss');
+            setStationHint(hintEl, `岗位清单未找到实验号，将直接使用输入值替换`, false);
+        }
+
 
         // ✅ 统一控制：是否允许后续操作
         function setAllowed(ok, message, isError = true) {
@@ -351,10 +395,6 @@
             }
         }
 
-        // ===== 解析项目名，用于“特殊项目 station_list 映射” =====
-        const proj = extractProjectFromFilename(uploadedName);
-        projectNameInput.value = proj || '';
-        isSpecialProject = (proj || '').toUpperCase() && SPECIAL_PROJECTS.has((proj || '').toUpperCase());
 
         // ===== 提交按钮统一校验：只要任一可见校验不通过，则禁止提交 =====
         let baseAllowed = false; // 仅代表“文件名校验通过”，不代表整表可提交
@@ -433,14 +473,6 @@
             return parts.length ? parts[parts.length - 1] : s;
         }
 
-        // ====== 96孔位工具：1~96 <-> A1~H12 ======
-        function numToWell(n) {
-            const num = Number(n);
-            if (!Number.isInteger(num) || num < 1 || num > 96) return null;
-            const row = String.fromCharCode('A'.charCodeAt(0) + Math.floor((num - 1) / 12));
-            const col = ((num - 1) % 12) + 1;
-            return `${row}${col}`; // e.g. A1
-        }
 
         function wellToNum(well) {
             const s = (well || '').trim().toUpperCase();
@@ -486,7 +518,7 @@
             return { ok: true, num: n, well: numToWell(n), kind: 'well' };
         }
 
-
+        // ====== 96孔位工具：1~96 <-> A1~H12 ======
         function numToWell(num) {
             const n = parseInt(num, 10);
             if (!Number.isFinite(n) || n < 1 || n > 96) return '';
@@ -645,6 +677,12 @@
 
             const uploadedName = (file.name || '').trim();
 
+            // ===== 解析项目名，用于“特殊项目 station_list 映射” =====
+            const proj = extractProjectFromFilename(uploadedName);
+            projectNameInput.value = proj || '';
+            isSpecialProject = (proj || '').toUpperCase() && SPECIAL_PROJECTS.has((proj || '').toUpperCase());
+            stationCache.clear();  // 换文件时清缓存（避免误命中）
+
             // ✅ 1) 文件名必须在“文件下载页上机列表文件名集合”中
             if (!existingNames.has(uploadedName)) {
                 setAllowed(false, `文件名不匹配：文件下载页未找到同名上机列表文件【${uploadedName}】；请确认文件名需完全一致。`);
@@ -726,6 +764,7 @@
                         data-confirmed="false"
                         data-last-value=""
                         placeholder="请输入新条码或实验号">
+
                     <div class="station-hint used-new-station"></div>
                     <div class="vialpos-hint new-code-hint" style="display:none;">
                         <div class="hint-text"></div>
@@ -773,18 +812,33 @@
 
 
             // ===== A) 输入“当前条码/实验号” -> 匹配孔位 =====
-            oldInput.addEventListener('input', () => {
-                const code = oldInput.value.trim();
+            oldInput.addEventListener('input', async () => {
+                // ✅ 特殊项目：先尝试 station_list 映射（异步），确保 dataset.mappedExp 已更新
+                const oldStationEl = tr.querySelector('.used-old-station');
+                await handleStationMapping(oldInput, oldStationEl);
+
+                const raw = (oldInput.value || '').trim();
+                const mapped = (oldInput.dataset.mappedExp || '').trim(); // station_list 匹配到的实验号（可能为空）
 
                 // 清理状态
                 clearError(oldInput, oldHint);
                 clearError(vialInput, vialHint);
                 vialInput.value = '';
 
-                if (!code) return;
+                if (!raw) return;
                 if (!parsedOK) return;
 
-                const vialPosClean = barcodeToVialPos.get(code);
+                // ✅ 关键修改：
+                // 特殊项目下，只要 raw 或 mapped 任意一个在上机列表中，即视为存在
+                // 同时做大小写兼容（你说明里说“不区分大小写”）
+                const rawU = raw.toUpperCase();
+                const mappedU = mapped.toUpperCase();
+
+                const vialPosClean =
+                    barcodeToVialPos.get(raw) ||
+                    barcodeToVialPos.get(rawU) ||
+                    (mapped ? (barcodeToVialPos.get(mapped) || barcodeToVialPos.get(mappedU)) : null);
+
                 if (!vialPosClean) {
                     setError(oldInput, oldHint);
                     return;
@@ -793,6 +847,7 @@
                 // ✅ 显示为 A1(1)...H12(96)
                 vialInput.value = formatVialPosDisplay(vialPosClean);
             });
+
 
             // ===== B) 输入“孔位” -> 反查条码/实验号 =====
             vialInput.addEventListener('input', () => {
@@ -866,7 +921,8 @@
                         data-confirmed="false"
                         data-last-value=""
                         placeholder="请输入新条码">
-                    <div class="station-hint used-new-station"></div>
+                    <div class="station-hint nouse-new-station"></div>
+
                     <div class="vialpos-hint new-code-hint" style="display:none;">
                         <div class="hint-text"></div>
                         <div class="mt-1">
@@ -1229,11 +1285,26 @@
             document.body.addEventListener('input', (e) => {
                 const t = e.target;
                 if (!t) return;
-                if (t.classList.contains('used-new-input') || t.classList.contains('nouse-new-input')) {
+
+                if (t.classList.contains('used-new-input')) {
+                    // ✅ 新增：实时查岗位清单并显示匹配实验号
+                    const hintEl = t.closest('td')?.querySelector('.used-new-station');
+                    handleStationMapping(t, hintEl);
+
+                    validateOneNewInput(t);
+                    validateAllNewInputs();
+                }
+
+                if (t.classList.contains('nouse-new-input')) {
+                    // ✅ 新增：实时查岗位清单并显示匹配实验号
+                    const hintEl = t.closest('td')?.querySelector('.nouse-new-station');
+                    handleStationMapping(t, hintEl);
+
                     validateOneNewInput(t);
                     validateAllNewInputs();
                 }
             });
+
 
             // ✅【新增】点击“确认更换”：标记该输入已确认，隐藏提示
             document.body.addEventListener('click', (e) => {

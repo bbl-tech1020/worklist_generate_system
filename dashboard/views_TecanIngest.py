@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os, re, uuid, io
-from datetime import datetime
+from datetime import date,datetime
 from typing import Dict, List, Tuple, Set
 from collections import defaultdict, deque
 
@@ -19,6 +19,7 @@ import json
 import pandas as pd
 import re
 from icecream import ic
+
 
 pd.set_option('display.max_columns', None)
 pd.set_option('display.width', 0)  # 自动适配控制台宽度
@@ -946,12 +947,12 @@ def _locator_coord_for_plate(plate_number: int, start_offset: int) -> tuple[str,
 
 
 def _apply_locator_shift_for_clinicals(
-    clinical_cells: list[tuple[str, int, str]],
+    clinical_cells: list[tuple[str, int, str, str]],  # ← ★ 添加第4个元素：barcode
     plate_number: int,
     start_offset: int,
-) -> list[tuple[str, int, str]]:
+) -> list[tuple[str, int, str, str]]:  # ← ★ 返回值也添加 barcode
     """
-    按‘定位孔随板号’规则对临床样本做位移（沿定位孔所在列‘纵向’）。
+    按'定位孔随板号'规则对临床样本做位移（沿定位孔所在列'纵向'）。
     - base_col = 3 + floor((plate-1)/8) + (start_offset-1)
     - k = (plate-1) % 8   # 0..7 -> A..H
     处理：
@@ -962,12 +963,12 @@ def _apply_locator_shift_for_clinicals(
     base_col = 3 + ((max(1, plate_number) - 1) // 8) + (max(1, start_offset) - 1)
     k = (max(1, plate_number) - 1) % 8  # 0..7
 
-    # 建索引：((row, col) -> text)
-    mp: dict[tuple[str, int], str] = {}
-    for r, c, s in clinical_cells:
-        mp[(r, c)] = s
+    # ★ 修改：建索引时同时存储 (text, barcode)
+    mp: dict[tuple[str, int], tuple[str, str]] = {}
+    for r, c, s, bc in clinical_cells:
+        mp[(r, c)] = (s, bc)  # (实验号, 条码)
 
-    # 纵向序中的“前一个孔”：A→H 且列-1；其余行向上同列
+    # 纵向序中的"前一个孔"：A→H 且列-1；其余行向上同列
     def vertical_prev(row_letter: str, col_num: int) -> tuple[str, int]:
         if row_letter != "A":
             prev_row = _PLATE_ROWS[_PLATE_ROWS.index(row_letter) - 1]
@@ -992,9 +993,10 @@ def _apply_locator_shift_for_clinicals(
 
     # 回写为列表
     out = []
-    for (r, c), s in mp.items():
-        out.append((r, c, s))
+    for (r, c), (s, bc) in mp.items():
+        out.append((r, c, s, bc))  # ← ★ 返回4元组
     return out
+
 
 
 # 获取 QC 名称表（不再读 mapping_file）
@@ -1297,10 +1299,10 @@ def _linear_fill_vertical_from_A1(n: int) -> list[tuple[str, int]]:
 
 
 # 根据 CSV（processed 文件）+ station 映射，生成“临床样品”落位
-def _build_clinical_cells_from_csv(csv_abs_path: str, start_offset: int, station_map: dict[str, str]) -> list[tuple[str,int,str]]:
+def _build_clinical_cells_from_csv(csv_abs_path: str, start_offset: int, station_map: dict[str, str]) -> list[tuple[str,int,str,str]]:
     """
-    返回 [(row_letter, col_num, sample_name), ...]
-    - area 映射：20->(4,5), 21->(6,7), 22->(8,9), 23->(10,11), 24->(12,13)
+    返回 [(row_letter, col_num, sample_name, barcode), ...]  ← ★ 修改返回类型
+    - area 映射：20->(4,5), 21->(6,7), 22->(7,8), 23->(9,10), 24->(11,12)
     - 列整体偏移：每个列号 += (start_offset-1)
     - pos 1..8 左列，9..16 右列；行号 6..13 （A..H）
     """
@@ -1317,7 +1319,7 @@ def _build_clinical_cells_from_csv(csv_abs_path: str, start_offset: int, station
             continue
         area = parts[0] if len(parts) >= 1 else ""
         pos  = int(re.search(r"(\d+)", parts[2]).group(1)) if len(parts) >= 3 and re.search(r"(\d+)", parts[2]) else None
-        srctube = parts[-1] if len(parts) >= 1 else ""
+        srctube = parts[-1] if len(parts) >= 1 else ""  # ← 原始条码（如 01000795927-01）
         if not area or pos is None: 
             continue
         if "$" in srctube:  # 含 $ 忽略
@@ -1327,13 +1329,19 @@ def _build_clinical_cells_from_csv(csv_abs_path: str, start_offset: int, station
         col_pair = base_area_map[area]
         left_col, right_col = col_pair[0] + (start_offset-1), col_pair[1] + (start_offset-1)
         use_col = left_col if pos <= 8 else right_col
-        # 行 A..H -> 6..13（Excel行号），但我们最后在网页渲染用 A..H + 1..12 逻辑，所以只要 A..H 座标
         row_letter = _PLATE_ROWS[(pos-1) % 8]  # 1->A, 8->H, 9->A...
+        
+        # 通过条码查找实验号
         sample_name = station_map.get(srctube, "")
+        
+        # ★ 修改：未匹配时设置 "No match"（与 NIMBUS 对齐）
         if not sample_name:
-            sample_name = ""  # 允许空（按 R）
-        rows.append((row_letter, use_col, sample_name))
+            sample_name = "No match"  # ← 改为 "No match"
+        
+        # ★ 修改：同时保存实验号和原始条码
+        rows.append((row_letter, use_col, sample_name, srctube))  # ← 新增第4个元素：条码
     return rows
+
 
 
 # 组装“工作清单数据结构”并渲染页面
@@ -1475,17 +1483,30 @@ def _render_tecan_process_result(
     clinical_cells = []
     try:
         clinical_cells = _build_clinical_cells_from_csv(csv_abs_path, start_offset, station_map)
-        clinical_cells = [{"row": r, "col": c, "text": s or ""} for (r, c, s) in clinical_cells]
+        # ★ 修改：解包4个元素（row, col, sample_name, barcode）
+        clinical_cells = [
+            {"row": r, "col": c, "text": s or "", "barcode": bc or ""} 
+            for (r, c, s, bc) in clinical_cells
+        ]
     except Exception:
         clinical_cells = []
 
     # === 新增：按板号规则对“临床样本”位移（A 行左移 + 首个挪到前一孔）===
     try:
-        raw_list = [(d["row"], d["col"], d["text"]) for d in clinical_cells]
+        # ★ 正确做法：直接传入4元组，位移函数内部同时处理条码
+        raw_list = [(d["row"], d["col"], d["text"], d.get("barcode", "")) for d in clinical_cells]
         shifted = _apply_locator_shift_for_clinicals(raw_list, plate_number, start_offset)
-        clinical_cells = [{"row": r, "col": c, "text": s} for (r, c, s) in shifted]
-    except Exception:
+        
+        # ★ shifted 已经是4元组：(row, col, sample_name, barcode)
+        clinical_cells = [
+            {"row": r, "col": c, "text": s, "barcode": bc} 
+            for (r, c, s, bc) in shifted
+        ]
+    except Exception as e:
+        # 调试用：打印异常信息
+        print(f"位移失败: {e}")
         pass
+
 
     # 5) 组装 96 孔板矩阵 -> 二级字典 grid[row][col]
     grid: dict[str, dict[int, dict]] = {r: {c: {"std_qc": None, "sample": None} for c in _PLATE_COLS} for r in _PLATE_ROWS}
@@ -1537,16 +1558,32 @@ def _render_tecan_process_result(
         d["std_qc_text"] = std_qc.get("text") or ""
         d["sample_text"] = sample.get("text") or ""
 
+        # ======== 新增：分割条码为主条码和子条码（与 NIMBUS/Starlet 对齐） ========
         # 若是定位孔，带上显示名（默认 "X{plate}" 已在 grid 写入）
         if d["locator"]:
             d["locator_warm"] = (cell or {}).get("locator_warm") or "Locator"
-            # 定位孔一般不当作条码参与映射，故不设置 d["barcode"]
+
         else:
-            # 原有条码赋值逻辑（STD/QC 名称 or 样本名）
+            # ★ 修改：优先使用 sample 中的 barcode 字段
             if d["std_qc_text"]:
-                d["barcode"] = d["std_qc_text"]
-            if d["sample_text"] and not d["barcode"]:
-                d["barcode"] = d["sample_text"]
+                d["barcode"] = d["std_qc_text"]  # STD/QC 用名称作为条码
+            elif sample.get("barcode"):
+                d["barcode"] = sample.get("barcode")  # ← ★ 临床样本用真实条码
+            elif d["sample_text"]:
+                d["barcode"] = d["sample_text"]  # 兜底：无条码时用实验号
+
+        # ★ 新增：分割 barcode 为 cut_barcode（主码）和 sub_barcode（子码）
+        full_barcode = d.get("barcode", "")
+        if full_barcode and "-" in str(full_barcode):
+            # 格式：01000795927-01 → 主码:01000795927, 子码:01
+            parts = str(full_barcode).split("-", 1)
+            d["cut_barcode"] = parts[0]  # 主条码
+            d["sub_barcode"] = "-" + parts[1] if len(parts) > 1 and parts[1] else ""  # ★ 子条码前加 '-'
+        else:
+            # 无子码的情况（如 STD/QC 名称）
+            d["cut_barcode"] = full_barcode
+            d["sub_barcode"] = ""
+        # ======== 分割完成 ========
 
         # match_sample 保持原逻辑
         if d.get("match_sample", "") == "" and d["std_qc_text"]:
@@ -1777,6 +1814,61 @@ def _render_tecan_process_result(
         "today_str": today_str,
     }
 
+    # ======== 新增：写入 SampleRecord 历史记录（供每日标本统计功能使用） ========
+    # 确定记录日期（当天）
+    record_date = date.today()
+    
+    # 清理同日同项目同板号的旧记录（避免重复提交时累积）
+    plate_no_str = f"X{plate_number}"
+    SampleRecord.objects.filter(
+        project_name=project_name,
+        record_date=record_date,
+        plate_no=plate_no_str
+    ).delete()
+
+    # 遍历 worksheet_table（96孔板数据），逐孔写入
+    for row in worksheet_table:
+        for cell in row:
+            if not cell:
+                continue
+            
+            well_str = cell.get("well_str", "")  # 如 "A1", "H12"
+            if not well_str:
+                continue
+            
+            # 提取样本名（优先 match_sample，其次 std_qc_text，再次 sample_text）
+            sample_name = (
+                cell.get("match_sample") or 
+                cell.get("std_qc_text") or 
+                cell.get("sample_text") or 
+                ""
+            ).strip()
+            
+            # 提取条码（临床样本的条码即为样本名；STD/QC的条码也是其名称）
+            barcode = (cell.get("barcode") or "").strip()
+            
+            # 跳过空孔（既无样本名也无条码）
+            if not sample_name and not barcode:
+                continue
+            
+            # 定位孔标记（可选：如果希望在统计中过滤定位孔，可记录特殊标志）
+            error_info = ""
+            if cell.get("locator"):
+                error_info = "locator"  # 标记为定位孔
+            
+            # 写入数据库
+            SampleRecord.objects.update_or_create(
+                project_name=project_name,
+                record_date=record_date,
+                plate_no=plate_no_str,
+                well_str=well_str,
+                defaults={
+                    "sample_name": sample_name,
+                    "barcode": barcode,
+                    "error_info": error_info,
+                }
+            )
+
     # 兼容 NIMBUS 旧逻辑（有些视图会兜底取 export_payload）
     request.session["export_payload"] = {
         "project_name": project_name,
@@ -1790,7 +1882,6 @@ def _render_tecan_process_result(
         "error_rows": error_rows,
         "header": header_meta,
     }
-
 
     return render(request, "dashboard/ProcessResult_TECAN.html",locals())
 

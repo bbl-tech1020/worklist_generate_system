@@ -10,7 +10,8 @@
         /* 关键：横向页面 + 窄边距 */
         @page {
             size: A4 landscape;
-            margin: 2mm 3mm;   /* 适度页边距，保证内容装下一页 */
+            margin: 2mm 3mm;
+            /* 适度页边距，保证内容装下一页 */
         }
 
         /* 每个 .pdf-page 占一整页 */
@@ -119,7 +120,7 @@
         td,
         th {
             page-break-inside: avoid;
-            
+
         }
 
         /* 备注等小表（报错信息、说明） */
@@ -154,6 +155,24 @@
             font-weight: 700;
         }
     </style>
+
+    <!-- ★ Tecan 专用样式：条件性添加整个 style 块 -->
+    {% if platform == "Tecan" %}
+    <style>
+        .table-worksheet .cell {
+            height: 16mm !important;
+            /* 覆盖默认的 11mm */
+        }
+
+        .SampleName {
+            font-size: 9pt !important;
+        }
+
+        .Barcode {
+            font-size: 7pt !important;
+        }
+    </style>
+    {% endif %}
 </head>
 
 <body>
@@ -177,7 +196,8 @@
 
                     <th colspan="2" style="text-align:left;">板号：{{ header.plate_no }}</th>
 
-                    <th colspan="3" style="text-align:left;">检测仪器编号：{{ header.instrument_num }} - {{ header.systerm_num }}</th>
+                    <th colspan="3" style="text-align:left;">检测仪器编号：{{ header.instrument_num }} - {{ header.systerm_num
+                        }}</th>
 
                     <th colspan="2" style="text-align:left;">上机盘号：</th>
                     <th colspan="2" style="text-align:left;">{{ header.injection_plate }}</th>
@@ -185,7 +205,7 @@
                 <tr class="maintext">
                     <th style="width: 12mm;"></th>
                     {% for n in nums %}
-                        <th style="text-align:center;">{{ n }}</th>
+                    <th style="text-align:center;">{{ n }}</th>
                     {% endfor %}
                 </tr>
             </thead>
@@ -199,39 +219,39 @@
                         <div class="locator">{{ cell.locator_warm }}</div>
                         {% else %}
                         <span class="hole">{{ cell.letter }}{{ cell.num }} ({{ cell.index }})</span>
-                        
+
                         {% if cell.flag_suck == "1" %}<span class="icon-flag">▲</span>{% endif %}
                         {% if cell.flag_dispense == "1" %}<span class="icon-flag">▼</span>{% endif %}
 
                         <!-- 旗帜：warm 为 1/4/16384 -->
                         {% if cell.warm == "1" or cell.warm == "4" or cell.warm == "16384" %}
-                            <span class="icon-flag">⚑</span>
+                        <span class="icon-flag">⚑</span>
                         {% endif %}
 
                         <!-- 条码一对多：◆ -->
                         {% if cell.dup_barcode == "TRUE" %}
-                            <span class="icon-cubes">◆</span>
+                        <span class="icon-cubes">◆</span>
                         {% else %}
-                            <span class="icon-cubes"><br></span>
+                        <span class="icon-cubes"><br></span>
                         {% endif %}
 
                         <!-- 条码在移液清单中重复且一对多：★  -->
                         {% if cell.dup_barcode_sample == "TRUE" %}
-                            <span class="icon-star">★</span>
+                        <span class="icon-star">★</span>
                         {% endif %}
 
                         {% if platform == 'Starlet' %}
-                            {% if cell.cut_barcode == "NOTUBE" %}
+                        {% if cell.cut_barcode == "NOTUBE" %}
 
-                            {% else %}
-                                <div class="SampleName">{{ cell.match_sample }}</div>
-                                <div class="Barcode">{{ cell.cut_barcode }}</div>
-                                <div class="Barcode">{{ cell.sub_barcode }}</div>
-                            {% endif %}
                         {% else %}
-                            <div class="SampleName">{{ cell.match_sample }}</div>
-                            <div class="Barcode">{{ cell.cut_barcode }}</div>
-                            <div class="Barcode">{{ cell.sub_barcode }}</div>
+                        <div class="SampleName">{{ cell.match_sample }}</div>
+                        <div class="Barcode">{{ cell.cut_barcode }}</div>
+                        <div class="Barcode">{{ cell.sub_barcode }}</div>
+                        {% endif %}
+                        {% else %}
+                        <div class="SampleName">{{ cell.match_sample }}</div>
+                        <div class="Barcode">{{ cell.cut_barcode }}</div>
+                        <div class="Barcode">{{ cell.sub_barcode }}</div>
                         {% endif %}
                         {% endif %}
                     </td>
@@ -245,22 +265,22 @@
                     <th colspan="2">手工加样人员：</th>
                     <th colspan="3">加样情况审核人员：</th>
                     {% if platform == 'Starlet' %}
-                        <th colspan="5">备注：
-                            <span class="icon-flag">▲</span> 表示吸液报错，孔位可用；
-                            <span class="icon-flag">▼</span> 表示打液报错，孔位不可用；
-                            <br>
-                            <span class="icon-cubes">◆</span> 表示该条码有多个实验号；
-                            <span class="icon-star">★</span> 表示该条码在移液清单中有重复，且对应多个实验号。
-                        </th>
+                    <th colspan="5">备注：
+                        <span class="icon-flag">▲</span> 表示吸液报错，孔位可用；
+                        <span class="icon-flag">▼</span> 表示打液报错，孔位不可用；
+                        <br>
+                        <span class="icon-cubes">◆</span> 表示该条码有多个实验号；
+                        <span class="icon-star">★</span> 表示该条码在移液清单中有重复，且对应多个实验号。
+                    </th>
                     {% else %}
-                        
-                        <th colspan="5">备注：
-                            {% if platform != "Tecan" %}
-                                <span class="icon-flag">⚑</span> 表示移液有问题；
-                                <span class="icon-cubes">◆</span> 表示该条码有多个实验号；
-                                <span class="icon-star">★</span> 表示该条码在移液清单中有重复，且对应多个实验号。
-                            {% endif %}
-                        </th>
+
+                    <th colspan="5">备注：
+                        {% if platform != "Tecan" %}
+                        <span class="icon-flag">⚑</span> 表示移液有问题；
+                        <span class="icon-cubes">◆</span> 表示该条码有多个实验号；
+                        <span class="icon-star">★</span> 表示该条码在移液清单中有重复，且对应多个实验号。
+                        {% endif %}
+                    </th>
                     {% endif %}
                 </tr>
             </tfoot>
@@ -269,34 +289,34 @@
 
     <!-- 第 2 页：报错信息表 -->
     {% if platform != "Tecan" %}
-        <section>
-            <table class="table-error" cellpadding="2" cellspacing="0" border="0">
-                <thead>
-                    <tr class="maintext">
-                        <th>实验号</th>
-                        <th>条码</th>
-                        <th>板号</th>
-                        <th>孔位</th>
-                        <th>警告级别</th>
-                        <th>警告信息</th>
+    <section>
+        <table class="table-error" cellpadding="2" cellspacing="0" border="0">
+            <thead>
+                <tr class="maintext">
+                    <th>实验号</th>
+                    <th>条码</th>
+                    <th>板号</th>
+                    <th>孔位</th>
+                    <th>警告级别</th>
+                    <th>警告信息</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in error_rows %}
+                    {% if row.origin_barcode != 'NOTUBE' and row.origin_barcode != 'No match' and 'X' not in row.origin_barcode %}
+                    <tr>
+                        <td>{{ row.sample_name }}</td>
+                        <td>{{ row.origin_barcode }}</td>
+                        <td>{{ row.plate_no }}</td>
+                        <td>{{ row.well_str }}</td>
+                        <td>{{ row.warn_level }}</td>
+                        <td>{{ row.warn_info }}</td>
                     </tr>
-                </thead>
-                <tbody>
-                    {% for row in error_rows %}
-                        {% if row.origin_barcode != 'NOTUBE' and row.origin_barcode != 'No match' and 'X' not in row.origin_barcode %}
-                            <tr>
-                                <td>{{ row.sample_name }}</td>
-                                <td>{{ row.origin_barcode }}</td>
-                                <td>{{ row.plate_no }}</td>
-                                <td>{{ row.well_str }}</td>
-                                <td>{{ row.warn_level }}</td>
-                                <td>{{ row.warn_info }}</td>
-                            </tr>
-                        {% endif %}
-                    {% endfor %}
-                </tbody>
-            </table>
-        </section>
+                    {% endif %}
+                {% endfor %}
+            </tbody>
+        </table>
+    </section>
     {% endif %}
 
 </body>

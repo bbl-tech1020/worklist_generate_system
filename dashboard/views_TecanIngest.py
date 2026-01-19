@@ -1333,7 +1333,7 @@ def _build_clinical_cells_from_csv(csv_abs_path: str, start_offset: int, station
         
         # 通过条码查找实验号
         sample_name = station_map.get(srctube, "")
-        
+
         # ★ 修改：未匹配时设置 "No match"（与 NIMBUS 对齐）
         if not sample_name:
             sample_name = "No match"  # ← 改为 "No match"
@@ -1810,6 +1810,7 @@ def _render_tecan_process_result(
         "test_date": timezone.localtime().strftime("%Y-%m-%d"),
         "plate_no": f"X{plate_number}",
         "instrument_num": instrument_num,
+        "systerm_num": systerm_num,
         "injection_plate": injection_plate,
         "today_str": today_str,
     }

@@ -1104,8 +1104,9 @@ def _apply_mapping_to_table(
     headers = list(df.columns)
     first_col = headers[0]
 
+    ic(barcode_to_well)
+
     loc_display = (locator_info or {}).get("display_name")  # e.g. "X3"
-    ic(loc_display)
 
     # 识别孔号/孔位列（尽量兼容多命名）
     WELLNUM_COLS = {"Well_Number", "Vial position", "VialPos", "样品瓶"}
@@ -1233,6 +1234,7 @@ def _apply_mapping_to_table(
 
                     # 3) 临床：第一列值即条码
                     wells = barcode_to_well.get(name)
+                    
                     if wells:
                         well_pos, well_num = wells.popleft()       # ← 关键：消费一次
                         if instrument_name == "Thermo" or instrument_name == "Agilent":
@@ -1636,28 +1638,35 @@ def _render_tecan_process_result(
                 name = (std_qc.get("text") or "").strip()
                 if name:
                     buckets[name].append(name)  # 名称即条码
-                # 临床样本
-                sample = (cell or {}).get("sample") or {}
-                sname = (sample.get("text") or "").strip()
-                if sname:
-                    # 临床样本条码也要记录，便于 barcode->well 反查
-                    buckets.setdefault(sname, [])
+                # # 临床样本
+                # sample = (cell or {}).get("sample") or {}
+                # sname = (sample.get("text") or "").strip()
+                # if sname:
+                #     # 临床样本条码也要记录，便于 barcode->well 反查
+                #     buckets.setdefault(sname, [])
         return {k: deque(v) for k, v in buckets.items()}
 
     def _barcode_to_well_from_table(worksheet_table):
         """
         返回： dict[str, deque[(well_pos, well_num)]]
-        对于同一条码在板上出现多次（如 QC 名称），按 96 孔扫描顺序依次入队。
+        ★ 修复：临床样本同时用实验号和条码作为 key
         """
         m = defaultdict(deque)
         for row in (worksheet_table or []):
             for cell in (row or []):
                 if not cell:
                     continue
-                b = str(cell.get("barcode") or "").strip()
-                if not b:
-                    continue
-                m[b].append((cell.get("well_str"), cell.get("index")))
+                
+                # 原逻辑：用完整条码作为 key（用于96孔板显示）
+                barcode = str(cell.get("barcode") or "").strip()
+                if barcode:
+                    m[barcode].append((cell.get("well_str"), cell.get("index")))
+                
+                # ★ 新增：同时用实验号作为 key（用于上机列表孔位匹配）
+                sample_text = str(cell.get("sample_text") or "").strip()
+                if sample_text and sample_text != barcode:  # 避免重复注册
+                    m[sample_text].append((cell.get("well_str"), cell.get("index")))
+        
         return m
 
 

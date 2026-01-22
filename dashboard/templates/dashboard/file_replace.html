@@ -280,6 +280,19 @@
 
 <script>
     document.addEventListener('DOMContentLoaded', () => {
+        // ===== 全局阻止输入框回车键触发表单提交 =====
+        const replaceForm = document.getElementById('replace-form');
+
+        // 在表单级别拦截所有输入框的回车键
+        replaceForm.addEventListener('keydown', (e) => {
+            // 如果按的是回车键，且当前聚焦元素是输入框（不是提交按钮）
+            if (e.key === 'Enter' && e.target.tagName === 'INPUT' && e.target.type !== 'submit') {
+                e.preventDefault(); // 阻止默认的表单提交行为
+                e.stopPropagation(); // 阻止事件冒泡
+                return false;
+            }
+        });
+
         // 解析用户上传的上机列表
         const replaceFileInput = document.getElementById('replace_file');
 

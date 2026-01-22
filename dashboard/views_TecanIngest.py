@@ -1049,12 +1049,14 @@ def _build_curve_and_qc_cells(curve_points: int, std_names_pool: list[str], qc_g
     for i in range(curve_points + 1):
         items.append({"label": STDpool[i], "kind": "STD"})
 
-    # QC（循环使用 qc_names_pool）
+    # QC（全局顺序循环使用 qc_names_pool）
     pool = (qc_names_pool or ["QC"])
+    qc_index = 0  # ← 新增：全局索引计数器
     for g in range(1, qc_groups + 1):
         for lv in range(1, qc_levels + 1):
-            name_idx = (lv - 1) % len(pool)
+            name_idx = qc_index % len(pool)  # ← 修改：使用全局索引
             items.append({"label": pool[name_idx], "kind": "QC", "group": g, "level": lv})
+            qc_index += 1  # ← 新增：每次递增
     return items
 
 

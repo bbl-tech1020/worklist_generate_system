@@ -372,6 +372,10 @@ def Starlet_worksheet(request):
 def Tecan_sampling(request):
     return render(request, 'dashboard/sampling/Tecan.html')
 
+# 全血工作站
+def WholeBloodWorkstation_sampling(request):
+    return render(request, 'dashboard/sampling/WholeBloodWorkstation.html')
+
 # 2 标本查找
 def sample_search(request):
     return render(request, 'dashboard/sample_search/index.html')
@@ -568,7 +572,7 @@ HISTORY_DIRNAME = "历史文件"
 STATION_DIRNAME = "岗位清单"
 
 # ===== 特殊项目：需要用 station_list.json 做“主条码 -> 实验号”映射 =====
-SPECIAL_PROJECTS = {"AE", "CA", "PCA", "ZMNS"}  # ZMNs 统一用大写比较
+SPECIAL_PROJECTS = {"CA", "PCA", "ZMNS"}  # ZMNs 统一用大写比较
 
 # 从 OnboardingList 文件名中提取项目名，例如：
 # X6_OnboardingList_FXS-YZ04_S2_25OHD_20260108_060259_X6_GZ.txt -> 25OHD

@@ -26,6 +26,8 @@ urlpatterns = [
 
     path('dashboard/frontend_entry/Tecan_sampling/', views.Tecan_sampling, name='Tecan_sampling'), # Tecan取样
 
+    path('dashboard/frontend_entry/WholeBloodWorkstation_sampling/', views.WholeBloodWorkstation_sampling, name='WholeBloodWorkstation_sampling'), # Tecan取样
+
     # 2 标本查找
     path('dashboard/sample_search/', views.sample_search, name='sample_search'),  # 标本查找
     path("dashboard/sample_search_api/", views.sample_search_api, name="sample_search_api"),

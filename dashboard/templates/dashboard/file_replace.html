@@ -217,8 +217,8 @@
                     <table class="table table-sm table-bordered align-middle nouse-table">
                         <thead class="table-light">
                             <tr>
-                                <th style="width: 40%;">新条码或实验号</th>
                                 <th style="width: 30%;">孔位（VialPos）</th>
+                                <th style="width: 40%;">新条码或实验号</th>
                                 <th style="width: 30%;">操作</th>
                             </tr>
                         </thead>
@@ -1013,6 +1013,13 @@
             tr.innerHTML = `
                 <td>
                     <input type="text"
+                        class="form-control form-control-sm barcode-input nouse-vialpos-input"
+                        name="nouse_vialpos[]"
+                        placeholder="请输入孔位（如 A1 / 1 / A1(1)）">
+                    <div class="vialpos-hint nouse-vialpos-hint"> </div>
+                </td>
+                <td>
+                    <input type="text"
                         class="form-control form-control-sm barcode-input nouse-new-input"
                         name="nouse_new_barcode[]"
                         data-confirmed="false"
@@ -1028,13 +1035,6 @@
                         </div>
                     </div>
                 </td>
-                <td>
-                    <input type="text"
-                        class="form-control form-control-sm barcode-input nouse-vialpos-input"
-                        name="nouse_vialpos[]"
-                        placeholder="请输入孔位（如 A1 / 1 / A1(1)）">
-                    <div class="vialpos-hint nouse-vialpos-hint"> </div>
-                </td>
                 <td class="text-center">
                     <div class="op-btns">
                         <button type="button" class="btn btn-outline-primary btn-sm btn-add">添加</button>
@@ -1042,6 +1042,8 @@
                     </div>
                 </td>
             `;
+
+
 
             const vialInput = tr.querySelector('.nouse-vialpos-input');
             const hintEl = tr.querySelector('.nouse-vialpos-hint');

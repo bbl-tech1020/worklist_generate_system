@@ -1476,13 +1476,20 @@ def file_replace(request):
                 for cols in rows:
                     if _row_match(cols, entry):
 
-                        # 1) 永远替换第一列
-                        cols[0] = entry["new"]
+                        # ✅ 统一处理：将新值转为文本格式（防止Excel识别为数值）
+                        new_code_text = str(entry["new"]).strip()
+                        if new_code_text.isdigit():
+                            new_code_formatted = f"\t{new_code_text}"  # 制表符前缀强制文本格式
+                        else:
+                            new_code_formatted = new_code_text
 
-                        # 2) ✅ 新增：联动替换“与第一列逐行完全相同”的列
+                        # 1) 永远替换第一列
+                        cols[0] = new_code_formatted
+
+                        # 2) ✅ 联动替换"与第一列逐行完全相同"的列（统一使用格式化后的值）
                         for j in same_as_first_cols:
                             if 0 <= j < len(cols):
-                                cols[j] = entry["new"]
+                                cols[j] = new_code_formatted
 
                         replaced += 1
                         hit = True
@@ -1567,6 +1574,9 @@ def file_replace(request):
                     cols = cols + [""] * (len(header) - len(cols))
                 rows.append(cols)
 
+            # ===== ✅ 新增：检测“与第一列逐行完全相同”的列，替换时需要联动更新 =====
+            same_as_first_cols = _detect_columns_equal_to_first(rows)
+
             # 找一条“临床样品行”作为模板：第一列不是 NOTUBE 即可
             template_row = None
             for cols in rows:
@@ -1650,7 +1660,21 @@ def file_replace(request):
                         continue
                     hit_cols[j] = template_row[j]
 
-                hit_cols[0] = entry["new"]
+                # ✅ 统一处理：将新值转为文本格式（防止Excel识别为数值）
+                new_code_text = str(entry["new"]).strip()
+                if new_code_text.isdigit():
+                    new_code_formatted = f"\t{new_code_text}"  # 制表符前缀强制文本格式
+                else:
+                    new_code_formatted = new_code_text
+
+                # 替换第一列
+                hit_cols[0] = new_code_formatted
+
+                # ✅ 联动替换"与第一列逐行完全相同"的列（统一使用格式化后的值）
+                for j in same_as_first_cols:
+                    if 0 <= j < len(hit_cols):
+                        hit_cols[j] = new_code_formatted
+
                 hit_cols[vial_idx] = old_vp_val
 
                 replaced += 1
@@ -3046,28 +3070,28 @@ def ProcessResult(request):
             m = MAIN_BARCODE_RE.match(s)
             return m.group(1) if m else ""
 
-        if is_ae_project:
-            first_col = worklist_table.columns[0]
+        # if is_ae_project:
+        #     first_col = worklist_table.columns[0]
 
-            def _to_exp_no(val):
-                raw = str(val).strip()
-                if not raw:
-                    return raw
+        #     def _to_exp_no(val):
+        #         raw = str(val).strip()
+        #         if not raw:
+        #             return raw
 
-                mb = _main_barcode(raw)
-                if not mb:
-                    # X1 / DB1 / STD0 等
-                    return raw
+        #         mb = _main_barcode(raw)
+        #         if not mb:
+        #             # X1 / DB1 / STD0 等
+        #             return raw
 
-                names = barcode_to_names.get(mb)
-                if names:
-                    # ✅ 只替换显示，保留子条码后缀（避免用户看不出是哪支）
-                    # 例如：VD5674（01000086089-01）
-                    return f"{names[0]}"
+        #         names = barcode_to_names.get(mb)
+        #         if names:
+        #             # ✅ 只替换显示，保留子条码后缀（避免用户看不出是哪支）
+        #             # 例如：VD5674（01000086089-01）
+        #             return f"{names[0]}"
 
-                return raw
+        #         return raw
 
-            worklist_table[first_col] = worklist_table[first_col].map(_to_exp_no)
+        #     worklist_table[first_col] = worklist_table[first_col].map(_to_exp_no)
 
         if 'VialPos' in worklist_table.columns:
             worklist_table = format_vialpos_column(worklist_table, "VialPos")

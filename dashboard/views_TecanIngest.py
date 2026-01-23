@@ -1704,7 +1704,14 @@ def _render_tecan_process_result(
     if not std_names or len(std_names) < (curve_points + 1):
         std_names = [f"STD{i}" for i in range(curve_points + 1)]
     
-    qc_names = df_mapping_wc.loc[df_mapping_wc["Code"].astype(str).str.startswith("QC"), "Name"].unique().tolist()
+    # 按组别分别提取 QC1 和 QC2 的名称
+    qc1_names = df_mapping_wc.loc[
+        df_mapping_wc["Code"].astype(str).str.startswith("QC1"), "Name"
+    ].tolist()
+
+    qc2_names = df_mapping_wc.loc[
+        df_mapping_wc["Code"].astype(str).str.startswith("QC2"), "Name"
+    ].tolist()
 
     # 临床样本
     # === 用“列优先 A1→H1→A2…”提取临床样本顺序（跳过定位孔）+ 插入定位孔显示名 === 
@@ -1734,8 +1741,8 @@ def _render_tecan_process_result(
 
     test_list   = ["DB1"] + [f"Test{i}" for i in range(test_count)]
     curve_list  = ["DB2"] + std_names
-    qc_list1    = ["DB3"] + qc_names + ["DB4"]
-    qc_list2    = qc_names + ["DB5"]
+    qc_list1    = ["DB3"] + qc1_names + ["DB4"]
+    qc_list2    = qc2_names + ["DB5"]
 
     # ③ 拼出 SampleName_list（与 NIMBUS 同构：DB + STD/QC + 临床 [+ QC 结尾…]）
     SampleName_list = test_list + curve_list + qc_list1 + ClinicalSample_with_locator + qc_list2

@@ -456,6 +456,9 @@
         // ===== 未用孔位集合（用于 nouse 即时提示）=====
         let unusedVialPosKeys = new Set();   // 存 key：A1 / "1" 这种，方便快速判断
         let unusedVialPosShow = [];          // 存展示用：A1(1)、B3(15)...
+
+        // ===== 新增: 未用孔位映射表(孔位 -> 条码信息) =====
+        let unusedVialPosMap = new Map()
         const unusedSummaryEl = document.getElementById('unused-summary');
 
         // 识别分隔符：逗号/制表符/分号（你们文件有时是 \t）
@@ -590,7 +593,18 @@
                 });
             }
 
-            return { ok: true, map, rows };
+            // 增加未用孔位判断逻辑
+            const unusedRows = rows.filter(r => {
+                const barcode = (r.barcode || '').trim().toUpperCase();
+                // ✅ 1. 条码包含 NOTUBE 关键词(而非精确匹配)
+                if (barcode.includes('NOTUBE')) return true;
+                // 2. 条码包含3个及以上的'-'
+                const dashCount = (r.barcode || '').split('-').length - 1;
+                if (dashCount >= 3) return true;
+                return false;
+            });
+
+            return { ok: true, map, rows, unusedRows };
         }
 
 
@@ -642,14 +656,34 @@
             // 5) 额外：如果存在 NOTUBE 行，且孔位在 expected 范围内，也应视为未用（可选，但通常符合直觉）
             // 注意：这不会把 >96 算进去，因为 normalizeUserVialPosInput 不认 >96
             for (const r of rows) {
-                const barcode = (r.barcode || '').trim().toUpperCase();
-                if (barcode !== 'NOTUBE') continue;
+                const barcode = (r.barcode || '').trim();
+                const barcodeUpper = barcode.toUpperCase();
+
+                // ✅ 判断是否为未用孔位的条码
+                let isUnusedBarcode = false;
+
+                // ✅ 条件1: 条码包含 'NOTUBE' 关键词(而非精确匹配)
+                if (barcodeUpper.includes('NOTUBE')) {
+                    isUnusedBarcode = true;
+                }
+
+                // 条件2: 条码包含3个及以上的 '-'
+                if (!isUnusedBarcode) {
+                    const dashCount = (barcode.match(/-/g) || []).length;
+                    if (dashCount >= 3) {
+                        isUnusedBarcode = true;
+                    }
+                }
+
+                // 如果不是未用条码,跳过
+                if (!isUnusedBarcode) continue;
+
                 const vial = (r.vialClean || '').toString().trim();
                 const norm = normalizeUserVialPosInput(vial);
                 if (!norm.ok) continue;
                 const col = ((norm.num - 1) % 12) + 1;
                 if (col >= startCol) {
-                    // NOTUBE 的孔位虽然“出现了”，但按业务认为也可加入未用集合
+                    // 未用条码的孔位虽然"出现了",但按业务认为也应加入未用集合
                     if (!missingNums.includes(norm.num)) missingNums.push(norm.num);
                 }
             }
@@ -730,6 +764,27 @@
                 if (norm.ok) {
                     vialPosToBarcode.set(norm.well, barcode);        // A1
                     vialPosToBarcode.set(String(norm.num), barcode); // 1
+                }
+            }
+
+            // ✅ 构建未用孔位映射表
+            unusedVialPosMap = new Map();
+            if (res.unusedRows && res.unusedRows.length > 0) {
+                for (const row of res.unusedRows) {
+                    const vialClean = (row.vialClean || '').toString().trim();
+                    if (!vialClean) continue;
+
+                    const barcode = row.barcode || '';
+
+                    // 写入多种key格式,方便匹配
+                    unusedVialPosMap.set(vialClean.toUpperCase?.() ? vialClean.toUpperCase() : vialClean, barcode);
+
+                    // 同时写入归一化后的 well 和 num 格式
+                    const norm = normalizeUserVialPosInput(vialClean);
+                    if (norm.ok) {
+                        unusedVialPosMap.set(norm.well, barcode);        // A1
+                        unusedVialPosMap.set(String(norm.num), barcode); // 1
+                    }
                 }
             }
 
@@ -859,6 +914,21 @@
 
                 // ✅ 显示为 A1(1)...H12(96)
                 vialInput.value = formatVialPosDisplay(vialPosClean);
+
+                // ✅ 新增: 检查反填的孔位是否为未用孔位
+                const normVial = normalizeUserVialPosInput(vialPosClean);
+                if (normVial.ok) {
+                    const unusedBarcode =
+                        unusedVialPosMap.get(normVial.well) ||
+                        unusedVialPosMap.get(String(normVial.num));
+
+                    if (unusedBarcode) {
+                        vialHint.textContent = `该孔位为"未用孔位"(条码: ${unusedBarcode}),禁止在此模块替换`;
+                        setError(vialInput, vialHint);
+                        vialInput.classList.add('vialpos-invalid'); // 标红孔位框
+                        return;
+                    }
+                }
             });
 
 
@@ -875,7 +945,21 @@
                 if (!parsedOK) return;
 
                 // 用户输入归一化（支持 A1/a1 或 1..96）
+                // ✅✅✅ 新增: 优先检查是否为未用孔位
                 const norm = normalizeUserVialPosInput(raw);
+                if (norm.ok) {
+                    // 检查归一化后的 well 和 num 是否在未用孔位映射表中
+                    const unusedBarcode =
+                        unusedVialPosMap.get(norm.well) ||
+                        unusedVialPosMap.get(String(norm.num));
+
+                    if (unusedBarcode) {
+                        vialHint.textContent = `该孔位为"未用孔位"(条码: ${unusedBarcode}),禁止在此模块替换`;
+                        setError(vialInput, vialHint);
+                        return; // 直接返回,阻止后续操作
+                    }
+                }
+
                 if (!norm.ok) {
                     vialHint.textContent = '格式非法：允许 A1(1)/A1/a1/1';
                     setError(vialInput, vialHint);

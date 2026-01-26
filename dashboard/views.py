@@ -1537,28 +1537,6 @@ def file_replace(request):
                     "message": "未检测到任何有效替换行，请填写后再提交。"
                 })
 
-            
-             # ========== ✅ 新增：定位孔识别工具函数 ========== #
-            def _is_locator_row(cols: list[str]) -> bool:
-                """
-                识别定位孔行：第一列包含'X'关键词且字符串总长度<=3
-                例如：X2, X10, x3 → True
-                    X123, NOTUBE, 1234567890 → False
-                """
-                first_col = (cols[0] or "").strip().upper()
-                return 'X' in first_col and len(first_col) <= 3
-
-            def _find_locator_row_index(rows: list[list[str]]) -> int:
-                """
-                查找定位孔行在rows中的索引（从0开始）
-                返回：找到则返回索引，未找到返回 -1
-                """
-                for idx, cols in enumerate(rows):
-                    if _is_locator_row(cols):
-                        return idx
-                return -1
-            # ================================================ #
-
 
             # 读取目标文件
             with open(target_path, "r", encoding="utf-8", errors="replace") as f:
@@ -1640,9 +1618,6 @@ def file_replace(request):
             replaced = 0
             used_vps_seen = set()
 
-            # ========== ✅ 新增：预先查找定位孔行索引（只需查找一次） ========== #
-            locator_row_idx = _find_locator_row_index(rows)
-
             for entry in entries:
                 vp_in = entry["vialpos"]
                 # 防止重复孔位（同一次提交）
@@ -1659,7 +1634,7 @@ def file_replace(request):
                         hit_cols = cols
                         break
 
-                # ★ 修改：若文件中缺失该孔位行，则创建新行并插入到定位孔下一行
+                # ★ 新增：若文件中缺失该孔位行，则创建新行（复制 template_row）并 append
                 if hit_cols is None:
                     # 复制一行模板，保证列数一致
                     hit_cols = list(template_row)
@@ -1676,17 +1651,7 @@ def file_replace(request):
                     if len(hit_cols) > 0 and not (hit_cols[0] or "").strip():
                         hit_cols[0] = "NOTUBE"
 
-                    # ========== ✅ 修改：插入位置逻辑 ========== #
-                    if locator_row_idx != -1:
-                        # 找到定位孔行：插入到定位孔下一行（索引+1）
-                        insert_idx = locator_row_idx + 1
-                        rows.insert(insert_idx, hit_cols)
-                        # ★ 关键：插入后定位孔索引需要+1（因为后续循环可能多次插入）
-                        locator_row_idx += 1
-                    else:
-                        # 未找到定位孔行：兜底追加到末尾（保持原逻辑）
-                        rows.append(hit_cols)
-                    # ======================================== #
+                    rows.append(hit_cols)
 
                 # 执行替换：除第一列和孔位列之外，其他列复制模板行；再覆盖第一列为新条码；孔位列保持原值
                 old_vp_val = hit_cols[vial_idx]

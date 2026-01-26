@@ -1420,6 +1420,10 @@ def file_replace(request):
                 if h == "vialpos" or h == "vial position":
                     vial_idx = i
                     break
+                # ✅ 新增：中文列名（需要原始表头匹配，不能用 lower()）
+                if header[i].strip() == "样品瓶":
+                    vial_idx = i
+                    break
 
             if vial_idx == -1:
                 return render(request, "dashboard/error.html", {
@@ -1433,6 +1437,20 @@ def file_replace(request):
                 if len(cols) < len(header):
                     cols = cols + [""] * (len(header) - len(cols))
                 rows.append(cols)
+
+            # ✅ 新增:提取进样盘号前缀(从第一个有效孔位中提取)
+            drawer_prefix = ""  # 进样盘号前缀,如 "Drawer 2:Slot1:"
+            for cols in rows:
+                vp_raw = (cols[vial_idx] or "").strip()
+                if not vp_raw or vp_raw.upper() == "NOTUBE":
+                    continue
+                # 检查是否包含进样盘号(包含冒号分隔符)
+                if ":" in vp_raw:
+                    # 提取最后一个冒号之前的所有内容作为前缀
+                    parts = vp_raw.rsplit(":", 1)
+                    if len(parts) == 2:
+                        drawer_prefix = parts[0] + ":"
+                        break
 
             # ===== ✅ 新增：检测“与第一列逐行完全相同”的列，替换时需要联动更新 =====
             same_as_first_cols = _detect_columns_equal_to_first(rows)
@@ -1491,6 +1509,19 @@ def file_replace(request):
                             if 0 <= j < len(cols):
                                 cols[j] = new_code_formatted
 
+                        # 3) ✅ 新增：如果提取到进样盘号前缀,且当前孔位列没有进样盘号,则拼接
+                        if drawer_prefix:
+                            vp_current = (cols[vial_idx] or "").strip()
+                            if vp_current and ":" not in vp_current:
+                                # 规范化当前孔位值(支持 A1/1 等格式)
+                                norm = _normalize_user_vialpos(vp_current)
+                                if norm.get("ok"):
+                                    # 优先写成 1..96 数字形式,并拼接进样盘号前缀
+                                    cols[vial_idx] = f"{drawer_prefix}{norm['num']}"
+                                else:
+                                    # 兜底:直接拼接用户输入
+                                    cols[vial_idx] = f"{drawer_prefix}{vp_current}"
+
                         replaced += 1
                         hit = True
                         break
@@ -1502,6 +1533,27 @@ def file_replace(request):
 
         # ===== 未用孔位替换 nouse =====
         elif replace_reason == "nouse":
+            # ===== ★ 新增：定位孔识别函数 =====
+            def _is_locator_row(cols: list[str], first_col_idx: int = 0) -> bool:
+                """
+                判断某一行是否为定位孔行
+                规则：第一列内容包含'X'关键词，且字符串总长度 <= 3
+                """
+                first_val = (cols[first_col_idx] or "").strip().upper()
+                if 'X' in first_val and len(first_val) <= 3:
+                    return True
+                return False
+            
+            def _find_locator_row_index(rows: list[list[str]]) -> int:
+                """
+                在 rows 列表中查找定位孔行的索引
+                返回：定位孔行的索引（从0开始），若未找到返回 -1
+                """
+                for idx, cols in enumerate(rows):
+                    if _is_locator_row(cols):
+                        return idx
+                return -1
+    
             nouse_new = request.POST.getlist("nouse_new_barcode[]")
             nouse_vp  = request.POST.getlist("nouse_vialpos[]")
 
@@ -1561,6 +1613,10 @@ def file_replace(request):
                 if h == "vialpos" or h == "vial position":
                     vial_idx = i
                     break
+                # ✅ 新增：中文列名（需要原始表头匹配，不能用 lower()）
+                if header[i].strip() == "样品瓶":
+                    vial_idx = i
+                    break
 
             if vial_idx == -1:
                 return render(request, "dashboard/error.html", {
@@ -1573,6 +1629,20 @@ def file_replace(request):
                 if len(cols) < len(header):
                     cols = cols + [""] * (len(header) - len(cols))
                 rows.append(cols)
+
+            # ✅ 新增:提取进样盘号前缀(从第一个有效孔位中提取)
+            drawer_prefix = ""  # 进样盘号前缀,如 "Drawer 2:Slot1:"
+            for cols in rows:
+                vp_raw = (cols[vial_idx] or "").strip()
+                if not vp_raw or vp_raw.upper() == "NOTUBE":
+                    continue
+                # 检查是否包含进样盘号(包含冒号分隔符)
+                if ":" in vp_raw:
+                    # 提取最后一个冒号之前的所有内容作为前缀
+                    parts = vp_raw.rsplit(":", 1)
+                    if len(parts) == 2:
+                        drawer_prefix = parts[0] + ":"
+                        break
 
             # ===== ✅ 新增：检测“与第一列逐行完全相同”的列，替换时需要联动更新 =====
             same_as_first_cols = _detect_columns_equal_to_first(rows)
@@ -1634,24 +1704,34 @@ def file_replace(request):
                         hit_cols = cols
                         break
 
-                # ★ 新增：若文件中缺失该孔位行，则创建新行（复制 template_row）并 append
+                # ★ 修改：若文件中缺失该孔位行，则创建新行并插入到定位孔下一行
                 if hit_cols is None:
                     # 复制一行模板，保证列数一致
                     hit_cols = list(template_row)
 
-                    # 规范化孔位写入：优先写成 1..96 数字（与你文件中 VialPos=9/21/33... 风格一致）
+                    # 规范化孔位写入：优先写成 1..96 数字
                     norm = _normalize_user_vialpos(vp_in)  
                     if norm.get("ok"):
-                        hit_cols[vial_idx] = str(norm["num"])
+                        # 优先写成 1..96 数字形式,并拼接进样盘号前缀
+                        vialpos_value = f"{drawer_prefix}{norm['num']}" if drawer_prefix else str(norm["num"])
                     else:
-                        # 兜底：直接写用户输入（如 A10 / A10(10)）
-                        hit_cols[vial_idx] = vp_in.strip()
+                        # 兜底:直接写用户输入,拼接进样盘号前缀
+                        vialpos_value = f"{drawer_prefix}{vp_in.strip()}" if drawer_prefix else vp_in.strip()
+
+                    hit_cols[vial_idx] = vialpos_value
 
                     # 第一列先填 NOTUBE 占位（可选），后面会被 hit_cols[0]=entry["new"] 覆盖
                     if len(hit_cols) > 0 and not (hit_cols[0] or "").strip():
                         hit_cols[0] = "NOTUBE"
 
-                    rows.append(hit_cols)
+                    # ===== ★ 新增：按定位孔位置插入 =====
+                    locator_idx = _find_locator_row_index(rows)
+                    if locator_idx != -1:
+                        # 找到定位孔：插入到定位孔的下一行（索引 +1）
+                        rows.insert(locator_idx + 1, hit_cols)
+                    else:
+                        # 未找到定位孔：兜底追加到末尾（保持原有行为）
+                        rows.append(hit_cols)
 
                 # 执行替换：除第一列和孔位列之外，其他列复制模板行；再覆盖第一列为新条码；孔位列保持原值
                 old_vp_val = hit_cols[vial_idx]
@@ -1729,6 +1809,11 @@ def file_replace(request):
                 if h == "vialpos" or h == "vial position":
                     vial_idx = i
                     break
+                # ✅ 新增：中文列名（需要原始表头匹配，不能用 lower()）
+                if header[i].strip() == "样品瓶":
+                    vial_idx = i
+                    break
+
             if vial_idx == -1:
                 return render(request, "dashboard/error.html", {
                     "message": f"未找到孔位列（VialPos / Vial position），无法删除：{uploaded_name}"
@@ -1777,6 +1862,9 @@ def file_replace(request):
             seen_keys = set()
             deleted = 0
 
+            # ✅ 新增：收集要删除的行对象（而不是修改内容）
+            rows_to_delete = []
+
             for entry in entries:
                 vp_in = entry["vialpos"]
                 code_in = entry["code"]
@@ -1821,17 +1909,14 @@ def file_replace(request):
                             "message": f"孔位与条码/实验号不匹配：孔位={vp_in} 条码/实验号={code_in}"
                         })
 
-                # ✅ 执行“删除”：将第一列置为 NOTUBE，其余列清空（保留孔位列）
-                old_vp_val = hit_cols[vial_idx]
-                for j in range(len(hit_cols)):
-                    if j == vial_idx:
-                        continue
-                    hit_cols[j] = ""
-                hit_cols[0] = "NOTUBE"
-                hit_cols[vial_idx] = old_vp_val
-
+                # ✅ 修改：不再清空内容，而是标记该行对象待删除
+                rows_to_delete.append(hit_cols)
                 deleted += 1
 
+            # ✅ 新增：从 rows 列表中移除标记的行
+            for row in rows_to_delete:
+                if row in rows:
+                    rows.remove(row)
 
         else:
             pass

@@ -1444,12 +1444,19 @@ def file_replace(request):
                 vp_raw = (cols[vial_idx] or "").strip()
                 if not vp_raw or vp_raw.upper() == "NOTUBE":
                     continue
-                # 检查是否包含进样盘号(包含冒号分隔符)
-                if ":" in vp_raw:
-                    # 提取最后一个冒号之前的所有内容作为前缀
-                    parts = vp_raw.rsplit(":", 1)
-                    if len(parts) == 2:
-                        drawer_prefix = parts[0] + ":"
+
+                # 使用与 _clean_vialpos 相同的分隔符规则 [\s:\-_]+
+                parts = [p for p in _SPLIT_VIAL_RE.split(vp_raw) if p]
+                if len(parts) >= 2:
+                    # 提取除最后一段外的所有部分作为前缀
+                    # 例如: "Drawer 2:Slot1:86" -> parts=["Drawer", "2", "Slot1", "86"]
+                    # 前缀部分: "Drawer 2:Slot1:"
+                    prefix_parts = parts[:-1]
+                    # 重建前缀(使用原始字符串中的分隔符)
+                    last_part = parts[-1]
+                    idx = vp_raw.rfind(last_part)
+                    if idx > 0:
+                        drawer_prefix = vp_raw[:idx]  # 包含尾部分隔符
                         break
 
             # ===== ✅ 新增：检测“与第一列逐行完全相同”的列，替换时需要联动更新 =====
@@ -1512,15 +1519,19 @@ def file_replace(request):
                         # 3) ✅ 新增：如果提取到进样盘号前缀,且当前孔位列没有进样盘号,则拼接
                         if drawer_prefix:
                             vp_current = (cols[vial_idx] or "").strip()
-                            if vp_current and ":" not in vp_current:
-                                # 规范化当前孔位值(支持 A1/1 等格式)
-                                norm = _normalize_user_vialpos(vp_current)
-                                if norm.get("ok"):
-                                    # 优先写成 1..96 数字形式,并拼接进样盘号前缀
-                                    cols[vial_idx] = f"{drawer_prefix}{norm['num']}"
-                                else:
-                                    # 兜底:直接拼接用户输入
-                                    cols[vial_idx] = f"{drawer_prefix}{vp_current}"
+                            if vp_current and drawer_prefix:
+                                # 判断当前孔位是否已包含分隔符(任意一种: 空格/冒号/短横线/下划线)
+                                has_prefix = bool(_SPLIT_VIAL_RE.search(vp_current))
+                                
+                                if not has_prefix:
+                                    # 当前孔位无前缀,需要拼接
+                                    norm = _normalize_user_vialpos(vp_current)
+                                    if norm.get("ok"):
+                                        # 优先写成 1..96 数字形式,并拼接进样盘号前缀
+                                        cols[vial_idx] = f"{drawer_prefix}{norm['num']}"
+                                    else:
+                                        # 兜底:直接拼接用户输入
+                                        cols[vial_idx] = f"{drawer_prefix}{vp_current}"
 
                         replaced += 1
                         hit = True
@@ -1636,12 +1647,19 @@ def file_replace(request):
                 vp_raw = (cols[vial_idx] or "").strip()
                 if not vp_raw or vp_raw.upper() == "NOTUBE":
                     continue
-                # 检查是否包含进样盘号(包含冒号分隔符)
-                if ":" in vp_raw:
-                    # 提取最后一个冒号之前的所有内容作为前缀
-                    parts = vp_raw.rsplit(":", 1)
-                    if len(parts) == 2:
-                        drawer_prefix = parts[0] + ":"
+                
+                # 使用与 _clean_vialpos 相同的分隔符规则 [\s:\-_]+
+                parts = [p for p in _SPLIT_VIAL_RE.split(vp_raw) if p]
+                if len(parts) >= 2:
+                    # 提取除最后一段外的所有部分作为前缀
+                    # 例如: "Drawer 2:Slot1:86" -> parts=["Drawer", "2", "Slot1", "86"]
+                    # 前缀部分: "Drawer 2:Slot1:"
+                    prefix_parts = parts[:-1]
+                    # 重建前缀(使用原始字符串中的分隔符)
+                    last_part = parts[-1]
+                    idx = vp_raw.rfind(last_part)
+                    if idx > 0:
+                        drawer_prefix = vp_raw[:idx]  # 包含尾部分隔符
                         break
 
             # ===== ✅ 新增：检测“与第一列逐行完全相同”的列，替换时需要联动更新 =====

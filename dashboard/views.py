@@ -1225,6 +1225,24 @@ def _guess_delimiter(line: str) -> str:
         return ","
     return ";"
 
+def _read_text_with_fallback(path: str) -> tuple[str, str]:
+    """
+    以二进制读取后按多编码尝试解码，返回 (text, encoding_used)
+    兼容：utf-8 / utf-8-sig / gb18030 / gbk
+    """
+    with open(path, "rb") as f:
+        raw = f.read()
+
+    last_err = None
+    for enc in ("gbk","utf-8-sig", "utf-8", "gb18030"):
+        try:
+            return raw.decode(enc), enc
+        except UnicodeDecodeError as e:
+            last_err = e
+
+    # 最后兜底：不阻断，但会出现 replacement char
+    return raw.decode("utf-8", errors="replace"), "utf-8(replace)"
+
 
 # 识别：哪些列在“整张表”范围内与第 1 列（index 0）逐行完全相同
 def _detect_columns_equal_to_first(rows: list[list[str]]) -> list[int]:
@@ -1399,7 +1417,7 @@ def file_replace(request):
 
             # 读取目标文件
             with open(target_path, "r", encoding="utf-8", errors="replace") as f:
-                text = f.read()
+                text, file_enc = _read_text_with_fallback(target_path)
 
             lines = [l for l in text.splitlines() if l.strip() != ""]
             if len(lines) < 2:
@@ -1603,7 +1621,7 @@ def file_replace(request):
 
             # 读取目标文件
             with open(target_path, "r", encoding="utf-8", errors="replace") as f:
-                text = f.read()
+                text, file_enc = _read_text_with_fallback(target_path)
 
             lines = [l for l in text.splitlines() if l.strip() != ""]
             if len(lines) < 2:
@@ -1631,7 +1649,7 @@ def file_replace(request):
 
             if vial_idx == -1:
                 return render(request, "dashboard/error.html", {
-                    "message": f"未找到孔位列（VialPos / Vial position），无法替换：{uploaded_name}"
+                    "message": f"未找到孔位列（VialPos / Vial position / 样品瓶），无法替换：{uploaded_name}。当前表头：{' | '.join(header)}"
                 })
 
             rows = []
@@ -1806,7 +1824,7 @@ def file_replace(request):
 
             # 读取目标文件
             with open(target_path, "r", encoding="utf-8", errors="replace") as f:
-                text = f.read()
+                text, file_enc = _read_text_with_fallback(target_path)
 
             lines = [l for l in text.splitlines() if l.strip() != ""]
             if len(lines) < 2:
@@ -1834,7 +1852,7 @@ def file_replace(request):
 
             if vial_idx == -1:
                 return render(request, "dashboard/error.html", {
-                    "message": f"未找到孔位列（VialPos / Vial position），无法删除：{uploaded_name}"
+                    "message": f"未找到孔位列（VialPos / Vial position / 样品瓶），无法删除：{uploaded_name}。当前表头：{' | '.join(header)}"
                 })
 
             # rows：保持列数与 header 一致
@@ -1960,7 +1978,7 @@ def file_replace(request):
 
         with open(new_path, "w", encoding="utf-8") as f:
             f.write(out_text)
-
+            
         # 把旧文件移动到历史目录
         hist_path = _history_path_for(target_path, root)
         os.makedirs(os.path.dirname(hist_path), exist_ok=True)

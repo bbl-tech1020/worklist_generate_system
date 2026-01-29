@@ -451,6 +451,10 @@
         // 条码 -> 孔位 的映射表
         let barcodeToVialPos = new Map();
         let vialPosToBarcode = new Map(); // ✅ 新增：孔位 -> 条码/实验号
+
+        // ✅ 新增：实验号 -> 条码 的映射表
+        let sampleToBarcode = new Map();
+
         let parsedOK = false;
 
         // ===== 未用孔位集合（用于 nouse 即时提示）=====
@@ -618,6 +622,58 @@
         }
 
 
+        // ===== 新增：从后端加载 payload.json 并构建 sample -> barcode 映射 =====
+        async function loadPayloadAndBuildSampleMap(onboardingFilename) {
+            sampleToBarcode.clear(); // 清空旧映射
+
+            if (!onboardingFilename) return { ok: false };
+
+            try {
+                const url = `{% url 'file_replace_get_payload' %}?filename=${encodeURIComponent(onboardingFilename)}`;
+                const resp = await fetch(url, { method: 'GET' });
+
+                if (!resp.ok) {
+                    console.warn('未找到对应的 payload.json 文件');
+                    return { ok: false };
+                }
+
+                const data = await resp.json();
+                if (!data.ok || !data.payload) {
+                    return { ok: false };
+                }
+
+                const payload = data.payload;
+                const worksheetTable = payload.worksheet_table || [];
+
+                // 遍历所有孔位，建立 match_sample -> origin_barcode 映射
+                for (const row of worksheetTable) {
+                    if (!Array.isArray(row)) continue;
+
+                    for (const cell of row) {
+                        const sample = (cell.match_sample || '').trim();
+                        const barcode = (cell.origin_barcode || '').trim();
+
+                        // 过滤无效数据
+                        if (!sample || !barcode) continue;
+                        if (sample === 'No match') continue;
+                        if (barcode === 'NOTUBE' || barcode.includes('---')) continue;
+
+                        // 大小写兼容：同时存原样 + 大写
+                        sampleToBarcode.set(sample, barcode);
+                        sampleToBarcode.set(sample.toUpperCase(), barcode);
+                    }
+                }
+
+                console.log(`✅ 已加载 payload.json，构建了 ${sampleToBarcode.size / 2} 个实验号映射`);
+                return { ok: true, count: sampleToBarcode.size / 2 };
+
+            } catch (e) {
+                console.error('加载 payload.json 失败:', e);
+                return { ok: false };
+            }
+        }
+
+
         // 新增：计算“未用孔位集合”的函数（核心逻辑）
         function computeUnusedVialPosSets(rows) {
             // 清空旧结果
@@ -725,6 +781,7 @@
         replaceFileInput.addEventListener('change', async (e) => {
             parsedOK = false;
             barcodeToVialPos = new Map();
+            sampleToBarcode.clear(); // ✅ 清空旧映射
 
             const file = e.target.files && e.target.files[0];
             if (!file) {
@@ -819,6 +876,15 @@
             }
 
             computeUnusedVialPosSets(res.rows || []);   // ★ 新增：算出未用孔位集合
+
+            // ✅ 6) 新增：加载对应的 payload.json，构建 sample -> barcode 映射
+            const payloadRes = await loadPayloadAndBuildSampleMap(uploadedName);
+            if (payloadRes.ok) {
+                console.log(`✅ 成功构建了 ${payloadRes.count} 个实验号映射`);
+            } else {
+                console.warn('⚠️ 未能加载 payload.json，用户将无法通过实验号匹配（仍可通过条码匹配）');
+            }
+
             parsedOK = true;
             updateSubmitState();
         });
@@ -926,23 +992,43 @@
                 if (!raw) return;
                 if (!parsedOK) return;
 
-                // ✅ 关键修改：
-                // 特殊项目下，只要 raw 或 mapped 任意一个在上机列表中，即视为存在
-                // 同时做大小写兼容（你说明里说“不区分大小写”）
+                // ✅ 核心改造：支持条码 + 实验号双重查找
                 const rawU = raw.toUpperCase();
                 const mappedU = mapped.toUpperCase();
 
-                const vialPosClean =
+                // 步骤1：直接用输入值查 origin_barcode（兼容大小写）
+                let vialPosClean =
                     barcodeToVialPos.get(raw) ||
-                    barcodeToVialPos.get(rawU) ||
-                    (mapped ? (barcodeToVialPos.get(mapped) || barcodeToVialPos.get(mappedU)) : null);
+                    barcodeToVialPos.get(rawU);
 
+                // 步骤2：特殊项目下，用 station 映射的实验号查找
+                if (!vialPosClean && mapped) {
+                    vialPosClean =
+                        barcodeToVialPos.get(mapped) ||
+                        barcodeToVialPos.get(mappedU);
+                }
+
+                // ✅ 步骤3：【新增】如果仍未找到，尝试把输入当作 match_sample 查找
+                if (!vialPosClean) {
+                    const mappedBarcode =
+                        sampleToBarcode.get(raw) ||
+                        sampleToBarcode.get(rawU);
+
+                    if (mappedBarcode) {
+                        // 找到了对应的条码，再用条码查孔位
+                        vialPosClean =
+                            barcodeToVialPos.get(mappedBarcode) ||
+                            barcodeToVialPos.get(mappedBarcode.toUpperCase());
+                    }
+                }
+
+                // 步骤4：都找不到才报错
                 if (!vialPosClean) {
                     setError(oldInput, oldHint);
                     return;
                 }
 
-                // ✅ 显示为 A1(1)...H12(96)
+                // 找到：反填孔位
                 vialInput.value = formatVialPosDisplay(vialPosClean);
 
                 // ✅ 新增: 检查反填的孔位是否为未用孔位

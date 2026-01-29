@@ -978,6 +978,65 @@ def file_replace_station_lookup(request):
 
 
 
+@require_GET
+def file_replace_get_payload(request):
+    """
+    根据上机列表文件名，返回对应的 payload.json 内容
+    用于前端构建 match_sample -> origin_barcode 映射
+    """
+    filename = request.GET.get("filename", "").strip()
+    if not filename:
+        return JsonResponse({"ok": False, "message": "missing filename"}, status=400)
+    
+    # 推导 payload 文件名
+    # X1_OnboardingList_...txt -> X1_WorkSheet_...payload.json
+    if "OnboardingList" not in filename:
+        return JsonResponse({"ok": False, "message": "not an onboarding file"}, status=400)
+    
+    # 替换文件名中的关键字段
+    payload_filename = filename.replace("OnboardingList", "WorkSheet")
+    
+    # 去除原扩展名，添加 .payload.json
+    base_name = os.path.splitext(payload_filename)[0]
+    payload_filename = f"{base_name}.payload.json"
+    
+    # 在 DOWNLOAD_ROOT 下递归查找该文件（排除历史文件目录）
+    root = settings.DOWNLOAD_ROOT
+    payload_path = None
+    
+    for dirpath, dirnames, filenames in os.walk(root):
+        # 跳过历史目录
+        if HISTORY_DIRNAME in Path(dirpath).parts:
+            continue
+        
+        if payload_filename in filenames:
+            payload_path = os.path.join(dirpath, payload_filename)
+            break
+    
+    if not payload_path or not os.path.exists(payload_path):
+        return JsonResponse({
+            "ok": False, 
+            "message": f"payload file not found: {payload_filename}"
+        }, status=404)
+    
+    # 读取并返回 payload 内容
+    try:
+        with open(payload_path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        
+        return JsonResponse({
+            "ok": True,
+            "payload": payload,
+            "filename": payload_filename
+        })
+    except Exception as e:
+        return JsonResponse({
+            "ok": False,
+            "message": f"failed to read payload: {str(e)}"
+        }, status=500)
+
+
+
 # 收集当前‘文件下载’页面中已有的上机列表文件名，用于后续匹配和替换
 def _index_onboarding_files(root: str) -> dict:
     idx = {}
@@ -1211,7 +1270,6 @@ def _replace_worksheet_after_onboarding_replace(root: str, onboarding_uploaded_n
     hist_payload_path = _history_path_for(ws_payload_path, root)
     os.makedirs(os.path.dirname(hist_payload_path), exist_ok=True)
     os.replace(ws_payload_path, hist_payload_path)
-
 
 
 # 解析分隔符 + 读取表格（只要能稳定分列即可）

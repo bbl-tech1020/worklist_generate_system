@@ -91,6 +91,7 @@ urlpatterns = [
 
     # 上机列表替换
     path("dashboard/file_replace_station_lookup/", views.file_replace_station_lookup, name="file_replace_station_lookup"),
+    path('dashboard/file_replace/get_payload/', views.file_replace_get_payload, name='file_replace_get_payload'),
 
     path("dashboard/manual/", views.user_manual, name="user_manual"),
 ]

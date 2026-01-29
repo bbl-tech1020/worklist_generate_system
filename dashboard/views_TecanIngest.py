@@ -1894,11 +1894,15 @@ def _render_tecan_process_result(
         "project_name_full": project_name_full,
         "instrument_num": instrument_num,
         "systerm_num": systerm_num,
+        "plate_no": plate_no_str,
         "platform": 'Tecan',
-        "txt_headers": txt_headers,
-        "worklist_records": worklist_records,
+        "today_str": today_str,
+        "testing_day": '',
+        
         "worksheet_table": worksheet_table,
         "error_rows": error_rows,
+        "txt_headers": txt_headers,
+        "worklist_records": worklist_records, 
         "header": header_meta,
     }
 

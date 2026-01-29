@@ -2882,7 +2882,11 @@ def ProcessResult(request):
                 locator_label = plate_no_str
 
             well = {
-                "letter": row_letter, "num": col_num, "well_str": well_pos_str, "index": well_index,
+                "letter": row_letter, 
+                "num": col_num, 
+                "well_str": well_pos_str, 
+                "index": well_index,
+                
                 "locator": is_locator, "locator_warm": locator_label,
                 "match_sample": match_sample,
                 "cut_barcode": CutBarcode[data_idx], "sub_barcode": SubBarcode[data_idx],
@@ -3290,14 +3294,21 @@ def ProcessResult(request):
         }
 
         return {
+            "project_name": project_name,
+            "project_name_full": project_name_full,
+            "instrument_num": instrument_num,
+            "systerm_num": systerm_num,
             "plate_no": plate_no_str,
+            "platform": platform,
+            "today_str": today_str,
+            "testing_day": testing_day,
+           
             "worksheet_table": worksheet_table,
             "error_rows": error_rows,
             "txt_headers": txt_headers,
             "worklist_records": worklist_records,
             "header": header_meta,
-            "today_str": today_str,
-            "testing_day": testing_day,
+
         }
 
     # ========== 3. 分板 & 逐板处理 ==========

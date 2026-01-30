@@ -1542,20 +1542,21 @@ def _render_tecan_process_result(
             "well_str": f"{row_letter}{col_num}",
             "index":  well_index,              # 1..96（固定计算）
 
+            "locator": bool((cell or {}).get("is_locator")),     # ← 从 cell 读取
+
             # 兼容通用版的常用键（先留空/占位，后续若接入可补齐）
             "origin_barcode": "",
-            "barcode": "",
+            
             "status": "",
-            "locator": bool((cell or {}).get("is_locator")),     # ← 从 cell 读取
+            
             "flags": [],                    # 预留：重复/一对多等
             "meta": {},
 
             # 你可能在通用版用到的若干扩展键，先给默认值，避免模板/导出报错
-            "MatchResult": "",
             "match_sample": sample.get("text") or "",
-            "DupBarcode": "",
-            "DupBarcodeSampleName": "",
-            "Warm": "",
+            "dup_barcode": "",
+            "dup_barcode_sample": "",
+            "warm": "",
         }
 
         # 兼容“孔内多行”展示
@@ -1570,14 +1571,14 @@ def _render_tecan_process_result(
         else:
             # ★ 修改：优先使用 sample 中的 barcode 字段
             if d["std_qc_text"]:
-                d["barcode"] = d["std_qc_text"]  # STD/QC 用名称作为条码
+                d["origin_barcode"] = d["std_qc_text"]  # STD/QC 用名称作为条码
             elif sample.get("barcode"):
-                d["barcode"] = sample.get("barcode")  # ← ★ 临床样本用真实条码
+                d["origin_barcode"] = sample.get("barcode")  # ← ★ 临床样本用真实条码
             elif d["sample_text"]:
-                d["barcode"] = d["sample_text"]  # 兜底：无条码时用实验号
+                d["origin_barcode"] = d["sample_text"]  # 兜底：无条码时用实验号
 
-        # ★ 新增：分割 barcode 为 cut_barcode（主码）和 sub_barcode（子码）
-        full_barcode = d.get("barcode", "")
+        # ★ 新增：分割 origin_barcode 为 cut_barcode（主码）和 sub_barcode（子码）
+        full_barcode = d.get("origin_barcode", "")
         if full_barcode and "-" in str(full_barcode):
             # 格式：01000795927-01 → 主码:01000795927, 子码:01
             parts = str(full_barcode).split("-", 1)
@@ -1660,7 +1661,7 @@ def _render_tecan_process_result(
                     continue
                 
                 # 原逻辑：用完整条码作为 key（用于96孔板显示）
-                barcode = str(cell.get("barcode") or "").strip()
+                barcode = str(cell.get("origin_barcode") or "").strip()
                 if barcode:
                     m[barcode].append((cell.get("well_str"), cell.get("index")))
                 
@@ -1898,7 +1899,7 @@ def _render_tecan_process_result(
         "platform": 'Tecan',
         "today_str": today_str,
         "testing_day": '',
-        
+
         "worksheet_table": worksheet_table,
         "error_rows": error_rows,
         "txt_headers": txt_headers,

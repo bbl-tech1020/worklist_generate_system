@@ -2887,7 +2887,8 @@ def ProcessResult(request):
                 "well_str": well_pos_str, 
                 "index": well_index,
                 
-                "locator": is_locator, "locator_warm": locator_label,
+                "locator": is_locator, 
+                "locator_warm": locator_label,
                 "match_sample": match_sample,
                 "cut_barcode": CutBarcode[data_idx], "sub_barcode": SubBarcode[data_idx],
                 "origin_barcode": OriginBarcode[data_idx],

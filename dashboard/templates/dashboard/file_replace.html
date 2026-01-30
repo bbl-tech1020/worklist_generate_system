@@ -131,28 +131,6 @@
         word-break: break-all;
     }
 
-    /* ===== station_list 映射提示（匹配到实验号）===== */
-    .station-hint {
-        font-size: 12px;
-        margin-top: 4px;
-        display: none;
-        color: #198754;
-        /* 默认绿色 */
-    }
-
-    .station-hint.show {
-        display: block;
-    }
-
-    .station-hint.err {
-        color: #dc3545;
-    }
-
-    /* station_list 映射失败：仅标红提示，不影响提交 */
-    .station-miss {
-        border-color: #dc3545 !important;
-        box-shadow: 0 0 0 .2rem rgba(220, 53, 69, .15);
-    }
 </style>
 
 <form method="post" enctype="multipart/form-data" id="replace-form">
@@ -307,8 +285,6 @@
 
         let stationDate = '';
         const projectNameInput = document.getElementById('project-name');
-        const SPECIAL_PROJECTS = new Set(['CA', 'PCA', 'ZMNS']); // ZMNs 统一大写
-        let isSpecialProject = false;
 
         function extractProjectFromFilename(fname) {
             // 匹配：_S2_25OHD_20260108_
@@ -318,69 +294,6 @@
 
         // station lookup cache（避免频繁请求）
         const stationCache = new Map();
-
-        async function lookupStationExperiment(code) {
-            const c = (code || '').trim();
-            if (!c) return { ok: false };
-
-            if (stationCache.has(c)) return stationCache.get(c);
-
-            const url = `{% url 'file_replace_station_lookup' %}?code=${encodeURIComponent(c)}&date=${encodeURIComponent(stationDate || '')}`;
-
-            try {
-                const resp = await fetch(url, { method: 'GET' });
-                const data = await resp.json();
-                stationCache.set(c, data);
-                return data;
-            } catch (e) {
-                const data = { ok: false, code: c, message: 'fetch failed' };
-                stationCache.set(c, data);
-                return data;
-            }
-        }
-
-        function setStationHint(hintEl, text, ok) {
-            if (!hintEl) return;
-            hintEl.textContent = text || '';
-            hintEl.classList.toggle('show', !!text);
-            hintEl.classList.toggle('err', ok === false);
-        }
-
-        // ===== station_list 实时映射：输入任意内容都尝试查实验号 =====
-        async function handleStationMapping(inputEl, hintEl) {
-            if (!hintEl || !inputEl) return;
-
-            // 非特殊项目：不做任何提示
-            if (!isSpecialProject) {
-                inputEl.dataset.mappedExp = '';
-                inputEl.classList.remove('station-miss');
-                setStationHint(hintEl, '', true);
-                return;
-            }
-
-            const raw = (inputEl.value || '').trim();
-            inputEl.dataset.mappedExp = '';
-            inputEl.classList.remove('station-miss');
-
-            if (!raw) {
-                setStationHint(hintEl, '', true);
-                return;
-            }
-
-            // 不论输入是什么，都尝试查 station_list
-            const data = await lookupStationExperiment(raw);
-
-            if (data && data.ok && data.experiment) {
-                inputEl.dataset.mappedExp = data.experiment; // 查到：提交时可覆盖
-                setStationHint(hintEl, `匹配实验号：${data.experiment}`, true);
-                return;
-            }
-
-            // 查不到：提示 + 红框，但不影响提交（关键：不要加 vialpos-invalid）
-            inputEl.classList.add('station-miss');
-            setStationHint(hintEl, `岗位清单未找到实验号，将直接使用输入值替换`, false);
-        }
-
 
         // ✅ 统一控制：是否允许后续操作
         function setAllowed(ok, message, isError = true) {
@@ -658,9 +571,14 @@
                         if (sample === 'No match') continue;
                         if (barcode === 'NOTUBE' || barcode.includes('---')) continue;
 
-                        // 大小写兼容：同时存原样 + 大写
+                        // 正向映射：match_sample → origin_barcode
                         sampleToBarcode.set(sample, barcode);
                         sampleToBarcode.set(sample.toUpperCase(), barcode);
+                        
+                        // ⭐ 反向映射：origin_barcode → match_sample（新增）
+                        sampleToBarcode.set(barcode, sample);
+                        sampleToBarcode.set(barcode.toUpperCase(), sample);
+
                     }
                 }
 
@@ -791,11 +709,9 @@
 
             const uploadedName = (file.name || '').trim();
 
-            // ===== 解析项目名，用于“特殊项目 station_list 映射” =====
+            // ===== 解析项目名
             const proj = extractProjectFromFilename(uploadedName);
             projectNameInput.value = proj || '';
-            isSpecialProject = (proj || '').toUpperCase() && SPECIAL_PROJECTS.has((proj || '').toUpperCase());
-            stationCache.clear();  // 换文件时清缓存（避免误命中）
 
             // ✅ 1) 文件名必须在“文件下载页上机列表文件名集合”中
             if (!existingNames.has(uploadedName)) {
@@ -917,7 +833,6 @@
                         class="form-control form-control-sm barcode-input used-old-input"
                         name="used_old_barcode[]"
                         placeholder="请输入当前条码或实验号">
-                <div class="station-hint used-old-station"></div>
                 <div class="vialpos-hint used-old-hint">条码/实验号不在上机列表中</div>
                 </td>
 
@@ -929,7 +844,6 @@
                         data-last-value=""
                         placeholder="请输入新条码或实验号">
 
-                    <div class="station-hint used-new-station"></div>
                     <div class="vialpos-hint new-code-hint" style="display:none;">
                         <div class="hint-text"></div>
                         <div class="mt-1">
@@ -977,12 +891,7 @@
 
             // ===== A) 输入“当前条码/实验号” -> 匹配孔位 =====
             oldInput.addEventListener('input', async () => {
-                // ✅ 特殊项目：先尝试 station_list 映射（异步），确保 dataset.mappedExp 已更新
-                const oldStationEl = tr.querySelector('.used-old-station');
-                await handleStationMapping(oldInput, oldStationEl);
-
                 const raw = (oldInput.value || '').trim();
-                const mapped = (oldInput.dataset.mappedExp || '').trim(); // station_list 匹配到的实验号（可能为空）
 
                 // 清理状态
                 clearError(oldInput, oldHint);
@@ -994,21 +903,13 @@
 
                 // ✅ 核心改造：支持条码 + 实验号双重查找
                 const rawU = raw.toUpperCase();
-                const mappedU = mapped.toUpperCase();
 
                 // 步骤1：直接用输入值查 origin_barcode（兼容大小写）
                 let vialPosClean =
                     barcodeToVialPos.get(raw) ||
                     barcodeToVialPos.get(rawU);
 
-                // 步骤2：特殊项目下，用 station 映射的实验号查找
-                if (!vialPosClean && mapped) {
-                    vialPosClean =
-                        barcodeToVialPos.get(mapped) ||
-                        barcodeToVialPos.get(mappedU);
-                }
-
-                // ✅ 步骤3：【新增】如果仍未找到，尝试把输入当作 match_sample 查找
+                // ✅ 步骤2：【新增】如果仍未找到，尝试把输入当作 match_sample 查找
                 if (!vialPosClean) {
                     const mappedBarcode =
                         sampleToBarcode.get(raw) ||
@@ -1022,7 +923,7 @@
                     }
                 }
 
-                // 步骤4：都找不到才报错
+                // 步骤3：都找不到才报错
                 if (!vialPosClean) {
                     setError(oldInput, oldHint);
                     return;
@@ -1141,7 +1042,6 @@
                         data-confirmed="false"
                         data-last-value=""
                         placeholder="请输入新条码">
-                    <div class="station-hint nouse-new-station"></div>
 
                     <div class="vialpos-hint new-code-hint" style="display:none;">
                         <div class="hint-text"></div>
@@ -1501,20 +1401,13 @@
                 const t = e.target;
                 if (!t) return;
 
+                // 移除 station 映射调用，仅保留验证逻辑
                 if (t.classList.contains('used-new-input')) {
-                    // ✅ 新增：实时查岗位清单并显示匹配实验号
-                    const hintEl = t.closest('td')?.querySelector('.used-new-station');
-                    handleStationMapping(t, hintEl);
-
                     validateOneNewInput(t);
                     validateAllNewInputs();
                 }
-
+                
                 if (t.classList.contains('nouse-new-input')) {
-                    // ✅ 新增：实时查岗位清单并显示匹配实验号
-                    const hintEl = t.closest('td')?.querySelector('.nouse-new-station');
-                    handleStationMapping(t, hintEl);
-
                     validateOneNewInput(t);
                     validateAllNewInputs();
                 }

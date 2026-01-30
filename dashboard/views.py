@@ -20,6 +20,7 @@ from django.db.models import Q
 from .forms import *
 
 import xlrd
+import math
 from datetime import datetime,date,timedelta
 from icecream import ic
 from collections import defaultdict, deque, Counter
@@ -571,9 +572,6 @@ def file_sort_key(fname: str):
 HISTORY_DIRNAME = "历史文件"
 STATION_DIRNAME = "岗位清单"
 
-# ===== 特殊项目：需要用 station_list.json 做“主条码 -> 实验号”映射 =====
-SPECIAL_PROJECTS = {"CA", "PCA", "ZMNS"}  # ZMNs 统一用大写比较
-
 # 从 OnboardingList 文件名中提取项目名，例如：
 # X6_OnboardingList_FXS-YZ04_S2_25OHD_20260108_060259_X6_GZ.txt -> 25OHD
 _PROJECT_RE = re.compile(r"_S\d+_([A-Za-z0-9]+)_(\d{8})_")
@@ -943,39 +941,6 @@ def file_replace_sampled_codes(request):
         "date": timezone.localdate().strftime("%Y-%m-%d"),
         "codes": codes,
     })
-
-
-@require_GET
-def file_replace_station_lookup(request):
-    """
-    前端用：输入主条码 -> 返回实验号（来自 岗位清单/{today}/station_list.json）
-    返回格式：
-      { ok: true, code: "...", experiments: ["AE0001", ...], experiment: "AE0001" }
-      { ok: false, code: "...", message: "..." }
-    """
-    code = (request.GET.get("code") or "").strip()
-    if not code:
-        return JsonResponse({"ok": False, "code": "", "message": "missing code"})
-
-    station_map = _load_station_list_for_today()
-    exp_list = station_map.get(code)
-
-    if not (isinstance(exp_list, list) and exp_list):
-        return JsonResponse({
-            "ok": False,
-            "code": code,
-            "experiments": [],
-            "message": "not found"
-        })
-
-    exp_list = [str(x).strip() for x in exp_list if str(x).strip()]
-    return JsonResponse({
-        "ok": True,
-        "code": code,
-        "experiments": exp_list,
-        "experiment": exp_list[0] if exp_list else ""
-    })
-
 
 
 @require_GET
@@ -1413,10 +1378,7 @@ def file_replace(request):
             })
 
         uploaded_name = Path(upload.name).name
-
         project_name = _extract_project_from_onboarding_filename(uploaded_name)
-        is_special_project = project_name.strip().upper() in SPECIAL_PROJECTS
-        station_map = _load_station_list_for_today() if is_special_project else {}
 
         root = settings.DOWNLOAD_ROOT
         os.makedirs(root, exist_ok=True)
@@ -1457,21 +1419,10 @@ def file_replace(request):
                     })
                 entries.append({"vialpos": vp, "old": old, "new": new})
 
-            # ===== 特殊项目：条码/实验号 -> station_list 实验号 映射（后端兜底；查不到也放行）=====
-            if is_special_project:
-                for e in entries:
-                    _, mapped_old, found_old = _map_to_station_experiment(e.get("old", ""), station_map)
-                    _, mapped_new, found_new = _map_to_station_experiment(e.get("new", ""), station_map)
-
-                    # 查到则替换成实验号；查不到则保留原输入（mapped_* 已经是原值）
-                    e["old"] = mapped_old
-                    e["new"] = mapped_new
-
             if not entries:
                 return render(request, "dashboard/error.html", {
                     "message": "未检测到任何有效替换行，请填写后再提交。"
                 })
-
 
             # 读取目标文件
             with open(target_path, "r", encoding="utf-8", errors="replace") as f:
@@ -1664,12 +1615,6 @@ def file_replace(request):
                         "message": "存在未填写的孔位（VialPos），请补全后再提交。"
                     })
                 entries.append({"new": new_code, "vialpos": vp})
-            
-            # ===== 特殊项目：条码/实验号 -> station_list 实验号 映射（后端兜底；查不到也放行）=====
-            if is_special_project:
-                for e in entries:
-                    _, mapped_new, found_new = _map_to_station_experiment(e.get("new", ""), station_map)
-                    e["new"] = mapped_new
 
             if not entries:
                 return render(request, "dashboard/error.html", {
@@ -3431,6 +3376,29 @@ def _json_default(obj):
         pass
     return str(obj)
 
+
+def sanitize_payload(obj):
+    """
+    递归清理 payload 中的 NaN/Infinity 值
+    将其转换为合适的默认值
+    """
+    if isinstance(obj, dict):
+        return {k: sanitize_payload(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [sanitize_payload(item) for item in obj]
+    elif isinstance(obj, float):
+        if math.isnan(obj):
+            return ""  # 或返回 ""
+        if math.isinf(obj):
+            return ""  # 或返回 ""
+        return obj
+    elif isinstance(obj, str):
+        if obj.lower() in ("nan", "none"):
+            return ""
+        return obj
+    else:
+        return obj
+    
 def _dump_payload_json(target_dir: str, payload: dict, filename: str = "payload.json") -> str:
     """
     将 payload 保存为 JSON 文件（UTF-8，保留中文），与 PDF 同目录。
@@ -3441,8 +3409,11 @@ def _dump_payload_json(target_dir: str, payload: dict, filename: str = "payload.
     out_path = os.path.join(target_dir, filename)
     tmp_path = out_path + ".tmp"
 
+    # ⭐ 清理 NaN 值
+    clean_payload = sanitize_payload(payload)
+
     with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2, default=_json_default)
+        json.dump(payload, f, ensure_ascii=False, indent=2, default=_json_default, allow_nan=False)
 
     os.replace(tmp_path, out_path)
     return out_path

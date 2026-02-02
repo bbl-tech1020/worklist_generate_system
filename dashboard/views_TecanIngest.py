@@ -14,6 +14,7 @@ from django.utils import timezone
 from django.shortcuts import render
 from .models import *
 
+import math
 import os
 import json
 import pandas as pd
@@ -1275,6 +1276,8 @@ def _apply_mapping_to_table(
     
     if 'VialPos' in df.columns:
         df = format_vialpos_column(df, "VialPos")
+
+    df = df.fillna("")
     ic(df)
 
     return df
@@ -1747,6 +1750,7 @@ def _render_tecan_process_result(
 
     # ③ 拼出 SampleName_list（与 NIMBUS 同构：DB + STD/QC + 临床 [+ QC 结尾…]）
     SampleName_list = test_list + curve_list + qc_list1 + ClinicalSample_with_locator + qc_list2
+    SampleName_list = ['' if isinstance(x, float) and math.isnan(x) else x for x in SampleName_list]
 
     # ④ 以模板列头构造空表，第一列写入 SampleName_list  _write_processed_copy_from_original
     txt_headers = list(df_worklistmap.columns)
@@ -1820,6 +1824,7 @@ def _render_tecan_process_result(
 
     # 6) 导出给模板（动态表头/行）
     txt_headers = list(worklist_table.columns)
+    worklist_table = worklist_table.fillna("")
     worklist_records = worklist_table.to_dict("records")
 
     # 7) 写进 session 的 export_payload（便于“预览/导出”链路直接复用）

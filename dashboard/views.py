@@ -3228,6 +3228,7 @@ def ProcessResult(request):
         if '级别' in worklist_table.columns:
             worklist_table = format_vialpos_column(worklist_table, "级别")
 
+        worklist_table = worklist_table.fillna("")
         worklist_records = worklist_table.to_dict(orient="records")
 
         header_meta = {

@@ -1278,7 +1278,6 @@ def _apply_mapping_to_table(
         df = format_vialpos_column(df, "VialPos")
 
     df = df.fillna("")
-    ic(df)
 
     return df
 
@@ -1652,12 +1651,15 @@ def _render_tecan_process_result(
                 #     buckets.setdefault(sname, [])
         return {k: deque(v) for k, v in buckets.items()}
 
+
     def _barcode_to_well_from_table(worksheet_table):
         """
         返回： dict[str, deque[(well_pos, well_num)]]
         ★ 修复：临床样本同时用实验号和条码作为 key
+        ★ 新增：对每个条码的孔位队列按列优先排序
         """
-        m = defaultdict(deque)
+        m = defaultdict(list)  # ← 改为 list，方便排序
+        
         for row in (worksheet_table or []):
             for cell in (row or []):
                 if not cell:
@@ -1666,14 +1668,41 @@ def _render_tecan_process_result(
                 # 原逻辑：用完整条码作为 key（用于96孔板显示）
                 barcode = str(cell.get("origin_barcode") or "").strip()
                 if barcode:
-                    m[barcode].append((cell.get("well_str"), cell.get("index")))
+                    m[barcode].append((
+                        cell.get("well_str"),  # 如 "A5"
+                        cell.get("index"),     # 如 5
+                        cell.get("num"),       # ← 新增：列号
+                        cell.get("letter")     # ← 新增：行字母
+                    ))
                 
                 # ★ 新增：同时用实验号作为 key（用于上机列表孔位匹配）
                 sample_text = str(cell.get("sample_text") or "").strip()
                 if sample_text and sample_text != barcode:  # 避免重复注册
-                    m[sample_text].append((cell.get("well_str"), cell.get("index")))
+                    m[sample_text].append((
+                        cell.get("well_str"),
+                        cell.get("index"),
+                        cell.get("num"),       # ← 新增：列号
+                        cell.get("letter")     # ← 新增：行字母
+                    ))
+    
+        # ★ 新增：对每个条码的孔位列表按"列优先"排序
+        def col_first_sort_key(item):
+            """
+            排序键：先按列号，再按行字母（A-H）
+            item = (well_str, well_num, col_num, row_letter)
+            """
+            well_str, well_num, col_num, row_letter = item
+            row_order = ord(row_letter) - ord('A')  # A=0, B=1, ..., H=7
+            return (col_num, row_order)  # 列优先：先列后行
         
-        return m
+        # 排序后转为 deque，只保留 (well_str, well_num)
+        result = {}
+        for key, wells in m.items():
+            sorted_wells = sorted(wells, key=col_first_sort_key)
+            # 去掉排序用的额外字段，只保留前两个元素
+            result[key] = deque([(w[0], w[1]) for w in sorted_wells])
+        
+        return result
 
 
     # 1) 基于 grid 的 std_qc，构建 name->barcodes（TECAN：名称即条码）

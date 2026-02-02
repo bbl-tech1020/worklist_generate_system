@@ -130,7 +130,6 @@
         color: #6c757d;
         word-break: break-all;
     }
-
 </style>
 
 <form method="post" enctype="multipart/form-data" id="replace-form">
@@ -156,9 +155,42 @@
                     <option value="used">已用孔位替换（如扫错条码）</option>
                     <option value="nouse">未用孔位替换（如样本量不足，存在剩余孔位）</option>
                     <option value="delete">孔位删除</option>
+                    <option value="custom">自定义（可组合多个功能）</option>
                 </select>
                 <input type="hidden" id="project-name" name="project_name">
             </div>
+
+
+            <!-- ✅ 新增：自定义功能选择区域 -->
+            <div id="custom-selector-panel" style="display:none;">
+                <div class="card mb-3">
+                    <div class="card-body">
+                        <label class="form-label fw-bold">请选择要使用的功能模块：</label>
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="custom-used" value="used">
+                            <label class="form-check-label" for="custom-used">
+                                已用孔位替换
+                            </label>
+                        </div>
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="custom-nouse" value="nouse">
+                            <label class="form-check-label" for="custom-nouse">
+                                未用孔位替换
+                            </label>
+                        </div>
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="custom-delete" value="delete">
+                            <label class="form-check-label" for="custom-delete">
+                                孔位删除
+                            </label>
+                        </div>
+                        <div class="hint mt-2" style="color: #dc3545;">
+                            至少选择一个功能模块
+                        </div>
+                    </div>
+                </div>
+            </div>
+
 
             <!-- ✅ 已用孔位替换区域：先只做展示与添加行，不写孔位关联逻辑 -->
             <div id="used-panel" style="display:none;">
@@ -340,6 +372,17 @@
             if (!baseAllowed || !parsedOK || !replaceReasonSelect.value) {
                 submitBtn.disabled = true;
                 return;
+            }
+
+            // ✅ 新增：自定义模式下，必须至少选择一个功能模块
+            if (replaceReasonSelect.value === 'custom') {
+                const hasSelection = customUsedCheckbox.checked ||
+                    customNouseCheckbox.checked ||
+                    customDeleteCheckbox.checked;
+                if (!hasSelection) {
+                    submitBtn.disabled = true;
+                    return;
+                }
             }
 
             // 1) 任一输入框处于“invalid”状态（红框）-> 禁止提交
@@ -574,7 +617,7 @@
                         // 正向映射：match_sample → origin_barcode
                         sampleToBarcode.set(sample, barcode);
                         sampleToBarcode.set(sample.toUpperCase(), barcode);
-                        
+
                         // ⭐ 反向映射：origin_barcode → match_sample（新增）
                         sampleToBarcode.set(barcode, sample);
                         sampleToBarcode.set(barcode.toUpperCase(), sample);
@@ -1263,10 +1306,17 @@
 
 
         // ===== 根据 replace_reason 切换显示 =====
+        // ✅ 新增：自定义模块的复选框引用
+        const customSelectorPanel = document.getElementById('custom-selector-panel');
+        const customUsedCheckbox = document.getElementById('custom-used');
+        const customNouseCheckbox = document.getElementById('custom-nouse');
+        const customDeleteCheckbox = document.getElementById('custom-delete');
+
         replaceReasonSelect.addEventListener('change', () => {
             const val = replaceReasonSelect.value;
 
             if (val === 'used') {
+                customSelectorPanel.style.display = 'none';
                 usedPanel.style.display = 'block';
                 nousePanel.style.display = 'none';
                 deletePanel.style.display = 'none';
@@ -1275,6 +1325,7 @@
                     usedTbody.appendChild(createUsedRow());
                 }
             } else if (val === 'nouse') {
+                customSelectorPanel.style.display = 'none';
                 usedPanel.style.display = 'none';
                 nousePanel.style.display = 'block';
                 deletePanel.style.display = 'none';
@@ -1283,6 +1334,7 @@
                     nouseTbody.appendChild(createNouseRow());
                 }
             } else if (val === 'delete') {
+                customSelectorPanel.style.display = 'none';
                 usedPanel.style.display = 'none';
                 nousePanel.style.display = 'none';
                 deletePanel.style.display = 'block';
@@ -1290,7 +1342,19 @@
                 if (deleteTbody.children.length === 0) {
                     deleteTbody.appendChild(createDeleteRow());
                 }
+            } else if (val === 'custom') {
+                // ✅ 新增：显示自定义选择区域，初始隐藏所有功能面板
+                customSelectorPanel.style.display = 'block';
+                usedPanel.style.display = 'none';
+                nousePanel.style.display = 'none';
+                deletePanel.style.display = 'none';
+
+                // 清空复选框状态
+                customUsedCheckbox.checked = false;
+                customNouseCheckbox.checked = false;
+                customDeleteCheckbox.checked = false;
             } else {
+                customSelectorPanel.style.display = 'none';
                 usedPanel.style.display = 'none';
                 nousePanel.style.display = 'none';
                 deletePanel.style.display = 'none';
@@ -1298,6 +1362,55 @@
 
             updateSubmitState();
         });
+
+
+        // ✅ 新增：自定义模块的复选框变化事件
+        function updateCustomPanels() {
+            const isUsedChecked = customUsedCheckbox.checked;
+            const isNouseChecked = customNouseCheckbox.checked;
+            const isDeleteChecked = customDeleteCheckbox.checked;
+
+            // 根据复选框状态显示/隐藏对应面板
+            if (isUsedChecked) {
+                usedPanel.style.display = 'block';
+                if (usedTbody.children.length === 0) {
+                    usedTbody.appendChild(createUsedRow());
+                }
+            } else {
+                usedPanel.style.display = 'none';
+                // 可选：清空表格内容
+                // usedTbody.innerHTML = '';
+            }
+
+            if (isNouseChecked) {
+                nousePanel.style.display = 'block';
+                if (nouseTbody.children.length === 0) {
+                    nouseTbody.appendChild(createNouseRow());
+                }
+            } else {
+                nousePanel.style.display = 'none';
+                // 可选：清空表格内容
+                // nouseTbody.innerHTML = '';
+            }
+
+            if (isDeleteChecked) {
+                deletePanel.style.display = 'block';
+                if (deleteTbody.children.length === 0) {
+                    deleteTbody.appendChild(createDeleteRow());
+                }
+            } else {
+                deletePanel.style.display = 'none';
+                // 可选：清空表格内容
+                // deleteTbody.innerHTML = '';
+            }
+
+            updateSubmitState();
+        }
+
+        // 监听三个复选框的变化
+        customUsedCheckbox.addEventListener('change', updateCustomPanels);
+        customNouseCheckbox.addEventListener('change', updateCustomPanels);
+        customDeleteCheckbox.addEventListener('change', updateCustomPanels);
 
 
         document.getElementById('replace-form').addEventListener('submit', (ev) => {
@@ -1406,7 +1519,7 @@
                     validateOneNewInput(t);
                     validateAllNewInputs();
                 }
-                
+
                 if (t.classList.contains('nouse-new-input')) {
                     validateOneNewInput(t);
                     validateAllNewInputs();

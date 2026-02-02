@@ -1369,6 +1369,266 @@ def _normalize_user_vialpos(s: str) -> dict:
     return {"ok": True, "well": _num_to_well(n), "num": n}
 
 
+
+# ===== 辅助函数：已用孔位替换核心逻辑 =====
+def _apply_used_replacement(rows, entries, vial_idx, header, drawer_prefix, same_as_first_cols):
+    """
+    执行已用孔位替换逻辑
+    返回：修改后的 rows
+    """
+    def _row_match(cols: list[str], entry: dict) -> bool:
+        old = entry["old"]
+        if old and (cols[0] or "").strip() == old:
+            return True
+
+        vp_in = entry["vialpos"]
+        if not vp_in:
+            return False
+
+        norm = _normalize_user_vialpos(vp_in)
+        vp_cell_raw = (cols[vial_idx] or "").strip()
+        vp_clean = _clean_vialpos(vp_cell_raw)
+        vp_clean_up = vp_clean.upper()
+
+        if norm.get("ok"):
+            if vp_clean_up == norm["well"]:
+                return True
+            if vp_clean == str(norm["num"]):
+                return True
+
+        if vp_clean_up == vp_in.strip().upper():
+            return True
+        if vp_clean == vp_in.strip():
+            return True
+
+        return False
+
+    for entry in entries:
+        hit = False
+        for cols in rows:
+            if _row_match(cols, entry):
+                new_code_text = str(entry["new"]).strip()
+                if new_code_text.isdigit():
+                    new_code_formatted = f"\t{new_code_text}"
+                else:
+                    new_code_formatted = new_code_text
+
+                cols[0] = new_code_formatted
+
+                for j in same_as_first_cols:
+                    if 0 <= j < len(cols):
+                        cols[j] = new_code_formatted
+
+                if drawer_prefix:
+                    vp_current = (cols[vial_idx] or "").strip()
+                    if vp_current and drawer_prefix:
+                        has_prefix = bool(_SPLIT_VIAL_RE.search(vp_current))
+                        
+                        if not has_prefix:
+                            norm = _normalize_user_vialpos(vp_current)
+                            if norm.get("ok"):
+                                cols[vial_idx] = f"{drawer_prefix}{norm['num']}"
+                            else:
+                                cols[vial_idx] = f"{drawer_prefix}{vp_current}"
+
+                hit = True
+                break
+        
+        if not hit:
+            raise ValueError(f"未找到可替换行：孔位={entry['vialpos']} / 当前条码={entry['old']}")
+    
+    return rows
+
+
+# ===== 辅助函数：未用孔位替换核心逻辑 =====
+def _apply_nouse_replacement(rows, entries, vial_idx, header, drawer_prefix, same_as_first_cols):
+    """
+    执行未用孔位替换逻辑
+    返回：修改后的 rows
+    """
+    def _is_locator_row(cols: list[str], first_col_idx: int = 0) -> bool:
+        first_val = (cols[first_col_idx] or "").strip().upper()
+        if 'X' in first_val and len(first_val) <= 3:
+            return True
+        return False
+    
+    def _find_locator_row_index(rows: list[list[str]]) -> int:
+        for idx, cols in enumerate(rows):
+            if _is_locator_row(cols):
+                return idx
+        return -1
+
+    # 找模板行
+    template_row = None
+    for cols in rows:
+        first = (cols[0] or "").strip().upper()
+        if first and first != "NOTUBE":
+            template_row = cols
+            break
+
+    if template_row is None:
+        raise ValueError("未找到可用于复制的模板行（第一列非 NOTUBE），无法执行未用孔位替换。")
+
+    def _match_row_by_vialpos(cols: list[str], vp_in: str) -> bool:
+        vp_in = (vp_in or "").strip()
+        if not vp_in:
+            return False
+
+        norm = _normalize_user_vialpos(vp_in)
+        vp_cell_raw = (cols[vial_idx] or "").strip()
+        vp_clean = _clean_vialpos(vp_cell_raw)
+        vp_clean_up = vp_clean.upper()
+
+        if norm.get("ok"):
+            if vp_clean_up == norm["well"]:
+                return True
+            if vp_clean == str(norm["num"]):
+                return True
+
+        if vp_clean_up == vp_in.upper():
+            return True
+        if vp_clean == vp_in:
+            return True
+        return False
+
+    used_vps_seen = set()
+
+    for entry in entries:
+        vp_in = entry["vialpos"]
+        vp_key = vp_in.strip().upper()
+        if vp_key in used_vps_seen:
+            raise ValueError(f"提交中存在重复孔位：{vp_in}")
+        used_vps_seen.add(vp_key)
+
+        hit_cols = None
+        for cols in rows:
+            if _match_row_by_vialpos(cols, vp_in):
+                hit_cols = cols
+                break
+
+        if hit_cols is None:
+            hit_cols = list(template_row)
+
+            norm = _normalize_user_vialpos(vp_in)  
+            if norm.get("ok"):
+                vialpos_value = f"{drawer_prefix}{norm['num']}" if drawer_prefix else str(norm["num"])
+            else:
+                vialpos_value = f"{drawer_prefix}{vp_in.strip()}" if drawer_prefix else vp_in.strip()
+
+            hit_cols[vial_idx] = vialpos_value
+
+            if len(hit_cols) > 0 and not (hit_cols[0] or "").strip():
+                hit_cols[0] = "NOTUBE"
+
+            locator_idx = _find_locator_row_index(rows)
+            if locator_idx != -1:
+                rows.insert(locator_idx + 1, hit_cols)
+            else:
+                rows.append(hit_cols)
+
+        old_vp_val = hit_cols[vial_idx]
+        for j in range(len(hit_cols)):
+            if j == 0 or j == vial_idx:
+                continue
+            hit_cols[j] = template_row[j]
+
+        new_code_text = str(entry["new"]).strip()
+        if new_code_text.isdigit():
+            new_code_formatted = f"\t{new_code_text}"
+        else:
+            new_code_formatted = new_code_text
+
+        hit_cols[0] = new_code_formatted
+
+        for j in same_as_first_cols:
+            if 0 <= j < len(hit_cols):
+                hit_cols[j] = new_code_formatted
+
+        hit_cols[vial_idx] = old_vp_val
+
+    return rows
+
+
+# ===== 辅助函数：孔位删除核心逻辑 =====
+def _apply_delete_replacement(rows, entries, vial_idx, header):
+    """
+    执行孔位删除逻辑
+    返回：修改后的 rows
+    """
+    barcode_to_row = {}
+    for cols in rows:
+        code0 = (cols[0] or "").strip()
+        if code0:
+            barcode_to_row[code0] = cols
+
+    def _match_row_by_vialpos(cols: list[str], vp_in: str) -> bool:
+        vp_in = (vp_in or "").strip()
+        if not vp_in:
+            return False
+
+        norm = _normalize_user_vialpos(vp_in)
+        vp_cell_raw = (cols[vial_idx] or "").strip()
+        vp_clean = _clean_vialpos(vp_cell_raw)
+        vp_clean_up = vp_clean.upper()
+
+        if norm.get("ok"):
+            if vp_clean_up == norm["well"]:
+                return True
+            if vp_clean == str(norm["num"]):
+                return True
+
+        if vp_clean_up == vp_in.upper():
+            return True
+        if vp_clean == vp_in:
+            return True
+        return False
+
+    seen_keys = set()
+    rows_to_delete = []
+
+    for entry in entries:
+        vp_in = entry["vialpos"]
+        code_in = entry["code"]
+
+        key = (vp_in.strip().upper() if vp_in else "") + "|" + (code_in.strip())
+        if key in seen_keys:
+            raise ValueError(f"提交中存在重复删除行：孔位={vp_in}, 条码/实验号={code_in}")
+        seen_keys.add(key)
+
+        hit_cols = None
+
+        if code_in:
+            hit_cols = barcode_to_row.get(code_in)
+
+        if hit_cols is None and vp_in:
+            for cols in rows:
+                if _match_row_by_vialpos(cols, vp_in):
+                    hit_cols = cols
+                    break
+
+        if hit_cols is None:
+            raise ValueError(f"未在上机列表中找到要删除的记录：孔位={vp_in} 条码/实验号={code_in}")
+
+        if vp_in:
+            ok = _match_row_by_vialpos(hit_cols, vp_in)
+            if not ok:
+                raise ValueError(f"孔位与条码/实验号不匹配：孔位={vp_in} 条码/实验号={code_in}")
+
+        if code_in:
+            code0 = (hit_cols[0] or "").strip()
+            if code0 != code_in:
+                raise ValueError(f"孔位与条码/实验号不匹配：孔位={vp_in} 条码/实验号={code_in}")
+
+        rows_to_delete.append(hit_cols)
+
+    for row in rows_to_delete:
+        if row in rows:
+            rows.remove(row)
+
+    return rows
+
+
+
 def file_replace(request):
     if request.method == "POST":
         upload = request.FILES.get("replace_file")
@@ -1392,6 +1652,215 @@ def file_replace(request):
             })
 
         replace_reason = (request.POST.get("replace_reason") or "").strip()
+
+        # ✅ 新增：处理自定义模式
+        if replace_reason == "custom":
+            # 自定义模式下，按顺序依次处理各个勾选的功能
+            # 注意：必须按 used -> nouse -> delete 的顺序处理
+            # 因为后续操作依赖前面操作的结果
+            
+            # 读取文件内容（只读取一次，避免重复读取）
+            with open(target_path, "r", encoding="utf-8", errors="replace") as f:
+                text, file_enc = _read_text_with_fallback(target_path)
+
+            lines = [l for l in text.splitlines() if l.strip() != ""]
+            if len(lines) < 2:
+                return render(request, "dashboard/error.html", {
+                    "message": f"上机列表文件内容不足，无法替换：{uploaded_name}"
+                })
+
+            delimiter = _guess_delimiter(lines[0])
+            header = lines[0].split(delimiter)
+
+            # 解析表头
+            def _norm_h(h: str) -> str:
+                return (h or "").strip().lower().replace("% header=", "").strip()
+
+            headers_norm = [_norm_h(h) for h in header]
+
+            # 找孔位列
+            vial_idx = -1
+            for i, h in enumerate(headers_norm):
+                if h == "vialpos" or h == "vial position":
+                    vial_idx = i
+                    break
+                if header[i].strip() == "样品瓶":
+                    vial_idx = i
+                    break
+
+            if vial_idx == -1:
+                return render(request, "dashboard/error.html", {
+                    "message": f"未找到孔位列（VialPos / Vial position / 样品瓶），无法替换：{uploaded_name}。当前表头：{' | '.join(header)}"
+                })
+
+            # 构建初始rows（所有操作共用）
+            rows = []
+            for i in range(1, len(lines)):
+                cols = lines[i].split(delimiter)
+                if len(cols) < len(header):
+                    cols = cols + [""] * (len(header) - len(cols))
+                rows.append(cols)
+
+            # 提取进样盘号前缀（所有操作共用）
+            drawer_prefix = ""
+            for cols in rows:
+                vp_raw = (cols[vial_idx] or "").strip()
+                if not vp_raw or vp_raw.upper() == "NOTUBE":
+                    continue
+                
+                parts = [p for p in _SPLIT_VIAL_RE.split(vp_raw) if p]
+                if len(parts) >= 2:
+                    last_part = parts[-1]
+                    idx = vp_raw.rfind(last_part)
+                    if idx > 0:
+                        drawer_prefix = vp_raw[:idx]
+                        break
+
+            # 检测与第一列完全相同的列
+            same_as_first_cols = _detect_columns_equal_to_first(rows)
+
+            # 存储所有替换条目（用于工作清单同步）
+            all_entries = []
+            combined_reason = []  # 用于记录实际执行了哪些操作
+            
+            # ===== 1. 处理已用孔位替换 =====
+            used_vialpos = request.POST.getlist("used_vialpos[]")
+            used_old = request.POST.getlist("used_old_barcode[]")
+            used_new = request.POST.getlist("used_new_barcode[]")
+            
+            if used_vialpos or used_old or used_new:
+                if not (len(used_vialpos) == len(used_old) == len(used_new)):
+                    return render(request, "dashboard/error.html", {
+                        "message": "已用孔位替换数据不完整：孔位/旧条码/新条码行数不一致。"
+                    })
+                
+                entries = []
+                for vp, old, new in zip(used_vialpos, used_old, used_new):
+                    vp = (vp or "").strip()
+                    old = (old or "").strip()
+                    new = (new or "").strip()
+                    if not (vp or old or new):
+                        continue
+                    if not new:
+                        return render(request, "dashboard/error.html", {
+                            "message": "已用孔位替换存在未填写的新条码/实验号，请补全后再提交。"
+                        })
+                    entries.append({"vialpos": vp, "old": old, "new": new})
+                
+                if entries:
+                    combined_reason.append("used")
+                    all_entries.extend(entries)
+                    # 执行已用孔位替换逻辑（复用原有逻辑）
+                    rows = _apply_used_replacement(rows, entries, vial_idx, header, 
+                                                   drawer_prefix, same_as_first_cols)
+
+            # ===== 2. 处理未用孔位替换 =====
+            nouse_new = request.POST.getlist("nouse_new_barcode[]")
+            nouse_vp = request.POST.getlist("nouse_vialpos[]")
+            
+            if nouse_new or nouse_vp:
+                if len(nouse_new) != len(nouse_vp):
+                    return render(request, "dashboard/error.html", {
+                        "message": "未用孔位替换数据不完整：新条码/孔位行数不一致。"
+                    })
+                
+                entries = []
+                for new_code, vp in zip(nouse_new, nouse_vp):
+                    new_code = (new_code or "").strip()
+                    vp = (vp or "").strip()
+                    if not (new_code or vp):
+                        continue
+                    if not new_code:
+                        return render(request, "dashboard/error.html", {
+                            "message": "未用孔位替换存在未填写的新条码/实验号，请补全后再提交。"
+                        })
+                    if not vp:
+                        return render(request, "dashboard/error.html", {
+                            "message": "未用孔位替换存在未填写的孔位（VialPos），请补全后再提交。"
+                        })
+                    entries.append({"new": new_code, "vialpos": vp})
+                
+                if entries:
+                    combined_reason.append("nouse")
+                    all_entries.extend(entries)
+                    # 执行未用孔位替换逻辑（复用原有逻辑）
+                    rows = _apply_nouse_replacement(rows, entries, vial_idx, header,
+                                                    drawer_prefix, same_as_first_cols)
+
+            # ===== 3. 处理孔位删除 =====
+            del_vialpos = request.POST.getlist("delete_vialpos[]")
+            del_code = request.POST.getlist("delete_barcode[]")
+            
+            if del_vialpos or del_code:
+                if len(del_vialpos) != len(del_code):
+                    return render(request, "dashboard/error.html", {
+                        "message": "孔位删除数据不完整：孔位/条码行数不一致。"
+                    })
+                
+                entries = []
+                for vp, code in zip(del_vialpos, del_code):
+                    vp = (vp or "").strip()
+                    code = (code or "").strip()
+                    if not (vp or code):
+                        continue
+                    entries.append({"vialpos": vp, "code": code})
+                
+                if entries:
+                    combined_reason.append("delete")
+                    all_entries.extend(entries)
+                    # 执行孔位删除逻辑（复用原有逻辑）
+                    rows = _apply_delete_replacement(rows, entries, vial_idx, header)
+
+            # 如果没有任何有效操作
+            if not all_entries:
+                return render(request, "dashboard/error.html", {
+                    "message": "未检测到任何有效替换操作，请至少填写一个功能模块的内容。"
+                })
+
+            # 生成新文件（与原有逻辑相同）
+            dir_path = os.path.dirname(target_path)
+            base = os.path.basename(target_path)
+            new_name = f"Replace_{base}"
+            new_path = os.path.join(dir_path, new_name)
+
+            if os.path.exists(new_path):
+                ts = timezone.now().strftime("%Y%m%d_%H%M%S")
+                stem, ext = os.path.splitext(new_name)
+                new_name = f"{stem}_{ts}{ext}"
+                new_path = os.path.join(dir_path, new_name)
+
+            # 写入新文件
+            out_lines = []
+            out_lines.append(delimiter.join(header))
+            for cols in rows:
+                out_lines.append(delimiter.join(cols))
+            out_text = "\n".join(out_lines) + "\n"
+
+            with open(new_path, "w", encoding="utf-8") as f:
+                f.write(out_text)
+
+            # 把旧文件移动到历史目录
+            hist_path = _history_path_for(target_path, root)
+            os.makedirs(os.path.dirname(hist_path), exist_ok=True)
+            os.replace(target_path, hist_path)
+
+            # 同步替换工作清单
+            try:
+                # 使用组合的替换原因（取第一个非空的，或者用"custom"）
+                primary_reason = combined_reason[0] if combined_reason else "used"
+                _replace_worksheet_after_onboarding_replace(
+                    root=root,
+                    onboarding_uploaded_name=uploaded_name,
+                    replace_reason=primary_reason,
+                    entries=all_entries,
+                    target_dir=dir_path,
+                )
+            except Exception as e:
+                return render(request, "dashboard/error.html", {
+                    "message": f"上机列表替换成功，但工作清单替换失败：{str(e)}"
+                })
+
+            return redirect("file_download")
 
         # ===== 只先实现：已用孔位替换 used =====
         if replace_reason == "used":

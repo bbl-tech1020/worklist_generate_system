@@ -1369,9 +1369,40 @@ def _normalize_user_vialpos(s: str) -> dict:
     return {"ok": True, "well": _num_to_well(n), "num": n}
 
 
+def _detect_vialpos_format(rows: list[list[str]], vial_idx: int) -> str:
+    """
+    检测原始上机列表中第一个有效'临床样品'的孔位格式
+    返回：
+      - "numeric": 1..96 数字格式
+      - "alpha": A1..H12 字母+数字格式
+      - "unknown": 无法识别（兜底）
+    """
+    for cols in rows:
+        # 判断是否为临床样品（第一列不包含 DB/Test/STD/QC）
+        first_col = (cols[0] or "").strip().upper()
+        if not first_col:
+            continue
+        if any(keyword in first_col for keyword in ["DB", "TEST", "STD", "QC"]):
+            continue
+        
+        vp_raw = (cols[vial_idx] or "").strip()
+        if not vp_raw or vp_raw.upper() == "NOTUBE":
+            continue
+        
+        # 清洗孔位（去除前缀，只保留最后一段）
+        vp_clean = _clean_vialpos(vp_raw)
+        
+        # 判断格式：纯数字 1..96 or 字母+数字 A1..H12
+        if re.fullmatch(r"\d+", vp_clean):
+            return "numeric"
+        elif re.fullmatch(r"[A-H]\d+", vp_clean, re.I):
+            return "alpha"
+    
+    return "unknown"
+
 
 # ===== 辅助函数：已用孔位替换核心逻辑 =====
-def _apply_used_replacement(rows, entries, vial_idx, header, drawer_prefix, same_as_first_cols):
+def _apply_used_replacement(rows, entries, vial_idx, header, drawer_prefix, same_as_first_cols, vialpos_format="numeric"):
     """
     执行已用孔位替换逻辑
     返回：修改后的 rows
@@ -1427,7 +1458,11 @@ def _apply_used_replacement(rows, entries, vial_idx, header, drawer_prefix, same
                         if not has_prefix:
                             norm = _normalize_user_vialpos(vp_current)
                             if norm.get("ok"):
-                                cols[vial_idx] = f"{drawer_prefix}{norm['num']}"
+                                # ★ 根据原始格式决定
+                                if vialpos_format == "alpha":
+                                    cols[vial_idx] = f"{drawer_prefix}{norm['well']}"
+                                else:
+                                    cols[vial_idx] = f"{drawer_prefix}{norm['num']}"
                             else:
                                 cols[vial_idx] = f"{drawer_prefix}{vp_current}"
 
@@ -1441,7 +1476,7 @@ def _apply_used_replacement(rows, entries, vial_idx, header, drawer_prefix, same
 
 
 # ===== 辅助函数：未用孔位替换核心逻辑 =====
-def _apply_nouse_replacement(rows, entries, vial_idx, header, drawer_prefix, same_as_first_cols):
+def _apply_nouse_replacement(rows, entries, vial_idx, header, drawer_prefix, same_as_first_cols, vialpos_format="numeric"):
     """
     执行未用孔位替换逻辑
     返回：修改后的 rows
@@ -1511,7 +1546,11 @@ def _apply_nouse_replacement(rows, entries, vial_idx, header, drawer_prefix, sam
 
             norm = _normalize_user_vialpos(vp_in)  
             if norm.get("ok"):
-                vialpos_value = f"{drawer_prefix}{norm['num']}" if drawer_prefix else str(norm["num"])
+                # ★ 根据原始格式决定
+                if vialpos_format == "alpha":
+                    vialpos_value = f"{drawer_prefix}{norm['well']}" if drawer_prefix else norm['well']
+                else:
+                    vialpos_value = f"{drawer_prefix}{norm['num']}" if drawer_prefix else str(norm['num'])
             else:
                 vialpos_value = f"{drawer_prefix}{vp_in.strip()}" if drawer_prefix else vp_in.strip()
 
@@ -1701,9 +1740,17 @@ def file_replace(request):
                     cols = cols + [""] * (len(header) - len(cols))
                 rows.append(cols)
 
-            # 提取进样盘号前缀（所有操作共用）
+            # 提取进样盘号前缀(从第一个有效的'临床样品'的孔位中提取)
             drawer_prefix = ""
             for cols in rows:
+                # ★ 新增：判断是否为临床样品（第一列不包含 DB/Test/STD/QC）
+                first_col = (cols[0] or "").strip().upper()
+                if not first_col:
+                    continue
+                # 跳过非临床样品（包含 DB/Test/STD/QC 的行）
+                if any(keyword in first_col for keyword in ["DB", "TEST", "STD", "QC"]):
+                    continue
+
                 vp_raw = (cols[vial_idx] or "").strip()
                 if not vp_raw or vp_raw.upper() == "NOTUBE":
                     continue
@@ -1718,6 +1765,9 @@ def file_replace(request):
 
             # 检测与第一列完全相同的列
             same_as_first_cols = _detect_columns_equal_to_first(rows)
+
+            # ===== ★ 新增：检测原始孔位格式 =====
+            vialpos_format = _detect_vialpos_format(rows, vial_idx)
 
             # 存储所有替换条目（用于工作清单同步）
             all_entries = []
@@ -1752,7 +1802,7 @@ def file_replace(request):
                     all_entries.extend(entries)
                     # 执行已用孔位替换逻辑（复用原有逻辑）
                     rows = _apply_used_replacement(rows, entries, vial_idx, header, 
-                                                   drawer_prefix, same_as_first_cols)
+                               drawer_prefix, same_as_first_cols, vialpos_format)
 
             # ===== 2. 处理未用孔位替换 =====
             nouse_new = request.POST.getlist("nouse_new_barcode[]")
@@ -1785,7 +1835,7 @@ def file_replace(request):
                     all_entries.extend(entries)
                     # 执行未用孔位替换逻辑（复用原有逻辑）
                     rows = _apply_nouse_replacement(rows, entries, vial_idx, header,
-                                                    drawer_prefix, same_as_first_cols)
+                                drawer_prefix, same_as_first_cols, vialpos_format)
 
             # ===== 3. 处理孔位删除 =====
             del_vialpos = request.POST.getlist("delete_vialpos[]")
@@ -1934,9 +1984,17 @@ def file_replace(request):
                     cols = cols + [""] * (len(header) - len(cols))
                 rows.append(cols)
 
-            # ✅ 新增:提取进样盘号前缀(从第一个有效孔位中提取)
+            # ✅ 新增:提取进样盘号前缀(从第一个有效的'临床样品'的孔位中提取)
             drawer_prefix = ""  # 进样盘号前缀,如 "Drawer 2:Slot1:"
             for cols in rows:
+                # ★ 新增：判断是否为临床样品（第一列不包含 DB/Test/STD/QC）
+                first_col = (cols[0] or "").strip().upper()
+                if not first_col:
+                    continue
+                # 跳过非临床样品（包含 DB/Test/STD/QC 的行）
+                if any(keyword in first_col for keyword in ["DB", "TEST", "STD", "QC"]):
+                    continue
+
                 vp_raw = (cols[vial_idx] or "").strip()
                 if not vp_raw or vp_raw.upper() == "NOTUBE":
                     continue
@@ -1957,6 +2015,9 @@ def file_replace(request):
 
             # ===== ✅ 新增：检测“与第一列逐行完全相同”的列，替换时需要联动更新 =====
             same_as_first_cols = _detect_columns_equal_to_first(rows)
+
+            # ===== ★ 新增：检测原始孔位格式 =====
+            vialpos_format = _detect_vialpos_format(rows, vial_idx)
 
             # 执行替换：仅替换第一列（index=0）
             def _row_match(cols: list[str], entry: dict) -> bool:
@@ -2023,8 +2084,13 @@ def file_replace(request):
                                     # 当前孔位无前缀,需要拼接
                                     norm = _normalize_user_vialpos(vp_current)
                                     if norm.get("ok"):
-                                        # 优先写成 1..96 数字形式,并拼接进样盘号前缀
-                                        cols[vial_idx] = f"{drawer_prefix}{norm['num']}"
+                                        # ★ 修改：根据原始格式决定写数字还是字母
+                                        if vialpos_format == "alpha":
+                                            # 原始格式为 A1..H12，则写成字母格式
+                                            cols[vial_idx] = f"{drawer_prefix}{norm['well']}"
+                                        else:
+                                            # 原始格式为 1..96 数字，或无法识别时兜底为数字
+                                            cols[vial_idx] = f"{drawer_prefix}{norm['num']}"
                                     else:
                                         # 兜底:直接拼接用户输入
                                         cols[vial_idx] = f"{drawer_prefix}{vp_current}"
@@ -2131,9 +2197,17 @@ def file_replace(request):
                     cols = cols + [""] * (len(header) - len(cols))
                 rows.append(cols)
 
-            # ✅ 新增:提取进样盘号前缀(从第一个有效孔位中提取)
+            # ✅ 新增:提取进样盘号前缀(从第一个有效的'临床样品'的孔位中提取)
             drawer_prefix = ""  # 进样盘号前缀,如 "Drawer 2:Slot1:"
             for cols in rows:
+                # ★ 新增：判断是否为临床样品（第一列不包含 DB/Test/STD/QC）
+                first_col = (cols[0] or "").strip().upper()
+                if not first_col:
+                    continue
+                # 跳过非临床样品（包含 DB/Test/STD/QC 的行）
+                if any(keyword in first_col for keyword in ["DB", "TEST", "STD", "QC"]):
+                    continue
+
                 vp_raw = (cols[vial_idx] or "").strip()
                 if not vp_raw or vp_raw.upper() == "NOTUBE":
                     continue
@@ -2155,6 +2229,9 @@ def file_replace(request):
             # ===== ✅ 新增：检测“与第一列逐行完全相同”的列，替换时需要联动更新 =====
             same_as_first_cols = _detect_columns_equal_to_first(rows)
 
+            # ===== ★ 新增：检测原始孔位格式 =====
+            vialpos_format = _detect_vialpos_format(rows, vial_idx)
+
             # 找一条“临床样品行”作为模板：第一列不是 NOTUBE 即可
             template_row = None
             for cols in rows:
@@ -2167,7 +2244,6 @@ def file_replace(request):
                 return render(request, "dashboard/error.html", {
                     "message": "未找到可用于复制的模板行（第一列非 NOTUBE），无法执行未用孔位替换。"
                 })
-
 
             # 根据用户输入孔位定位行
             def _match_row_by_vialpos(cols: list[str], vp_in: str) -> bool:
@@ -2220,8 +2296,13 @@ def file_replace(request):
                     # 规范化孔位写入：优先写成 1..96 数字
                     norm = _normalize_user_vialpos(vp_in)  
                     if norm.get("ok"):
-                        # 优先写成 1..96 数字形式,并拼接进样盘号前缀
-                        vialpos_value = f"{drawer_prefix}{norm['num']}" if drawer_prefix else str(norm["num"])
+                        # ★ 根据原始格式决定写数字还是字母
+                        if vialpos_format == "alpha":
+                            # 原始格式为 A1..H12，则写成字母格式
+                            vialpos_value = f"{drawer_prefix}{norm['well']}" if drawer_prefix else norm['well']
+                        else:
+                            # 原始格式为 1..96 数字，或无法识别时兜底为数字
+                            vialpos_value = f"{drawer_prefix}{norm['num']}" if drawer_prefix else str(norm['num'])
                     else:
                         # 兜底:直接写用户输入,拼接进样盘号前缀
                         vialpos_value = f"{drawer_prefix}{vp_in.strip()}" if drawer_prefix else vp_in.strip()

@@ -16,7 +16,7 @@
 
     <!-- NIMBUS取样表单 -->
     <div id="nimbus-feature-group">
-      <form action="{% url 'ProcessResult' %}" method="post" enctype="multipart/form-data">
+      <form action="{% url 'WholeBloodWorkstationResult' %}" method="post" enctype="multipart/form-data">
         {% csrf_token %}
 
         <input type="hidden" name="platform" value="NIMBUS">

@@ -1,6 +1,7 @@
 from django.urls import path
 from . import views
 from . import views_TecanIngest
+from . import views_WholeBloodWorkstation
 from django.conf import settings
 from django.conf.urls.static import static
 from django.contrib.auth.decorators import login_required
@@ -78,7 +79,6 @@ urlpatterns = [
 
     # 4 结果处理(适用于NIMBUS和Starlet)，用户在前端功能入口处选择项目，上传文件并点击提交按钮后的处理逻辑
     path('dashboard/ProcessResult/', views.ProcessResult, name='ProcessResult'), # NIMBUS和Starlet
-
     path('dashboard/ManualProcessResult/', views.Manual_process_result, name='ManualProcessResult'), # NIMBUS和Starlet
 
     # 5 结果处理(适用于TECAN)
@@ -89,9 +89,11 @@ urlpatterns = [
     path('dashboard/TecanIngest/processed/manage/',  views_TecanIngest.tecan_manage_processed_file,  name='TecanProcessedManage'),
     path('dashboard/TecanIngest/processed/download/',views_TecanIngest.tecan_download_processed_file,name='TecanProcessedDownload'),
 
+    # 6 结果处理(适用于全血工作站)
+    path('dashboard/WholeBloodWorkstationResult/', views_WholeBloodWorkstation.WholeBloodWorkstationResult, name='WholeBloodWorkstationResult'),
+
     # 上机列表替换
     path('dashboard/file_replace/get_payload/', views.file_replace_get_payload, name='file_replace_get_payload'),
-
     path("dashboard/manual/", views.user_manual, name="user_manual"),
 ]
 

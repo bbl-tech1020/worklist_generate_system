@@ -1,0 +1,4 @@
+
+
+def WholeBloodWorkstationResult(request):
+    pass

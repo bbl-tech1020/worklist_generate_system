@@ -1247,7 +1247,24 @@
                     return;
                 }
 
-                const vp = barcodeToVialPos.get(code);
+                // ✅ 步骤1：直接用输入值作为条码查找孔位（兼容大小写）
+                const codeUpper = code.toUpperCase();
+                let vp = barcodeToVialPos.get(code) || barcodeToVialPos.get(codeUpper);
+
+                // ✅ 步骤2：如果未找到，尝试将输入作为实验号查找
+                if (!vp) {
+                    const mappedBarcode =
+                        sampleToBarcode.get(code) ||
+                        sampleToBarcode.get(codeUpper);
+
+                    if (mappedBarcode) {
+                        // 找到了对应的条码，再用条码查孔位
+                        vp = barcodeToVialPos.get(mappedBarcode) ||
+                            barcodeToVialPos.get(mappedBarcode.toUpperCase());
+                    }
+                }
+
+                // ✅ 步骤3：都找不到才报错
                 if (!vp) {
                     setError(codeInput, codeHint, '条码/实验号不在上机列表中');
                     return;

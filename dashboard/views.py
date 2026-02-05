@@ -1666,8 +1666,6 @@ def _apply_delete_replacement(rows, entries, vial_idx, header):
 
     return rows
 
-
-
 def file_replace(request):
     if request.method == "POST":
         upload = request.FILES.get("replace_file")
@@ -1886,7 +1884,10 @@ def file_replace(request):
                 out_lines.append(delimiter.join(cols))
             out_text = "\n".join(out_lines) + "\n"
 
-            with open(new_path, "w", encoding="utf-8") as f:
+            # ★ 修改:使用原始文件的编码格式写入
+            # 如果原始编码检测为gbk,则使用gbk;否则回退到utf-8
+            target_encoding = file_enc if file_enc in ["gbk", "gb18030"] else "utf-8"
+            with open(new_path, "w", encoding=target_encoding) as f:
                 f.write(out_text)
 
             # 把旧文件移动到历史目录
@@ -2529,7 +2530,10 @@ def file_replace(request):
             out_lines.append(delimiter.join(cols))
         out_text = "\n".join(out_lines) + "\n"
 
-        with open(new_path, "w", encoding="utf-8") as f:
+        # ★ 修改:使用原始文件的编码格式写入
+        # 如果原始编码检测为gbk,则使用gbk;否则回退到utf-8
+        target_encoding = file_enc if file_enc in ["gbk", "gb18030"] else "utf-8"
+        with open(new_path, "w", encoding=target_encoding) as f:
             f.write(out_text)
             
         # 把旧文件移动到历史目录
@@ -3310,15 +3314,21 @@ def ProcessResult(request):
             cb_str = str(cb)
             matched_names = barcode_to_names.get(cb_str, [])
             cb_count = cut_counter[cb_str]
+
+            # ★★★ 情况1：匹配到唯一实验号 ★★★
             if len(matched_names) == 1:
                 MatchResult.append("TRUE")
                 MatchSampleName.append(matched_names[0]); DupBarcode.append(""); DupBarcodeSampleName.append("")
+
+            # 情况2：未匹配到实验号
             elif len(matched_names) == 0:
                 MatchResult.append("FALSE")
                 if cb_str != "":
                     MatchSampleName.append(cb_str); DupBarcode.append(""); DupBarcodeSampleName.append("")
                 else:
                     MatchSampleName.append("");    DupBarcode.append(""); DupBarcodeSampleName.append("")
+            
+            # 情况3：匹配到2个实验号
             elif len(matched_names) == 2:
                 MatchResult.append("TRUE")
                 if matched_names[0] == matched_names[1]:
@@ -3326,6 +3336,8 @@ def ProcessResult(request):
                 else:
                     DupBarcode.append("TRUE");   MatchSampleName.append(matched_names[0] + "-" + matched_names[1])
                     DupBarcodeSampleName.append("TRUE" if cb_count >= 2 else "")
+
+            # ★★★ 情况4：匹配到3个及以上实验号 ★★★
             else:
                 MatchResult.append("TRUE")
                 unique_Middlelist = list(dict.fromkeys(matched_names))

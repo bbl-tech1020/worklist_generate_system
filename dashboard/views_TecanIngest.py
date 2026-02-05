@@ -895,11 +895,9 @@ def _load_station_map_for_today(today: str, project_dir: str) -> dict[str, str]:
     return {}
 
 
-def _load_station_map_from_upload(f) -> dict[str, str]:
+def _load_station_map_from_upload(f) -> dict[str, list[str]]:  # ← ★ 改为一对多
     """
-    直接从用户本次上传的岗位清单文件对象读取“子条码 -> 实验号”映射。
-    要求表头包含：'子条码', '实验号'
-    - f: InMemoryUploadedFile / TemporaryUploadedFile
+    直接从用户本次上传的岗位清单文件对象读取"子条码 -> 实验号列表"映射。
     """
     try:
         import pandas as pd
@@ -909,13 +907,16 @@ def _load_station_map_from_upload(f) -> dict[str, str]:
             return {}
         sub = df[[cols["子条码"], cols["实验号"]]].dropna()
         sub.columns = ["barcode", "exp"]
-        mp = {}
+        
+        # ★ 改为 defaultdict(list)
+        mp = defaultdict(list)
         for _, r in sub.iterrows():
             b = str(r["barcode"]).strip()
             e = str(r["exp"]).strip()
             if b and e:
-                mp[b] = e
-        return mp
+                mp[b].append(e)  # ← 追加到列表
+        
+        return dict(mp)  # 返回普通字典
     except Exception:
         return {}
 
@@ -1338,11 +1339,24 @@ def _build_clinical_cells_from_csv(csv_abs_path: str, start_offset: int, station
         row_letter = _PLATE_ROWS[(pos-1) % 8]  # 1->A, 8->H, 9->A...
         
         # 通过条码查找实验号
-        sample_name = station_map.get(srctube, "")
+        matched_names = station_map.get(srctube, [])  # ← 获取实验号列表
 
-        # ★ 修改：未匹配时设置 "No match"（与 NIMBUS 对齐）
-        if not sample_name:
-            sample_name = "No match"  # ← 改为 "No match"
+        if len(matched_names) == 0:
+            sample_name = "No match"
+        elif len(matched_names) == 1:
+            sample_name = matched_names[0]
+        else:
+            # ★★★ 多个实验号：用 '-' 连接（与 NIMBUS 一致）★★★
+            # 可选：按项目优先级排序（仿照 NIMBUS 的 VF>AE>VD>V>VK>WV 规则）
+            order = {'CA': 1, 'ZMNs': 2, 'PCA': 3}
+            def sort_key(x):
+                for prefix_length in (2, 1):
+                    prefix = x[:prefix_length]
+                    if prefix in order:
+                        return order[prefix]
+                return len(order) + 1
+            sorted_names = sorted(set(matched_names), key=sort_key)
+            sample_name = '-'.join(sorted_names)  # ← 用 '-' 连接
         
         # ★ 修改：同时保存实验号和原始条码
         rows.append((row_letter, use_col, sample_name, srctube))  # ← 新增第4个元素：条码

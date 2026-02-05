@@ -91,6 +91,7 @@ urlpatterns = [
 
     # 6 结果处理(适用于全血工作站)
     path('dashboard/WholeBloodWorkstationResult/', views_WholeBloodWorkstation.WholeBloodWorkstationResult, name='WholeBloodWorkstationResult'),
+    path('dashboard/export_wholeblood_files/', views_WholeBloodWorkstation.export_wholeblood_files, name='export_wholeblood_files'),
 
     # 上机列表替换
     path('dashboard/file_replace/get_payload/', views.file_replace_get_payload, name='file_replace_get_payload'),

@@ -14,12 +14,11 @@
 
   <div class="card-body">
 
-    <!-- NIMBUS取样表单 -->
     <div id="nimbus-feature-group">
       <form action="{% url 'WholeBloodWorkstationResult' %}" method="post" enctype="multipart/form-data">
         {% csrf_token %}
 
-        <input type="hidden" name="platform" value="NIMBUS">
+        <input type="hidden" name="platform" value="WholeBloodWorkstation">
         <div class="mb-3">
           <label class="form-label" name="project_id">项目名称</label>
           <select class="form-select" id="project-select" name="project_id" required>
@@ -35,7 +34,7 @@
         </div>
         <div class="mb-3">
           <label class="form-label">取样总表</label>
-          <input type="file" class="form-control" name="scan_result">
+          <input type="file" class="form-control" name="sampling_summary">
         </div>
 
         <!-- 上机仪器 -->

@@ -1,0 +1,226 @@
+{% extends 'dashboard/index.html' %}
+{% load static %}
+{% load custom_tags %}
+
+{% block extrastyle %}
+    <style>
+        .print-page {
+            page-break-inside: avoid;
+            page-break-after: always;
+        }
+        
+        .Table1{
+            margin: 10px;
+            table-layout: fixed;
+            word-break: break-all;
+            border-collapse: collapse;
+            width: 1550px;
+        }
+
+        thead{
+            height: 150px;
+            font-size: 20px;
+        }
+
+        tfoot{
+            height: 75px;
+            font-size: 20px;
+        }
+
+        .maintext th{
+            width: 135px;
+        }
+
+        .title,.Nums,.letters,.locator{
+            text-align: center;
+            font-weight: bold;
+        }
+
+        .locator{
+            font-weight: bold;
+            font-size: 50px;
+        }
+
+        .hole{
+            font-size: 16px;
+            font-weight: 800;
+        }
+
+        .SampleName{
+            font-size: 24px;
+            font-weight: bolder;
+        }
+
+        .Barcode{
+            font-size: 18px;
+        }
+
+        .A,.B,.C,.D,.E,.F,.G,.H{
+            text-align: left;
+            vertical-align: top;
+        }
+
+        .letters{
+            width: 50px;
+            height: 148px;
+        }
+
+        .cubes,.flag{
+            font-size: 20px;
+        }
+
+        @page{
+            size: auto;
+        }
+
+        th,td{
+            border: 3px solid #000;
+        }
+
+        button{
+            margin-left: 100px;
+        }
+
+        #errortable{
+            text-align: center;
+        }
+    </style>
+{% endblock %}
+
+{% block header %}
+<header class="navbar navbar-expand-md navbar-light d-print-none">
+    <div class="container-fluid">
+        <h1 class="navbar-brand">最终结果</h1>
+    </div>
+</header>
+{% endblock %}
+
+{% block content %}
+    <!-- 96孔板工作清单 -->
+    {% for p in plates %}
+        <table class="Table1" id="worksheet" cellpadding="4" cellspacing="4" border="1"> 
+            <thead>
+                <tr>
+                    <th colspan="13" class="title">{{project_name_full}}前处理样品工作单（Testing Worksheet）</th>
+                </tr>
+                <tr>
+                    <th colspan="2">检测日期</th>
+                    <th colspan="2">{{ today_str }}</th>
+                    <th colspan="2">板号：{{ p.header.plate_no }}</th>
+                    <th colspan="7">检测仪器编号：{{ p.header.instrument_num }} - {{ p.header.systerm_num }}</th>
+                </tr>
+                <tr class="maintext">
+                    <th style="width: 20px"></th>
+                    {% for n in p.worksheet_table.0 %}
+                        <th>{{ n.num }}</th>
+                    {% endfor %}
+                </tr>
+            </thead>
+            <tbody>
+                {% for row_idx in p.worksheet_table %}
+                <tr>
+                    <td class="letters">{{ row_idx.0.letter }}</td>
+                    {% for cell in row_idx %}
+                        <td class="{{ cell.letter }}">
+                            {% if cell.locator %}
+                                <div class="locator">{{cell.locator_warm}}</div>
+                            {% else %}
+                                <span class="hole">{{ cell.letter }}{{ cell.num }}({{ cell.index }})</span>
+
+                                {% if cell.dup_barcode == "TRUE" %}
+                                    <span><i class="fa fa-cubes cubes" aria-hidden="true" style="font-size: 20px;"></i></span>
+                                {% endif %}
+                                {% if cell.dup_barcode_sample == "TRUE" %}
+                                    <span><i class="fas fa-star fa-star" aria-hidden="true" style="font-size: 20px;"></i></span>
+                                {% endif %}
+
+                                {% if cell.cut_barcode != "NOTUBE" %}
+                                    <div class="SampleName">{{ cell.match_sample }}</div>
+                                    <div class="Barcode">{{ cell.cut_barcode }}</div>
+                                    <div class="Barcode">{{ cell.sub_barcode }}</div>
+                                {% endif %}
+                            {% endif %}          
+                        </td>
+                    {% endfor %}
+                </tr>
+                {% endfor %}
+            </tbody>
+            <tfoot>
+                <tr class="maintext">
+                    <th colspan="3">加样枪：FXS-YY</th>
+                    <th colspan="2">手工加样人员：</th>
+                    <th colspan="3">加样情况审核人员：</th>
+                    <th colspan="5">备注：
+                        <i class="fa fa-cubes" aria-hidden="true"> 表示该条码有多个实验号。</i>
+                        <i class="fa fa-star" aria-hidden="true"> 表示该条码在移液清单中有重复,同时该条码对应多个实验号。</i>
+                    </th>
+                </tr>
+            </tfoot>
+        </table>
+
+        <!-- 报错信息表 -->
+        <table class="Table1" id="errortable" cellpadding="4" cellspacing="4" border="1">
+            <thead>
+                <tr>
+                    <th>实验号</th>
+                    <th>条码</th>
+                    <th>板号</th>
+                    <th>孔位</th>
+                    <th>警告级别</th>
+                    <th>警告信息</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in p.error_rows %}
+                    {% if row.origin_barcode != 'NOTUBE' and row.origin_barcode != 'No match' and 'X' not in row.origin_barcode %}
+                        <tr>
+                            <td>{{ row.sample_name }}</td>
+                            <td>{{ row.origin_barcode }}</td>
+                            <td>{{ row.plate_no }}</td>
+                            <td>{{ row.well_str }}</td>
+                            <td>{{ row.warn_level }}</td>
+                            <td>{{ row.warn_info }}</td>
+                        </tr>
+                    {% endif %}
+                {% endfor %}
+            </tbody>
+        </table>
+
+        <div class="mt-3">
+        <button class="btn btn-primary js-export" data-index="{{ forloop.counter0 }}">导出本板</button>
+        </div>
+    {% endfor %}
+
+<script>
+    // 读取 csrftoken
+    function getCookie(name) {
+      const value = `; ${document.cookie}`;
+      const parts = value.split(`; ${name}=`);
+      if (parts.length === 2) return parts.pop().split(";").shift();
+    }
+    const csrftoken = getCookie("csrftoken");
+  
+    // 导出本板按钮点击事件
+    document.querySelectorAll(".js-export").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const idx = btn.dataset.index;
+        fetch("{% url 'export_wholeblood_files' %}?plate=" + idx, {
+          method: "POST",
+          headers: { "X-CSRFToken": csrftoken, "Accept": "application/json" },
+          credentials: "same-origin",
+        })
+        .then(async (res) => {
+          const text = await res.text();
+          let data;
+          try { data = JSON.parse(text); } catch { throw new Error(text); }
+          if (!res.ok || !data.ok) throw new Error(data.message || `HTTP ${res.status}`);
+          alert("导出成功！文件已保存到下载页面");
+          // 导出成功后跳转到文件下载页面
+          window.location.href = "{% url 'file_download' %}";
+        })
+        .catch(err => alert("导出失败: " + err.message));
+      });
+    });
+  </script>
+
+{% endblock %}

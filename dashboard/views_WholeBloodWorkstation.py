@@ -9,6 +9,7 @@ from collections import defaultdict, Counter
 from datetime import date, timedelta
 from weasyprint import HTML, CSS
 from weasyprint.text.fonts import FontConfiguration
+from icecream import ic
 import pandas as pd
 import xlrd
 import xlwt
@@ -18,6 +19,21 @@ import json
 
 from .models import SamplingConfiguration, InstrumentConfiguration, SampleRecord
 
+
+# ========== ★ 新增：报错关键词列表 ==========
+ERROR_KEYWORDS = [
+    "无料",
+    "有料",
+    "取料NG",
+    "扫码NG",
+    "开盖NG",
+    "吸液NG",
+    "分液NG",
+    "吸液曲线NG",
+    "分液曲线NG",
+    "吸/分液曲线NG",
+    "待回收",
+]
 
 # ========== 第一步：处理上传数据，返回中间展示页面 ==========
 def WholeBloodWorkstationResult(request):
@@ -72,13 +88,17 @@ def WholeBloodWorkstationResult(request):
     mb_idx = station_index.get("主条码", 0)
     sn_idx = station_index.get("实验号", 0)
     
-    # 构建条码→实验号列表的映射
+    # ========== 构建主条码→实验号列表的映射（拆分条码） ==========
     barcode_to_names = defaultdict(list)
     for i in range(1, station_nrows):
         barcode = str(station_sheet.row_values(i)[mb_idx]).strip()
         sample_name = str(station_sheet.row_values(i)[sn_idx]).strip()
         if barcode and sample_name:
-            barcode_to_names[barcode].append(sample_name)
+            # ★ 新增：拆分条码，只取主条码部分作为键
+            parts = barcode.split("-", 1)
+            main_barcode = parts[0]  # 主条码部分（如 "2437871821"）
+            barcode_to_names[main_barcode].append(sample_name)
+    
     
     # ========== 3. 读取取样总表（从"产品信息"工作表）==========
     summary_wb = xlrd.open_workbook(filename=None, file_contents=sampling_summary.read())
@@ -105,6 +125,8 @@ def WholeBloodWorkstationResult(request):
     scanner_code_idx = product_index.get("ScannerCode")
     row_idx = product_index.get("Row")
     column_idx = product_index.get("Column")
+
+    process_no_str_idx = product_index.get("ProcessNoStr")
     
     if scanner_code_idx is None or row_idx is None or column_idx is None:
         return render(request, "dashboard/error.html", {
@@ -114,15 +136,22 @@ def WholeBloodWorkstationResult(request):
     # ========== 4. 构建96孔板数据结构 ==========
     letters = list("ABCDEFGH")
     nums = [str(i) for i in range(1, 13)]
-    
+
     # 用字典暂存：(row, col) -> barcode
     well_data = {}
+
+    # 报错信息
+    well_errors = {}
     
     # 读取产品信息工作表数据
     for i in range(1, product_nrows):
         row_val = product_sheet.row_values(i)[row_idx]
         col_val = product_sheet.row_values(i)[column_idx]
         scanner_code = product_sheet.row_values(i)[scanner_code_idx]
+
+        process_no_str = ""
+        if process_no_str_idx is not None:
+            process_no_str = str(product_sheet.row_values(i)[process_no_str_idx]).strip()
         
         try:
             row_num = int(float(row_val))
@@ -135,6 +164,13 @@ def WholeBloodWorkstationResult(request):
             continue
         
         well_data[(row_num, col_num)] = str(scanner_code).strip()
+
+        # ========== ★ 新增：检测 ProcessNoStr 是否包含报错关键词 ==========
+        if process_no_str:
+            for keyword in ERROR_KEYWORDS:
+                if keyword in process_no_str:
+                    well_errors[(row_num, col_num)] = process_no_str
+                    break  # 匹配到一个关键词即可，无需继续检测
     
     # ========== 5. 按96孔板顺序填充数据 ==========
     worksheet_grid = [[None for _ in nums] for _ in letters]
@@ -150,7 +186,7 @@ def WholeBloodWorkstationResult(request):
             # 获取该孔位的条码
             barcode = well_data.get((row_num, col_num), "NOTUBE")
             
-            # 拆分条码（处理 "123456-01" 格式）
+            # 先拆分条码，再用主条码匹配实验号
             if barcode and barcode != "NOTUBE":
                 parts = barcode.split("-", 1)
                 cut_barcode = parts[0]
@@ -160,20 +196,23 @@ def WholeBloodWorkstationResult(request):
                 sub_barcode = ""
             
             # 从岗位清单匹配实验号
-            if barcode in barcode_to_names:
-                matched_names = barcode_to_names[barcode]
-                if len(matched_names) == 1:
-                    match_sample = matched_names[0]
-                elif len(matched_names) > 1:
-                    match_sample = "-".join(matched_names)
+            if cut_barcode and cut_barcode != "NOTUBE":
+                if cut_barcode in barcode_to_names:
+                    matched_names = barcode_to_names[cut_barcode]
+                    if len(matched_names) == 1:
+                        match_sample = matched_names[0]
+                    elif len(matched_names) > 1:
+                        # ========== ★ 修改：去重后再拼接 ==========
+                        # 使用 list(dict.fromkeys(...)) 保留顺序的同时去重
+                        unique_names = list(dict.fromkeys(matched_names))
+                        if len(unique_names) == 1:
+                            # 去重后只剩一个实验号，直接使用
+                            match_sample = unique_names[0]
+                    else:
+                        match_sample = "No match"
                 else:
                     match_sample = "No match"
-            else:
-                if barcode == "NOTUBE":
-                    match_sample = ""
-                else:
-                    match_sample = "No match"
-            
+
             # 构建单元格数据
             cell = {
                 "letter": row_letter,
@@ -195,17 +234,28 @@ def WholeBloodWorkstationResult(request):
             }
             
             worksheet_grid[row_num - 1][col_num - 1] = cell
-            
-            # 收集报错信息（No match 的孔位）
-            if match_sample == "No match" and barcode != "NOTUBE":
+
+            # 收集报错信息
+            error_message = well_errors.get((row_num, col_num))  # 从取样总表获取的报错信息
+            if error_message:
+                # ProcessNoStr 包含报错关键词
+                error_rows.append({
+                    "sample_name": match_sample if match_sample else barcode,
+                    "origin_barcode": barcode,
+                    "plate_no": "X1",
+                    "well_str": well_pos,
+                    "warn_info": error_message,  # 使用 ProcessNoStr 的内容
+                })
+            elif match_sample == "No match" and barcode != "NOTUBE":
+                # 实验号匹配失败
                 error_rows.append({
                     "sample_name": match_sample,
                     "origin_barcode": barcode,
                     "plate_no": "X1",
                     "well_str": well_pos,
-                    "warn_level": "",
                     "warn_info": "No match",
                 })
+
     
     # ========== 6. 构建 plates 数据结构（用于模板渲染）==========
     worksheet_table = [[worksheet_grid[r][c] for c in range(12)] for r in range(8)]
@@ -342,7 +392,7 @@ def export_wholeblood_files(request):
         error_sheet = error_wb.add_sheet("报错信息")
         
         # 表头
-        headers = ["实验号", "条码", "板号", "孔位", "警告等级", "警告信息"]
+        headers = ["实验号", "条码", "板号", "孔位", "警告信息"]
         for col, header in enumerate(headers):
             error_sheet.write(0, col, header)
         

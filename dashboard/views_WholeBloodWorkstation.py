@@ -17,7 +17,7 @@ import os
 import re
 import json
 
-from .models import SamplingConfiguration, InstrumentConfiguration, SampleRecord
+from .models import *
 
 
 # ========== ★ 新增：报错关键词列表 ==========
@@ -257,6 +257,118 @@ def WholeBloodWorkstationResult(request):
                 })
 
     
+    # ========== 生成上机列表（针对'全血七项'项目）==========
+    worklist_records = []
+    txt_headers = []
+    
+    # 检查是否是'全血七项'项目
+    if '全血七项' in project_name or '全血七项' in project_name_full:
+        # 查找取样总表中包含'GZKM'关键词的子表
+        gzkm_sheet = None
+        for sheet in summary_wb.sheets():
+            if 'GZKM' in sheet.name:
+                gzkm_sheet = sheet
+                break
+        
+        if gzkm_sheet is not None:
+            # 读取表格A（GZKM子表）
+            gzkm_nrows = gzkm_sheet.nrows
+            gzkm_ncols = gzkm_sheet.ncols
+            
+            # 解析表头
+            gzkm_header = [str(gzkm_sheet.row_values(0)[i]).strip() for i in range(gzkm_ncols)]
+            txt_headers = gzkm_header
+            
+            # 获取'样品名称'列索引
+            sample_name_col_idx = None
+            for idx, col_name in enumerate(gzkm_header):
+                if '样品名称' in col_name:
+                    sample_name_col_idx = idx
+                    break
+            
+            if sample_name_col_idx is not None:
+                # 读取所有数据行，并删除'样品名称'列中含有'SB'关键词的行
+                table_b_rows = []
+                for i in range(1, gzkm_nrows):
+                    row_data = gzkm_sheet.row_values(i)
+                    sample_name_value = str(row_data[sample_name_col_idx]).strip()
+                    
+                    # 删除含有'SB'关键词的行
+                    if 'SB' not in sample_name_value:
+                        table_b_rows.append(row_data)
+                
+                # 获取curve_points值（标准曲线点数）
+                curve_points = config.curve_points
+                n = curve_points + 1
+                
+                # 准备要插入的行
+                insert_rows = []
+                
+                # 第一部分：3行SB
+                for _ in range(3):
+                    sb_row = [''] * gzkm_ncols
+                    sb_row[sample_name_col_idx] = 'SB'
+                    insert_rows.append(sb_row)
+                
+                # 第二部分：n行STD0-STD{n-1}
+                for i in range(n):
+                    std_row = [''] * gzkm_ncols
+                    std_row[sample_name_col_idx] = f'STD{i}'
+                    insert_rows.append(std_row)
+                
+                # 第三部分：2行SB
+                for _ in range(2):
+                    sb_row = [''] * gzkm_ncols
+                    sb_row[sample_name_col_idx] = 'SB'
+                    insert_rows.append(sb_row)
+                
+                # 将插入的行添加到表格B的开头
+                final_rows = insert_rows + table_b_rows
+                
+                # 读取该项目的对应关系表（mapping_file）
+                mapping_dict = {}
+                if config.mapping_file:
+                    try:
+                        mapping_path = config.mapping_file.path
+                        if os.path.exists(mapping_path):
+                            # 读取Excel映射文件
+                            mapping_df = pd.read_excel(mapping_path, sheet_name='上机列表')
+                            
+                            # 映射文件格式为：第一列是样品名称关键词，其他列是对应的值
+                            # 根据实际映射文件格式调整
+                            for _, row in mapping_df.iterrows():
+                                key = str(row.iloc[0]).strip()  # 第一列作为匹配键
+                                mapping_dict[key] = {
+                                    gzkm_header[i]: str(row.iloc[i]) if i < len(row) else ''
+                                    for i in range(1, len(gzkm_header))
+                                }
+                    except Exception as e:
+                        print(f"读取映射文件失败: {e}")
+                
+                # 依据对应关系表，匹配补齐空白列的内容
+                for row in final_rows:
+                    sample_name_value = str(row[sample_name_col_idx]).strip()
+                    
+                    # 遍历映射字典，寻找匹配项
+                    for key, mapping_values in mapping_dict.items():
+                        if key in sample_name_value or sample_name_value in key:
+                            # 匹配成功，填充其他列的空白内容
+                            for col_idx, col_name in enumerate(gzkm_header):
+                                if col_idx != sample_name_col_idx:
+                                    # 如果当前单元格为空，则填充映射值
+                                    if not row[col_idx] or str(row[col_idx]).strip() == '':
+                                        if col_name in mapping_values:
+                                            row[col_idx] = mapping_values[col_name]
+                            break
+                
+                # 构建worklist_records数据结构
+                for row in final_rows:
+                    record = {}
+                    for col_idx, col_name in enumerate(gzkm_header):
+                        record[col_name] = str(row[col_idx]) if col_idx < len(row) else ''
+                    worklist_records.append(record)
+
+
     # ========== 6. 构建 plates 数据结构（用于模板渲染）==========
     worksheet_table = [[worksheet_grid[r][c] for c in range(12)] for r in range(8)]
     
@@ -269,8 +381,8 @@ def WholeBloodWorkstationResult(request):
         },
         "worksheet_table": worksheet_table,
         "error_rows": error_rows,
-        "txt_headers": [],  # 全血工作站无上机列表
-        "worklist_records": [],
+        "txt_headers": txt_headers,  # 添加上机列表表头
+        "worklist_records": worklist_records,  # 添加上机列表数据
     }]
     
     # ========== 7. 将数据保存到 session（供导出函数使用）==========
@@ -285,6 +397,8 @@ def WholeBloodWorkstationResult(request):
             "plate_no": "X1",
             "worksheet_table": worksheet_table,
             "error_rows": error_rows,
+            "txt_headers": txt_headers,  # 添加上机列表表头
+            "worklist_records": worklist_records,  # 添加上机列表数据
         }],
     }
     
@@ -409,5 +523,29 @@ def export_wholeblood_files(request):
         error_path = os.path.join(save_dir, error_filename)
         error_wb.save(error_path)
     
+
+    # ========== 6. 生成上机列表 Excel 文件（如果有数据）==========
+    txt_headers = plate_data.get('txt_headers', [])
+    worklist_records = plate_data.get('worklist_records', [])
+    
+    if worklist_records and txt_headers:
+        worklist_wb = xlwt.Workbook()
+        worklist_sheet = worklist_wb.add_sheet("上机列表")
+        
+        # 写入表头
+        for col, header in enumerate(txt_headers):
+            worklist_sheet.write(0, col, header)
+        
+        # 写入数据行
+        for row_idx, record in enumerate(worklist_records, start=1):
+            for col_idx, col_name in enumerate(txt_headers):
+                value = record.get(col_name, '')
+                worklist_sheet.write(row_idx, col_idx, value)
+        
+        # 保存上机列表文件
+        worklist_filename = f"{plate_no}_InjectionList_{instrument_num}_{systerm_num}_{project_name}_{timestamp}_{plate_no}_GZ.xls"
+        worklist_path = os.path.join(save_dir, worklist_filename)
+        worklist_wb.save(worklist_path)
+
     # ========== 6. 返回成功响应 ==========
     return JsonResponse({"ok": True, "message": "导出成功"})

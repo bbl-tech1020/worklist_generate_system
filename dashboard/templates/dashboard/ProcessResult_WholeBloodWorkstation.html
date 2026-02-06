@@ -184,6 +184,26 @@
             </tbody>
         </table>
 
+        <!-- 上机列表 -->
+        <table class="Table1" id="worklist" cellpadding="4" cellspacing="4" border="1">
+            <thead>
+                <tr>
+                    {% for col in p.txt_headers %}
+                        <th>{{ col }}</th>
+                    {% endfor %}
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in p.worklist_records %}
+                    <tr>
+                        {% for col in p.txt_headers %}
+                            <td>{{ row|get_item:col }}</td>
+                        {% endfor %}
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+
         <div class="mt-3">
         <button class="btn btn-primary js-export" data-index="{{ forloop.counter0 }}">导出本板</button>
         </div>

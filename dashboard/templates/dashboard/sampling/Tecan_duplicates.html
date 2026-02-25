@@ -35,6 +35,7 @@
                     <tr>
                         <th>#</th>
                         <th>位置</th>
+                        <th>冲突类型</th>
                         <th>原 SRCTubeID</th>
                         <th>原 SRCTubeID（确认）</th>
                         <th>新 SRCTubeID（需包含“-”）</th>
@@ -52,6 +53,20 @@
                             GridPos={{ r.GridPos|default:"-" }}, Tip={{ r.TipNumber|default:"-" }}
                             <div class="text-muted small">Main={{ r.MainBarcode }}</div>
                         </td>
+
+                        <!-- ========== 新增：冲突类型列 ========== -->
+                        <td>
+                            {% if r.conflict_type == "文件内重复" %}
+                                <span class="badge bg-warning text-dark">文件内重复</span>
+                            {% elif r.conflict_type == "跨文件重复" %}
+                                <span class="badge bg-danger">跨文件重复</span>
+                            {% elif r.conflict_type == "项目实验号冲突" %}
+                                <span class="badge bg-info text-dark">项目实验号冲突</span>
+                            {% else %}
+                                <span class="badge bg-secondary">未知</span>
+                            {% endif %}
+                        </td>
+                        <!-- ======================================= -->
 
                         <!-- 新增：只读显示“原 SRCTubeID” -->
                         <td>

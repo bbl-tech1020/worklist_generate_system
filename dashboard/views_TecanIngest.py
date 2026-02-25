@@ -302,6 +302,63 @@ def _collect_history_mainbarcodes(processed_dir: str) -> Set[str]:
     return s
 
 
+def _detect_project_experiment_conflicts(
+    df: pd.DataFrame,
+    project_name: str,
+    station_map: dict[str, list[str]]
+) -> Set[str]:
+    """
+    检测项目名称与实验号前缀的交叉冲突。
+    
+    返回：需要标记为冲突的完整条码（SRCTubeID）集合
+    
+    规则：
+    1. CA 项目：完整条码对应实验号列表中含有 PCA 开头的实验号
+    2. CA 项目：完整条码对应实验号列表中同时含有 CA 和 ZMN 开头的实验号
+    3. ZMNs 项目：完整条码对应实验号列表中含有 PCA 开头的实验号
+    4. ZMNs 项目：完整条码对应实验号列表中同时含有 CA 和 ZMN 开头的实验号
+    """
+    conflict_barcodes = set()
+    
+    # 遍历每个条码
+    for _, row in df.iterrows():
+        src_tube_id = str(row.get("SRCTubeID", "")).strip()
+        if not src_tube_id or "$" in src_tube_id:
+            continue
+        
+        # 从 station_map 获取对应的实验号列表（列表 A）
+        exp_list = station_map.get(src_tube_id, [])
+        if not exp_list:
+            continue
+        
+        # 统计各前缀出现情况
+        has_pca = any(exp.startswith("PCA") for exp in exp_list)
+        has_ca = any(exp.startswith("CA") for exp in exp_list)
+        has_zmn = any(exp.startswith("ZMN") for exp in exp_list)
+        
+        # 判断冲突
+        if project_name == "CA":
+            # 规则 1: CA 项目含 PCA 实验号
+            if has_pca:
+                conflict_barcodes.add(src_tube_id)
+                continue
+            # 规则 2: CA 项目同时含 CA 和 ZMN 实验号
+            if has_ca and has_zmn:
+                conflict_barcodes.add(src_tube_id)
+                
+        elif project_name == "ZMNs":
+            # 规则 3: ZMNs 项目含 PCA 实验号
+            if has_pca:
+                conflict_barcodes.add(src_tube_id)
+                continue
+            # 规则 4: ZMNs 项目同时含 CA 和 ZMN 实验号
+            if has_ca and has_zmn:
+                conflict_barcodes.add(src_tube_id)
+    
+    return conflict_barcodes
+
+
+
 def _detect_conflicts(df: pd.DataFrame, history: Set[str]) -> Dict[str, List[Dict[str, str]]]:
     """
     返回 { intra: [...], cross: [...] }
@@ -492,11 +549,26 @@ def tecaningest(request: HttpRequest) -> HttpResponse:
     # 跨文件重复（沿用旧逻辑）
     mask_cross = df["MainBarcode"].isin(history)
 
+    # ========== 新增：项目-实验号交叉冲突检测 ==========
+    project_exp_conflicts = _detect_project_experiment_conflicts(
+        df=df,
+        project_name=project_name,
+        station_map=station_map  # 从 session 获取
+    )
+    mask_project_exp = df["SRCTubeID"].isin(project_exp_conflicts)
+    # ====================================================
+
     # 去除含有 '$' 的主码
     mask_dollar = df["MainBarcode"].astype(str).str.contains(r"\$")
 
-    # 最终需要人工修正的集合 = （新文件内重复 ∪ 跨文件重复） 且 不含 '$'
-    intra_or_cross_mask = (mask_infile_new | mask_cross) & (~mask_dollar)
+    # 最终需要人工修正的集合 = （文件内重复 ∪ 跨文件重复 ∪ 项目-实验号冲突） 且 不含 '$'
+    intra_or_cross_mask = (mask_infile_new | mask_cross | mask_project_exp) & (~mask_dollar)
+
+    # 为前端区分冲突类型
+    df["conflict_type"] = ""
+    df.loc[mask_infile_new, "conflict_type"] = "文件内重复"
+    df.loc[mask_cross, "conflict_type"] = "跨文件重复"
+    df.loc[mask_project_exp, "conflict_type"] = "项目实验号冲突"
 
     need_fix_df = (
         df[intra_or_cross_mask]
@@ -514,6 +586,7 @@ def tecaningest(request: HttpRequest) -> HttpResponse:
             "MainBarcode": str(r["MainBarcode"]),
             "GridPos":     int(r["GridPos"]) if pd.notna(r["GridPos"]) else None,
             "TipNumber":   int(r["TipNumber"]) if pd.notna(r["TipNumber"]) else None,
+            "conflict_type": str(r.get("conflict_type", "")),  # ← 新增
         } for _, r in need_fix_df.iterrows()]
 
         # 仅用于页面提示：哪些 MainBarcode 是“跨文件重复”

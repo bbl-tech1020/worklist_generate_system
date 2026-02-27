@@ -26,6 +26,7 @@ from icecream import ic
 from collections import defaultdict, deque, Counter
 import pandas as pd
 pd.set_option('display.max_rows', None)
+pd.set_option('future.no_silent_downcasting', True)
 
 import os, io, logging
 import re
@@ -588,11 +589,6 @@ def _load_station_list_for_today() -> dict:
     """
     today_str = timezone.localdate().strftime("%Y-%m-%d")
     fpath = os.path.join(settings.DOWNLOAD_ROOT, STATION_DIRNAME, today_str, "station_list.json")
-
-    # ===== 临时排查用：打印实际查找路径与是否存在 =====
-    print("station_list lookup path =", fpath)
-    print("exists =", os.path.exists(fpath))
-    # ==========================================
     
     if not os.path.exists(fpath):
         return {}
@@ -603,7 +599,12 @@ def _load_station_list_for_today() -> dict:
     except Exception:
         return {}
 
-    mapping = data.get("主条码->实验号列表") or {}
+    mapping = (
+        data.get("barcode->实验号列表")
+        or data.get("子条码->实验号列表")
+        or data.get("主条码->实验号列表")
+        or {}
+    )
     return mapping if isinstance(mapping, dict) else {}
 
 
@@ -3082,12 +3083,24 @@ def ProcessResult(request):
     st_ncols   = st_sheet.ncols
     st_header  = [str(st_sheet.row_values(0)[i]).strip() for i in range(st_ncols)]
     st_index   = {col: idx for idx, col in enumerate(st_header)}
-    MB_IDX     = st_index.get("主条码", 0)
     SN_IDX     = st_index.get("实验号", 0)
-    MainBarcode = [str(st_sheet.row_values(i)[MB_IDX]) for i in range(1, st_nrows)]
-    SampleName  = [str(st_sheet.row_values(i)[SN_IDX]) for i in range(1, st_nrows)]
+
+
+    # 检测岗位清单是否含"子条码"列，决定匹配模式
+    use_sub_barcode = "子条码" in st_index
+    if use_sub_barcode:
+        KEY_IDX = st_index["子条码"]
+        station_json_key1 = "子条码->实验号列表"   # station_list.json 字段名
+        station_json_key2 = "实验号->子条码"
+    else:
+        KEY_IDX = st_index.get("主条码", 0)
+        station_json_key1 = "主条码->实验号列表"
+        station_json_key2 = "实验号->主条码"
+
+    KeyList    = [str(st_sheet.row_values(i)[KEY_IDX]) for i in range(1, st_nrows)]
+    SampleName = [str(st_sheet.row_values(i)[SN_IDX])  for i in range(1, st_nrows)]
     barcode_to_names = defaultdict(list)
-    for bc, sn in zip(MainBarcode, SampleName):
+    for bc, sn in zip(KeyList, SampleName):
         barcode_to_names[str(bc)].append(str(sn))
 
 
@@ -3097,23 +3110,31 @@ def ProcessResult(request):
         os.makedirs(day_dir, exist_ok=True)
         return os.path.join(day_dir, "station_list.json")
 
+
     def _load_station_store(path: str) -> dict:
         if not os.path.isfile(path):
-            # 保证 warning 在最前
-            return {"warning": [], "主条码->实验号列表": {}, "实验号->主条码": {}}
+            return {"warning": [], "barcode->实验号列表": {}, "实验号->barcode": {}}
         try:
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            # 兼容缺字段
             if "warning" not in data:
                 data = {"warning": [], **data}
-            data.setdefault("主条码->实验号列表", {})
-            data.setdefault("实验号->主条码", {})
+            # 兼容历史文件（旧字段名→通用字段名）
+            for old_k1, old_k2 in [
+                ("主条码->实验号列表", "实验号->主条码"),
+                ("子条码->实验号列表", "实验号->子条码"),
+            ]:
+                if old_k1 in data:
+                    data.setdefault("barcode->实验号列表", data.pop(old_k1))
+                    data.setdefault("实验号->barcode",    data.pop(old_k2, {}))
+                    break
+            data.setdefault("barcode->实验号列表", {})
+            data.setdefault("实验号->barcode", {})
             return data
         except Exception:
-            # 文件坏了就重新来（不阻断主流程）
             return {"warning": [{"type": "load_error", "msg": f"读取失败，已重置：{os.path.basename(path)}"}],
-                    "主条码->实验号列表": {}, "实验号->主条码": {}}
+                    "barcode->实验号列表": {}, "实验号->barcode": {}}
+
     
     def _dedup_warning(existing: list, new_items: list) -> list:
         # 用 (type, exp, old, new) 作为去重 key，避免 warning 越堆越多
@@ -3131,16 +3152,9 @@ def ProcessResult(request):
 
 
     def _merge_station_maps(store: dict, new_map: dict) -> tuple[dict, dict]:
-        """
-        store:
-          - 主条码->实验号列表: dict[str, list[str]]
-          - 实验号->主条码: dict[str, str]
-          - warning: list[dict]
-        new_map: barcode_to_names (dict[str, list[str]])
-        返回：(new_store, summary)
-        """
-        mb2sn = store.get("主条码->实验号列表", {}) or {}
-        sn2mb = store.get("实验号->主条码", {}) or {}
+
+        mb2sn = store.get("barcode->实验号列表", {}) or {}
+        sn2mb = store.get("实验号->barcode", {}) or {}
         warnings_new = []
 
         added_pairs = 0
@@ -3199,8 +3213,8 @@ def ProcessResult(request):
     
         # warning 合并且去重（warning 必须在 json 最前面）
         store["warning"] = _dedup_warning(store.get("warning", []), warnings_new)
-        store["主条码->实验号列表"] = mb2sn
-        store["实验号->主条码"] = sn2mb
+        store["barcode->实验号列表"] = mb2sn
+        store["实验号->barcode"] = sn2mb
 
         summary = {
             "added_pairs": added_pairs,
@@ -3223,8 +3237,8 @@ def ProcessResult(request):
             ordered_out = {
                 "生成时间": generated_at,
                 "warning": store2.get("warning", []),
-                "主条码->实验号列表": store2.get("主条码->实验号列表", {}),
-                "实验号->主条码": store2.get("实验号->主条码", {}),
+                station_json_key1: store2.get("barcode->实验号列表", {}),
+                station_json_key2: store2.get("实验号->barcode", {}),
             }
             with open(store_path, "w", encoding="utf-8") as f:
                 json.dump(ordered_out, f, ensure_ascii=False, indent=2)
@@ -3306,14 +3320,21 @@ def ProcessResult(request):
         pad_to(TStatusSummary, TOTAL, 0)
         pad_to(TVolume,        TOTAL, 0) 
 
-        # —— 与岗位清单匹配（按原来的规则）——
-        cut_counter = Counter(CutBarcode)
+        # —— 与岗位清单匹配——
+        if use_sub_barcode:
+            match_keys  = OriginBarcode          # 子条码模式：用完整原始条码匹配
+            key_counter = Counter(OriginBarcode)
+        else:
+            match_keys  = CutBarcode             # 主条码模式：用切割后的主条码匹配
+            key_counter = Counter(CutBarcode)
+
         MatchSampleName, MatchResult = [], []
         DupBarcode, DupBarcodeSampleName = [], []
-        for cb in CutBarcode:
-            cb_str = str(cb)
-            matched_names = barcode_to_names.get(cb_str, [])
-            cb_count = cut_counter[cb_str]
+
+        for mk in match_keys:
+            mk_str = str(mk)
+            matched_names = barcode_to_names.get(mk_str, [])
+            cb_count = key_counter[mk_str]
 
             # ★★★ 情况1：匹配到唯一实验号 ★★★
             if len(matched_names) == 1:
@@ -3323,8 +3344,8 @@ def ProcessResult(request):
             # 情况2：未匹配到实验号
             elif len(matched_names) == 0:
                 MatchResult.append("FALSE")
-                if cb_str != "":
-                    MatchSampleName.append(cb_str); DupBarcode.append(""); DupBarcodeSampleName.append("")
+                if mk_str != "":
+                    MatchSampleName.append(mk_str); DupBarcode.append(""); DupBarcodeSampleName.append("")
                 else:
                     MatchSampleName.append("");    DupBarcode.append(""); DupBarcodeSampleName.append("")
             

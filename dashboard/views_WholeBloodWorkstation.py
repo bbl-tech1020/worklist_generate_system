@@ -35,6 +35,114 @@ ERROR_KEYWORDS = [
     "待回收",
 ]
 
+def _parse_preprocess_worksheet(file_obj):
+    """
+    解析仪器输出的"前处理样品工作单"Excel文件。
+    固定结构：
+      - 数据区域：Excel 行5~12（对应96孔板A~H行），列C~N（对应孔位1~12）
+      - 每个单元格内容为多行文本（\n分隔）：
+          lines[0]: 孔位序号 + 符号（如 "2 ○"）
+          lines[1]: 实验号（如 "H5275"），空孔无此行
+          lines[2]: 条码（如 "7602579116-01"），空孔无此行，某些孔可能跨行
+    返回：8行×12列的二维列表，每格为 dict。
+    """
+    import openpyxl
+    import openpyxl.reader.excel as oxl_reader
+    import re
+    import io
+    import zipfile
+
+    # ★ 核心修复：读取原始文件字节流，预处理 ZIP 内容
+    raw_bytes = file_obj.read()
+
+    # ★ 核心修复：monkey-patch read_custom，让它对解析错误静默跳过
+    # 保存原始方法
+    _original_read_custom = oxl_reader.ExcelReader.read_custom
+
+    def _safe_read_custom(self):
+        try:
+            _original_read_custom(self)
+        except Exception:
+            pass  # 忽略 custom.xml 的任何解析错误
+
+    # 临时替换
+    oxl_reader.ExcelReader.read_custom = _safe_read_custom
+
+    try:
+        wb = openpyxl.load_workbook(
+            filename=io.BytesIO(raw_bytes),
+            data_only=True,
+            read_only=True,
+        )
+    finally:
+        # ★ 无论成功失败，都还原原始方法，避免影响其他地方的 openpyxl 调用
+        oxl_reader.ExcelReader.read_custom = _original_read_custom
+        
+    ws = wb.active
+
+    letters = list("ABCDEFGH")
+    # Excel 行索引：5~12 对应 A~H（openpyxl 行从1开始）
+    EXCEL_DATA_ROWS = range(5, 13)   # 5,6,7,8,9,10,11,12
+    # Excel 列索引：3~14 对应孔位1~12（C=3, D=4, ..., N=14）
+    EXCEL_DATA_COLS = range(3, 15)   # 3..14
+
+    # 预读所有单元格值（read_only 模式下按行读取效率更高）
+    # 转成普通二维列表，rows[r][c] = 单元格值（字符串或None）
+    all_rows = []
+    for row in ws.iter_rows(min_row=1, max_row=12, min_col=1, max_col=14, values_only=True):
+        all_rows.append(list(row))
+
+    table = []
+    for r_idx, excel_row in enumerate(EXCEL_DATA_ROWS):
+        row_letter = letters[r_idx]   # A, B, ..., H
+        row_cells = []
+        for c_idx, excel_col in enumerate(EXCEL_DATA_COLS):
+            col_num    = c_idx + 1      # 1~12
+            well_index = r_idx * 12 + col_num   # 1~96
+
+            raw_value = all_rows[excel_row - 1][excel_col - 1]
+            raw_str   = str(raw_value).strip() if raw_value is not None else ""
+
+            # split 换行符，过滤空行
+            lines = [l.strip() for l in raw_str.replace("\r\n", "\n").replace("\r", "\n").split("\n") if l.strip()]
+
+            # 解析第一行：序号 + 符号
+            symbol = ""
+            if lines:
+                m = re.match(r"^(\d+)\s*(.*)?$", lines[0])
+                if m:
+                    symbol = m.group(2).strip()  # ○ / ✗ / ★ 或空
+
+            # 实验号：lines[1]（若存在）
+            match_sample = lines[1].strip() if len(lines) >= 2 else ""
+
+            # 条码：lines[2]（若存在）
+            # 注意：若条码含换行（如共血条码多行），从lines[2]起拼接
+            barcode = ""
+            if len(lines) >= 3:
+                barcode = "\n".join(lines[2:])
+
+            # 判断是否为空孔（无实验号）
+            is_empty = (match_sample == "")
+
+            cell = {
+                "letter":       row_letter,
+                "num":          str(col_num),
+                "well_str":     f"{row_letter}{col_num}",
+                "index":        well_index,
+                "match_sample": match_sample,
+                "barcode":      barcode,
+                "symbol":       symbol,   # ○ / ✗ / ★ 等原始符号
+                "is_empty":     is_empty,
+            }
+            row_cells.append(cell)
+        table.append(row_cells)
+
+    wb.close()
+    return table
+
+
+
 # ========== 第一步：处理上传数据，返回中间展示页面 ==========
 def WholeBloodWorkstationResult(request):
     """
@@ -55,9 +163,16 @@ def WholeBloodWorkstationResult(request):
     # 获取上传的两个文件
     station_list = request.FILES.get('station_list')      # 岗位清单表
     sampling_summary = request.FILES.get('sampling_summary')  # 取样总表
+    # ★ 新增：工作清单表
+    preprocess_worksheet = request.FILES.get('preprocess_worksheet')
     
     if not (station_list and sampling_summary and project_id and instrument_num):
         return HttpResponseBadRequest("缺少必要参数或文件")
+
+    # ★ 新增：解析工作清单表（可选），生成 worksheet_table_2
+    worksheet_table_2 = []
+    if preprocess_worksheet:
+        worksheet_table_2 = _parse_preprocess_worksheet(preprocess_worksheet)
     
     # 获取项目配置信息
     try:
@@ -84,20 +199,22 @@ def WholeBloodWorkstationResult(request):
     station_header = [str(station_sheet.row_values(0)[i]).strip() for i in range(station_ncols)]
     station_index = {col: idx for idx, col in enumerate(station_header)}
     
-    # 获取主条码和实验号列索引
-    mb_idx = station_index.get("主条码", 0)
+    # ★ 与NIMBUS对齐：优先检测是否含"子条码"列，动态决定匹配键类型
+    use_sub_barcode = "子条码" in station_index
+    if use_sub_barcode:
+        KEY_IDX = station_index["子条码"]   # 用完整子条码（如 2437871821-01）作为键
+    else:
+        KEY_IDX = station_index.get("主条码", 0)  # 退而用主条码（如 2437871821）作为键
+
     sn_idx = station_index.get("实验号", 0)
     
-    # ========== 构建主条码→实验号列表的映射（拆分条码） ==========
+    # ========== 构建条码→实验号列表的映射 ==========
     barcode_to_names = defaultdict(list)
     for i in range(1, station_nrows):
-        barcode = str(station_sheet.row_values(i)[mb_idx]).strip()
+        barcode = str(station_sheet.row_values(i)[KEY_IDX]).strip()
         sample_name = str(station_sheet.row_values(i)[sn_idx]).strip()
         if barcode and sample_name:
-            # ★ 新增：拆分条码，只取主条码部分作为键
-            parts = barcode.split("-", 1)
-            main_barcode = parts[0]  # 主条码部分（如 "2437871821"）
-            barcode_to_names[main_barcode].append(sample_name)
+            barcode_to_names[barcode].append(sample_name)
     
     
     # ========== 3. 读取取样总表（从"产品信息"工作表）==========
@@ -186,30 +303,39 @@ def WholeBloodWorkstationResult(request):
             # 获取该孔位的条码
             barcode = well_data.get((row_num, col_num), "NOTUBE")
             
-            # 先拆分条码，再用主条码匹配实验号
+            # ★ 与NIMBUS对齐：根据 use_sub_barcode 决定切割方式和匹配键
+            match_sample = "No match"
             if barcode and barcode != "NOTUBE":
-                parts = barcode.split("-", 1)
-                cut_barcode = parts[0]
-                sub_barcode = "-" + parts[1] if len(parts) == 2 else ""
+                if use_sub_barcode:
+                    # 子条码模式：用原始完整条码（如 2437871821-01）直接匹配
+                    cut_barcode = barcode
+                    sub_barcode = ""
+                    origin_barcode = barcode
+                    match_key = barcode
+                else:
+                    # 主条码模式：切割后取主条码部分匹配
+                    parts = barcode.split("-", 1)
+                    cut_barcode = parts[0]
+                    sub_barcode = "-" + parts[1] if len(parts) == 2 else ""
+                    origin_barcode = barcode
+                    match_key = cut_barcode
             else:
                 cut_barcode = "NOTUBE" if barcode == "NOTUBE" else ""
                 sub_barcode = ""
-            
-            # 从岗位清单匹配实验号
-            if cut_barcode and cut_barcode != "NOTUBE":
-                if cut_barcode in barcode_to_names:
-                    matched_names = barcode_to_names[cut_barcode]
-                    if len(matched_names) == 1:
-                        match_sample = matched_names[0]
-                    elif len(matched_names) > 1:
-                        # ========== ★ 修改：去重后再拼接 ==========
-                        # 使用 list(dict.fromkeys(...)) 保留顺序的同时去重
-                        unique_names = list(dict.fromkeys(matched_names))
-                        if len(unique_names) == 1:
-                            # 去重后只剩一个实验号，直接使用
-                            match_sample = unique_names[0]
-                    else:
-                        match_sample = "No match"
+                origin_barcode = barcode if barcode else "NOTUBE"
+                match_key = None
+
+            # ★ 与NIMBUS对齐：实验号匹配 + 多实验号拼接展示
+            warm = ""
+            if match_key and match_key != "NOTUBE":
+                matched_names = barcode_to_names.get(match_key, [])
+                unique_names = list(dict.fromkeys(matched_names))  # 去重保序
+                if len(unique_names) == 1:
+                    match_sample = unique_names[0]
+                elif len(unique_names) > 1:
+                    # ★ 与NIMBUS对齐：多实验号拼接展示 + 共血警告
+                    match_sample = "/".join(str(n) for n in unique_names)
+                    warm = "共血"
                 else:
                     match_sample = "No match"
 
@@ -225,7 +351,7 @@ def WholeBloodWorkstationResult(request):
                 "cut_barcode": cut_barcode,
                 "sub_barcode": sub_barcode,
                 "origin_barcode": barcode,
-                "warm": "",
+                "warm": warm,
                 "status": "Used",
                 "dup_barcode": "",
                 "dup_barcode_sample": "",
@@ -380,6 +506,7 @@ def WholeBloodWorkstationResult(request):
             "injection_plate": "",  # 全血工作站无上机盘号
         },
         "worksheet_table": worksheet_table,
+        "worksheet_table_2": worksheet_table_2,   # ★ 新增
         "error_rows": error_rows,
         "txt_headers": txt_headers,  # 添加上机列表表头
         "worklist_records": worklist_records,  # 添加上机列表数据
@@ -396,6 +523,7 @@ def WholeBloodWorkstationResult(request):
         "plates": [{
             "plate_no": "X1",
             "worksheet_table": worksheet_table,
+            "worksheet_table_2": worksheet_table_2,   # ★ 新增
             "error_rows": error_rows,
             "txt_headers": txt_headers,  # 添加上机列表表头
             "worklist_records": worklist_records,  # 添加上机列表数据

@@ -57,11 +57,11 @@
                         <!-- ========== 新增：冲突类型列 ========== -->
                         <td>
                             {% if r.conflict_type == "文件内重复" %}
-                                <span class="badge bg-warning text-dark">文件内重复</span>
+                                <span class="badge bg-warning text-dark">多余管</span>
                             {% elif r.conflict_type == "跨文件重复" %}
-                                <span class="badge bg-danger">跨文件重复</span>
+                                <span class="badge bg-warning text-dark">多余管</span>
                             {% elif r.conflict_type == "项目实验号冲突" %}
-                                <span class="badge bg-info text-dark">项目实验号冲突</span>
+                                <span class="badge bg-info text-dark">检测项目错误</span>
                             {% else %}
                                 <span class="badge bg-secondary">未知</span>
                             {% endif %}

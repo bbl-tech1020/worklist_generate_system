@@ -463,10 +463,12 @@ def WholeBloodWorkstationResult(request):
                             # 映射文件格式为：第一列是样品名称关键词，其他列是对应的值
                             # 根据实际映射文件格式调整
                             for _, row in mapping_df.iterrows():
-                                key = str(row.iloc[0]).strip()  # 第一列作为匹配键
+                                key = str(row.iloc[0]).strip()   # 第一列仍为匹配键（样品名称）
+                                # ★ 改为用 mapping_file 自身的列名作为键，直接按列名对应
                                 mapping_dict[key] = {
-                                    gzkm_header[i]: str(row.iloc[i]) if i < len(row) else ''
-                                    for i in range(1, len(gzkm_header))
+                                    col_name: str(row[col_name])
+                                    for col_name in mapping_df.columns[1:]   # 跳过第一列（匹配键列）
+                                    if col_name in row.index
                                 }
                     except Exception as e:
                         print(f"读取映射文件失败: {e}")
@@ -644,7 +646,6 @@ def export_wholeblood_files(request):
             error_sheet.write(row_idx, 1, err["origin_barcode"])
             error_sheet.write(row_idx, 2, err["plate_no"])
             error_sheet.write(row_idx, 3, err["well_str"])
-            error_sheet.write(row_idx, 4, err["warn_level"])
             error_sheet.write(row_idx, 5, err["warn_info"])
         
         error_filename = f"{plate_no}_ErrorList_{instrument_num}_{systerm_num}_{project_name}_{timestamp}_{plate_no}_GZ.xls"

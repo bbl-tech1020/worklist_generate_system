@@ -302,6 +302,73 @@ def _collect_history_mainbarcodes(processed_dir: str) -> Set[str]:
     return s
 
 
+
+def _collect_history_mainbarcode_prefixes(processed_dir: str) -> dict[str, str]:
+    """
+    遍历当天 processed 目录下所有 *.csv，
+    返回 Dict[MainBarcode, 代表实验号前缀]。
+
+    前缀查找方式：
+      读取同级 station_list.json（由 _save_station_store_daily 写入），
+      用完整 SRCTubeID 查找实验号列表，提取代表前缀。
+    若找不到 station_list.json，则前缀为空字符串（退化为旧逻辑）。
+    """
+    result: dict[str, str] = {}
+    if not os.path.isdir(processed_dir):
+        return result
+
+    # 尝试加载当天岗位清单映射库
+    # processed_dir 结构: media/tecan/YYYYMMDD/<project>/processed
+    # station_list.json 在: downloads/岗位清单/YYYY-MM-DD/station_list.json
+    from django.conf import settings as _settings
+    from django.utils import timezone as _tz
+    day_str = _tz.localdate().strftime("%Y-%m-%d")
+    station_json_path = os.path.join(
+        _settings.DOWNLOAD_ROOT, "岗位清单", day_str, "station_list.json"
+    )
+    sn2mb_inv: dict[str, list[str]] = {}  # SRCTubeID → 实验号列表
+    try:
+        with open(station_json_path, "r", encoding="utf-8") as f:
+            sdata = json.load(f)
+        # 结构：{"主条码->实验号列表": {"12345": ["CA001","CA002"]}, ...}
+        mb2sn = sdata.get("主条码->实验号列表", {})
+        # 反转为：完整 SRCTubeID（主码）→ 实验号列表（此处 key 为主码，同 MainBarcode）
+        sn2mb_inv = mb2sn
+    except Exception:
+        pass
+
+    for name in os.listdir(processed_dir):
+        if not name.lower().endswith(".csv"):
+            continue
+        p = os.path.join(processed_dir, name)
+        try:
+            with open(p, "r", encoding="utf-8", errors="ignore") as f:
+                lines = [ln.strip() for ln in f.read().splitlines() if ln.strip()]
+            if len(lines) <= 1:
+                continue
+            for line in lines[1:]:
+                parts = [x.strip() for x in line.split(";")]
+                if not parts:
+                    continue
+                src = parts[-1]
+                main = str(src).split("-", 1)[0]
+                if not main or main in result:
+                    continue
+                # 查找该主码对应的实验号列表
+                exp_list = sn2mb_inv.get(main, [])
+                prefix = ""
+                if exp_list:
+                    from collections import Counter
+                    prefixes = [_get_exp_prefix(e) for e in exp_list if e]
+                    if prefixes:
+                        prefix = Counter(prefixes).most_common(1)[0][0]
+                result[main] = prefix
+        except Exception:
+            continue
+    return result
+
+
+
 def _detect_project_experiment_conflicts(
     df: pd.DataFrame,
     project_name: str,
@@ -339,7 +406,7 @@ def _detect_project_experiment_conflicts(
         # 判断冲突
         if project_name == "CA":
             # 规则 1: CA 项目含 PCA 实验号
-            if has_pca:
+            if has_pca or has_zmn:
                 conflict_barcodes.add(src_tube_id)
                 continue
             # 规则 2: CA 项目同时含 CA 和 ZMN 实验号
@@ -348,7 +415,7 @@ def _detect_project_experiment_conflicts(
                 
         elif project_name == "ZMNs":
             # 规则 3: ZMNs 项目含 PCA 实验号
-            if has_pca:
+            if has_pca or has_ca:
                 conflict_barcodes.add(src_tube_id)
                 continue
             # 规则 4: ZMNs 项目同时含 CA 和 ZMN 实验号
@@ -357,42 +424,39 @@ def _detect_project_experiment_conflicts(
     
     return conflict_barcodes
 
-
-
-def _detect_conflicts(df: pd.DataFrame, history: Set[str]) -> Dict[str, List[Dict[str, str]]]:
+# ======== 新增：提取实验号前缀的辅助函数 ========
+def _get_exp_prefix(exp: str) -> str:
     """
-    返回 { intra: [...], cross: [...] }
-    - intra：本次文件内重复（逐行列出）
-    - cross：跨文件重复（列出重复的 MainBarcode 值）
+    提取实验号的项目前缀，规则：
+    - 以 'ZMNs' 开头 → 'ZMNs'
+    - 以 'PCA' 开头  → 'PCA'
+    - 以 'CA' 开头   → 'CA'
+    - 其他           → 取连续字母部分（re.match([A-Za-z]+)），无则返回原值
+    优先匹配更长的前缀，避免 ZMNs 被误识别为其他。
     """
-    res = {"intra": [], "cross": []}
+    s = (exp or "").strip()
+    for prefix in ("ZMNs", "PCA", "CA"):
+        if s.startswith(prefix):
+            return prefix
+    m = re.match(r"[A-Za-z]+", s)
+    return m.group(0) if m else s
 
-    # === 新：本次内重复（细分规则）
-    # A. 主码相同且子码不同：仅标记“后续出现”的重复
-    has_multi_subs = df.groupby("MainBarcode")["SRCTubeID"].transform(lambda s: s.nunique() > 1)
-    diff_sub_later_mask = has_multi_subs & df["MainBarcode"].duplicated(keep="first")
 
-    # B. 主码和子码均相同：标记所有重复（包括第一次出现）
-    exact_dup_all = df["SRCTubeID"].duplicated(keep=False)
-
-    dup_mask = diff_sub_later_mask | exact_dup_all
-
-    if dup_mask.any():
-        dup_rows = df[dup_mask].sort_values(["MainBarcode", "RowID"])
-        for _, r in dup_rows.iterrows():
-            res["intra"].append({
-                "RowID": int(r["RowID"]),
-                "MainBarcode": str(r["MainBarcode"]),
-                "SRCTubeID": str(r["SRCTubeID"]),
-            })
-
-    # 跨文件重复
-    this_set = set(df["MainBarcode"].dropna().astype(str))
-    cross = sorted(this_set & set(history))
-    for mb in cross:
-        res["cross"].append({"MainBarcode": mb})
-
-    return res
+def _get_main_exp_prefix(srctube_id: str, station_map: dict) -> str:
+    """
+    给定一个完整条码（SRCTubeID），从 station_map 中取其实验号列表，
+    提取并返回所有实验号的前缀集合中"出现次数最多"的前缀（代表性前缀）。
+    若无匹配则返回空字符串。
+    """
+    exp_list = station_map.get(srctube_id, [])
+    if not exp_list:
+        return ""
+    prefixes = [_get_exp_prefix(e) for e in exp_list if e]
+    if not prefixes:
+        return ""
+    # 取出现最多的前缀作为该条码的代表前缀
+    from collections import Counter
+    return Counter(prefixes).most_common(1)[0][0]
 
 
 # 将扫码结果表写入processed文件夹（无重复条码时）
@@ -405,7 +469,6 @@ def _write_processed_copy_from_original(saved_scan_abs: str, processed_dir: str)
     with open(saved_scan_abs, "rb") as src, open(out_path, "wb") as dst:
         dst.write(src.read())
     return out_path
-
 
 def _write_processed_with_row_replacements(
     header_line: str,
@@ -535,19 +598,78 @@ def tecaningest(request: HttpRequest) -> HttpResponse:
     # 冲突检测 + 渲染 
     history = _collect_history_mainbarcodes(processed_dir)
 
-    # === 新：文件内重复的细分规则 ===
-    # 1) 主码相同且子码不同：仅标记“后续出现”的重复
-    has_multi_subs = df.groupby("MainBarcode")["SRCTubeID"].transform(lambda s: s.nunique() > 1)
-    diff_sub_later_mask = has_multi_subs & df["MainBarcode"].duplicated(keep="first")
+    # === 新：文件内重复的细分规则（含实验号前缀校验）===
 
-    # 2) 主码和子码均相同：标记所有重复（包括第一次出现）
+    # 先为每行计算实验号代表前缀（从 station_map 中查找）
+    df["__exp_prefix"] = df["SRCTubeID"].apply(
+        lambda sid: _get_main_exp_prefix(sid, station_map)
+    )
+
+    # A. 主码相同且子码不同：
+    #    在同一 MainBarcode 组内，只有与"首次出现行"的实验号前缀相同的后续行才算重复
+    def _mark_diff_sub_same_prefix(group):
+        """
+        对同一 MainBarcode 的分组：
+        - 若组内只有一个唯一 SRCTubeID，不标记
+        - 若组内有多个唯一 SRCTubeID（子码不同），
+        以首次出现行的实验号前缀为基准，
+        只将"子码不同且前缀与首行相同"的后续行标记为重复
+        """
+        result = pd.Series(False, index=group.index)
+        if group["SRCTubeID"].nunique() <= 1:
+            return result
+        first_idx = group.index[0]
+        base_prefix = group.loc[first_idx, "__exp_prefix"]
+        for idx in group.index[1:]:  # 跳过首行
+            row_prefix = group.loc[idx, "__exp_prefix"]
+            row_sid = group.loc[idx, "SRCTubeID"]
+            first_sid = group.loc[first_idx, "SRCTubeID"]
+            if row_sid != first_sid:  # 子码不同
+                # 仅当前缀相同（或两者均无前缀）时才标记为重复
+                if base_prefix and row_prefix and base_prefix == row_prefix:
+                    result[idx] = True
+                elif not base_prefix and not row_prefix:
+                    # 双方均无实验号匹配，保持原有逻辑（主码重复即标记）
+                    result[idx] = True
+        return result
+
+    diff_sub_later_mask = df.groupby("MainBarcode", group_keys=False).apply(
+        _mark_diff_sub_same_prefix
+    ).reindex(df.index, fill_value=False)
+
+    # B. 主码和子码均相同：标记所有重复（完全相同的条码，无需比较前缀）
     exact_dup_all = df["SRCTubeID"].duplicated(keep=False)
 
-    # 合并两种“文件内重复”的掩码
+    # 合并两种"文件内重复"的掩码
     mask_infile_new = diff_sub_later_mask | exact_dup_all
 
-    # 跨文件重复（沿用旧逻辑）
-    mask_cross = df["MainBarcode"].isin(history)
+    # 清理临时列
+    df.drop(columns=["__exp_prefix"], inplace=True)
+
+
+    # 跨文件重复（新逻辑：主码在历史中存在，且实验号前缀与历史中该主码的前缀相同）
+    #
+    # 为此需要升级 history：从 Set[str] 改为 Dict[str, str]（主码 → 代表前缀）
+    # 注意：_collect_history_mainbarcodes 只返回主码集合，
+    # 需要同步升级为能返回前缀信息的新函数（见改动四）
+    history_prefix_map = _collect_history_mainbarcode_prefixes(processed_dir)
+
+    def _is_cross_dup(row):
+        main = str(row["MainBarcode"])
+        if main not in history_prefix_map:
+            return False
+        hist_prefix = history_prefix_map[main]
+        cur_prefix = _get_main_exp_prefix(str(row["SRCTubeID"]), station_map)
+        # 若历史或当前均无前缀信息，保持原有逻辑（主码重复即标记）
+        if not hist_prefix or not cur_prefix:
+            return True
+        return hist_prefix == cur_prefix
+
+    mask_cross = df.apply(_is_cross_dup, axis=1)
+
+    # 同时保持 history（Set）供后续使用（如 cross_mains 提示）
+    history = set(history_prefix_map.keys())
+
 
     # ========== 新增：项目-实验号交叉冲突检测 ==========
     project_exp_conflicts = _detect_project_experiment_conflicts(

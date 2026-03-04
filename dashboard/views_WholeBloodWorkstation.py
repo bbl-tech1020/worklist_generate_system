@@ -578,6 +578,9 @@ def export_wholeblood_files(request):
     
     # ========== 1. 生成时间戳和文件名 ==========
     timestamp = timezone.localtime().strftime("%Y%m%d_%H%M%S")
+    # ★ 样品放置图文件名 (PlacementMap)
+    placement_map_filename_stem = f"{plate_no}_PlacementMap_{instrument_num}_{systerm_num}_{project_name}_{timestamp}_{plate_no}_GZ"
+    # ★ 前处理样品工作单文件名 (WorkSheet)
     worksheet_filename_stem = f"{plate_no}_WorkSheet_{instrument_num}_{systerm_num}_{project_name}_{timestamp}_{plate_no}_GZ"
     
     # ========== 2. 创建保存目录 ==========
@@ -590,8 +593,8 @@ def export_wholeblood_files(request):
     )
     os.makedirs(save_dir, exist_ok=True)
     
-    # ========== 3. 生成 PDF 工作清单 ==========
-    pdf_payload = {
+    # ========== 3. 生成样品放置图 PDF ==========
+    placement_pdf_payload = {
         "project_name": project_name,
         "project_name_full": project_name_full,
         "instrument_num": instrument_num,
@@ -600,10 +603,18 @@ def export_wholeblood_files(request):
         "worksheet_table": worksheet_table,
         "error_rows": error_rows,
         "platform": platform,
+        "header": {  # ★ 新增：传入header数据
+            "today_str": today_str[:4] + "-" + today_str[4:6] + "-" + today_str[6:8],
+            "plate_no": plate_no,
+            "instrument_num": instrument_num,
+            "systerm_num": systerm_num,
+            "injection_plate": "",  # 全血工作站无上机盘号
+        },
+        "nums": [str(i) for i in range(1, 13)],  # ★ 新增：列号1-12
     }
     
     # 渲染 HTML 模板
-    worksheet_html = render_to_string("dashboard/export_pdf.html", pdf_payload)
+    placement_html = render_to_string("dashboard/export_pdf.html", placement_pdf_payload)
     
     # 配置字体和样式
     font_config = FontConfiguration()
@@ -613,22 +624,62 @@ def export_wholeblood_files(request):
         .highlight { background-color: #ffcccc; }
     """, font_config=font_config)
     
-    # 生成 PDF 文件
-    worksheet_pdf_filename = f"{worksheet_filename_stem}.pdf"
-    worksheet_pdf_path = os.path.join(save_dir, worksheet_pdf_filename)
+    # 生成样品放置图 PDF 文件
+    placement_pdf_filename = f"{placement_map_filename_stem}.pdf"
+    placement_pdf_path = os.path.join(save_dir, placement_pdf_filename)
     
-    HTML(string=worksheet_html).write_pdf(
-        worksheet_pdf_path,
+    HTML(string=placement_html).write_pdf(
+        placement_pdf_path,
         stylesheets=[pdf_css],
         font_config=font_config
     )
+
+
+    # ========== 4. 生成前处理样品工作单 PDF (worksheet_table_2) ==========
+    worksheet_table_2 = plate_data.get('worksheet_table_2', [])
+    if worksheet_table_2:
+        # 构建前处理样品工作单的payload
+        worksheet2_pdf_payload = {
+            "project_name": project_name,
+            "project_name_full": project_name_full,
+            "instrument_num": instrument_num,
+            "systerm_num": systerm_num,
+            "plate_no": plate_no,
+            "worksheet_table": worksheet_table_2,  # ★ 使用worksheet_table_2数据
+            "error_rows": [],  # 前处理样品工作单不需要显示报错信息
+            "platform": platform,
+            "pdf_title": "前处理样品工作单",  # ★ 指定标题
+            "header": {
+                "today_str": today_str[:4] + "-" + today_str[4:6] + "-" + today_str[6:8],
+                "plate_no": plate_no,
+                "instrument_num": instrument_num,
+                "systerm_num": systerm_num,
+                "injection_plate": "",
+            },
+            "nums": [str(i) for i in range(1, 13)],
+        }
+        
+        # 渲染HTML
+        worksheet2_html = render_to_string("dashboard/export_pdf_worksheet2.html", worksheet2_pdf_payload)
+        
+        # 生成前处理样品工作单PDF
+        worksheet2_pdf_filename = f"{worksheet_filename_stem}.pdf"
+        worksheet2_pdf_path = os.path.join(save_dir, worksheet2_pdf_filename)
+        
+        HTML(string=worksheet2_html).write_pdf(
+            worksheet2_pdf_path,
+            stylesheets=[pdf_css],
+            font_config=font_config
+        )
+
+
     
-    # ========== 4. 保存 payload.json（用于后续重新生成）==========
-    payload_filename = f"{worksheet_filename_stem}.payload.json"
+    # ========== 5. 保存 payload.json（用于后续重新生成）==========
+    payload_filename = f"{placement_map_filename_stem}.payload.json"
     payload_path = os.path.join(save_dir, payload_filename)
     
     with open(payload_path, "w", encoding="utf-8") as f:
-        json.dump(pdf_payload, f, ensure_ascii=False, indent=2)
+        json.dump(worksheet2_pdf_payload, f, ensure_ascii=False, indent=2)
     
 
     # ========== 6. 生成上机列表 Excel 文件（如果有数据）==========
@@ -650,7 +701,7 @@ def export_wholeblood_files(request):
                 worklist_sheet.write(row_idx, col_idx, value)
         
         # 保存上机列表文件
-        worklist_filename = f"{plate_no}_InjectionList_{instrument_num}_{systerm_num}_{project_name}_{timestamp}_{plate_no}_GZ.xls"
+        worklist_filename = f"{plate_no}_OnboardingList_{instrument_num}_{systerm_num}_{project_name}_{timestamp}_{plate_no}_GZ.xls"
         worklist_path = os.path.join(save_dir, worklist_filename)
         worklist_wb.save(worklist_path)
 

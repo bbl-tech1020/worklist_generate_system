@@ -187,7 +187,13 @@
             </colgroup>
             <thead>
                 <tr>
-                    <th colspan="13" class="title">{{ project_name_full }}前处理样品工作单（Testing Worksheet）</th>
+                    <th colspan="13" class="title">
+                        {% if platform == "全血工作站" %}
+                            {{ project_name_full }}样品放置图（Placement Map）
+                        {% else %}
+                            {{ project_name_full }}前处理样品工作单（Testing Worksheet）
+                        {% endif %}
+                    </th>
                 </tr>
                 <!-- ✅ 第二行：检测日期 / 板号 / 仪器编号 / 上机盘号 -->
                 <tr class="meta-row">

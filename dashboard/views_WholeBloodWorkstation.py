@@ -155,7 +155,7 @@ def WholeBloodWorkstationResult(request):
     # ========== 1. 获取表单参数 ==========
     project_id = request.POST.get("project_id")
     project_name = request.POST.get("project_name")
-    platform = "WholeBloodWorkstation"
+    platform = "全血工作站"
     instrument_num = request.POST.get("instrument_num")
     systerm_num = request.POST.get("systerm_num")
     testing_day = request.POST.get("testing_day", "today")
@@ -629,28 +629,6 @@ def export_wholeblood_files(request):
     
     with open(payload_path, "w", encoding="utf-8") as f:
         json.dump(pdf_payload, f, ensure_ascii=False, indent=2)
-    
-    # ========== 5. 生成 Excel 报错信息表（如果有报错）==========
-    if error_rows:
-        error_wb = xlwt.Workbook()
-        error_sheet = error_wb.add_sheet("报错信息")
-        
-        # 表头
-        headers = ["实验号", "条码", "板号", "孔位", "警告信息"]
-        for col, header in enumerate(headers):
-            error_sheet.write(0, col, header)
-        
-        # 数据行
-        for row_idx, err in enumerate(error_rows, start=1):
-            error_sheet.write(row_idx, 0, err["sample_name"])
-            error_sheet.write(row_idx, 1, err["origin_barcode"])
-            error_sheet.write(row_idx, 2, err["plate_no"])
-            error_sheet.write(row_idx, 3, err["well_str"])
-            error_sheet.write(row_idx, 5, err["warn_info"])
-        
-        error_filename = f"{plate_no}_ErrorList_{instrument_num}_{systerm_num}_{project_name}_{timestamp}_{plate_no}_GZ.xls"
-        error_path = os.path.join(save_dir, error_filename)
-        error_wb.save(error_path)
     
 
     # ========== 6. 生成上机列表 Excel 文件（如果有数据）==========

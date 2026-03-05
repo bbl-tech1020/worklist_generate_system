@@ -582,30 +582,84 @@ def _extract_project_from_onboarding_filename(fname: str) -> str:
     m = _PROJECT_RE.search(s)
     return (m.group(1) or "").strip() if m else ""
 
-def _load_station_list_for_today() -> dict:
+# ========== 新增：自动抓取网络路径岗位清单 ==========
+def _auto_fetch_station_list(today_str: str):
     """
-    读取：DOWNLOAD_ROOT/岗位清单/{YYYY-MM-DD}/station_list.json
-    返回：station_list["主条码->实验号列表"]（若不存在则返回空 dict）
+    自动从局域网共享路径读取当天日期下时间戳最新的岗位清单文件。
+    路径：\\\\10.10.18.154\\00-标本签收与领取\\2026\\共同岗位清单
+    文件名格式：共同岗位清单{YYYYMMDD}_{HHMM}.xlsx
+
+    返回：(file_bytes: bytes, filename: str) 成功
+          (None, None) 失败（任何原因均静默失败，回退到手动上传）
     """
-    today_str = timezone.localdate().strftime("%Y-%m-%d")
-    fpath = os.path.join(settings.DOWNLOAD_ROOT, STATION_DIRNAME, today_str, "station_list.json")
-    
-    if not os.path.exists(fpath):
-        return {}
+    import re as _re
+
+    STATION_NETWORK_DIR = r"\\10.10.18.154\00-标本签收与领取\2026\共同岗位清单"
+    pattern = _re.compile(
+        r"^共同岗位清单" + _re.escape(today_str) + r"_(\d{4})\.(xlsx|xls)$",
+        _re.IGNORECASE,
+    )
 
     try:
-        with open(fpath, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except Exception:
-        return {}
+        entries = os.listdir(STATION_NETWORK_DIR)
+    except Exception as e:
+        logging.getLogger(__name__).warning(
+            "[auto_station] 无法访问网络路径: %s, 原因: %s", STATION_NETWORK_DIR, e
+        )
+        return None, None
 
-    mapping = (
-        data.get("barcode->实验号列表")
-        or data.get("子条码->实验号列表")
-        or data.get("主条码->实验号列表")
-        or {}
-    )
-    return mapping if isinstance(mapping, dict) else {}
+    # 筛选当天文件，提取时间戳(HHMM)并取最大值（最新）
+    candidates = []
+    for name in entries:
+        m = pattern.match(name)
+        if m:
+            time_part = m.group(1)   # 如 "0902"
+            candidates.append((time_part, name))
+
+    if not candidates:
+        logging.getLogger(__name__).warning(
+            "[auto_station] 未找到当天(%s)的岗位清单文件", today_str
+        )
+        return None, None
+
+    # 按时间戳字符串排序，取最后一个（最新）
+    candidates.sort(key=lambda x: x[0])
+    latest_time, latest_name = candidates[-1]
+    latest_path = os.path.join(STATION_NETWORK_DIR, latest_name)
+
+    try:
+        with open(latest_path, "rb") as f:
+            file_bytes = f.read()
+        logging.getLogger(__name__).info(
+            "[auto_station] 自动读取成功: %s", latest_path
+        )
+        return file_bytes, latest_name
+    except Exception as e:
+        logging.getLogger(__name__).warning(
+            "[auto_station] 读取文件失败: %s, 原因: %s", latest_path, e
+        )
+        return None, None
+
+
+@require_GET
+def check_station_auto(request):
+    """
+    前端轮询：检查当天（或明天）是否能自动抓到岗位清单文件。
+    参数：testing_day=today|tomorrow
+    返回：{"found": true, "filename": "共同岗位清单20260228_0902.xlsx"} 
+       或 {"found": false, "filename": null}
+    """
+    testing_day = request.GET.get("testing_day", "today")
+    if testing_day == "tomorrow":
+        today_str = (timezone.localtime() + timedelta(days=1)).strftime("%Y%m%d")
+    else:
+        today_str = timezone.localtime().strftime("%Y%m%d")
+
+    _, filename = _auto_fetch_station_list(today_str)
+    if filename:
+        return JsonResponse({"found": True, "filename": filename})
+    return JsonResponse({"found": False, "filename": None})
+
 
 
 def _map_to_station_experiment(value: str, station_map: dict) -> tuple[bool, str, bool]:
@@ -627,10 +681,6 @@ def _map_to_station_experiment(value: str, station_map: dict) -> tuple[bool, str
 
     # 查不到：用原输入替换（不阻断）
     return True, v, False
-
-
-
-
 
 
 def file_download(request):
@@ -3006,13 +3056,27 @@ def ProcessResult(request):
         today_str = (timezone.localtime() + timedelta(days=1)).strftime("%Y%m%d")
         record_date = date.today() + timedelta(days=1)
 
-    Stationlist = request.FILES.get('station_list')               # 每日操作清单
+    Stationlist = request.FILES.get('station_list')               # 每日操作清单（可为空，尝试自动抓取）
     Scanresult  = request.FILES.get('scan_result')                # 扫码结果
-    if not (Stationlist and Scanresult and project_id and platform and instrument_num):
+
+    # ── 自动抓取岗位清单（仅 NIMBUS 平台，手动未上传时触发）──
+    station_bytes = None
+    station_auto_name = None
+    if not Stationlist:
+        station_bytes, station_auto_name = _auto_fetch_station_list(today_str)
+
+    # 校验：扫码结果和基础参数必须存在；岗位清单手动或自动二选一
+    station_available = bool(Stationlist) or bool(station_bytes)
+    if not (station_available and Scanresult and project_id and platform and instrument_num):
         return HttpResponseBadRequest("缺少必要参数或文件。")
 
-    Stationtable = xlrd.open_workbook(filename=None, file_contents=Stationlist.read())
-    Scantable    = xlrd.open_workbook(filename=None, file_contents=Scanresult.read())
+    # 读取岗位清单（优先手动上传，其次自动抓取）
+    if Stationlist:
+        Stationtable = xlrd.open_workbook(filename=None, file_contents=Stationlist.read())
+    else:
+        Stationtable = xlrd.open_workbook(filename=None, file_contents=station_bytes)
+
+    Scantable = xlrd.open_workbook(filename=None, file_contents=Scanresult.read())
 
     scan_sheet   = Scantable.sheets()[0]
 

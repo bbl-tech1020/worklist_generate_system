@@ -672,7 +672,6 @@ def export_wholeblood_files(request):
             font_config=font_config
         )
 
-
     
     # ========== 5. 保存 payload.json（用于后续重新生成）==========
     payload_filename = f"{placement_map_filename_stem}.payload.json"

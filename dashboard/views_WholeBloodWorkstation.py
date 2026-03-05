@@ -166,7 +166,8 @@ def WholeBloodWorkstationResult(request):
     # ★ 新增：工作清单表
     preprocess_worksheet = request.FILES.get('preprocess_worksheet')
     
-    if not (station_list and sampling_summary and project_id and instrument_num):
+    # station_list 改为可选（支持自动读取）
+    if not (sampling_summary and project_id and instrument_num):
         return HttpResponseBadRequest("缺少必要参数或文件")
 
     # ★ 新增：解析工作清单表（可选），生成 worksheet_table_2
@@ -190,14 +191,31 @@ def WholeBloodWorkstationResult(request):
         record_date = date.today() + timedelta(days=1)
     
     # ========== 2. 读取岗位清单表（获取条码→实验号映射）==========
-    station_wb = xlrd.open_workbook(filename=None, file_contents=station_list.read())
+    # 未手动上传时，尝试从共享路径自动读取当天岗位清单
+    if not station_list:
+        from .views import _auto_fetch_station_list
+        auto_result = _auto_fetch_station_list(testing_day)
+        if auto_result["found"]:
+            import io
+            with open(auto_result["path"], "rb") as _f:
+                _bio = io.BytesIO(_f.read())
+            station_wb = xlrd.open_workbook(file_contents=_bio.read())
+        else:
+            return render(request, "dashboard/error.html", {
+                "message": "未上传岗位清单，且未找到当天自动读取文件，请手动上传后重试。"
+            })
+    else:
+        station_wb = xlrd.open_workbook(filename=None, file_contents=station_list.read())
+
+
     station_sheet = station_wb.sheets()[0]
     station_nrows = station_sheet.nrows
     station_ncols = station_sheet.ncols
-    
+
     # 解析表头
     station_header = [str(station_sheet.row_values(0)[i]).strip() for i in range(station_ncols)]
     station_index = {col: idx for idx, col in enumerate(station_header)}
+
     
     # ★ 与NIMBUS对齐：优先检测是否含"子条码"列，动态决定匹配键类型
     use_sub_barcode = "子条码" in station_index

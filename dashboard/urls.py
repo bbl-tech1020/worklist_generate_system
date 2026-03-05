@@ -97,7 +97,7 @@ urlpatterns = [
     path('dashboard/file_replace/get_payload/', views.file_replace_get_payload, name='file_replace_get_payload'),
     path("dashboard/manual/", views.user_manual, name="user_manual"),
 
-    path('check-station-auto/', views.check_station_auto, name='check_station_auto'),
+    path('check_station_auto/', views.check_station_auto, name='check_station_auto'),
 
 ]
 

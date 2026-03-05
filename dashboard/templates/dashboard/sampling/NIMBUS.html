@@ -32,6 +32,12 @@
         <div class="mb-3">
           <label class="form-label">岗位清单表</label>
 
+          <!-- loading 状态 -->
+          <div id="station-auto-loading" class="alert alert-secondary d-flex align-items-center py-2 mb-2 d-none">
+            <span class="spinner-border spinner-border-sm me-2" role="status"></span>
+            <span>正在检测当天岗位清单...</span>
+          </div>
+
           <!-- 自动读取状态提示条（初始隐藏） -->
           <div id="station-auto-ok" class="alert alert-success d-flex align-items-center py-2 mb-2 d-none" role="alert">
             <svg xmlns="http://www.w3.org/2000/svg" class="me-2 flex-shrink-0" width="18" height="18"
@@ -144,38 +150,36 @@
     const testingDay = document.getElementById('testing_day').value;
     const okBox = document.getElementById('station-auto-ok');
     const failBox = document.getElementById('station-auto-fail');
+    const loadBox = document.getElementById('station-auto-loading');
     const fileInput = document.getElementById('station-list-input');
     const manualHint = document.getElementById('station-manual-hint');
 
-    // 检查中：隐藏两个提示条，显示 loading 状态
     okBox.classList.add('d-none');
     failBox.classList.add('d-none');
+    loadBox.classList.remove('d-none');
 
     fetch("{% url 'check_station_auto' %}?testing_day=" + encodeURIComponent(testingDay))
       .then(res => res.json())
       .then(data => {
         if (data.found) {
-          // ✅ 自动读取成功
           document.getElementById('station-auto-filename').textContent = data.filename;
           okBox.classList.remove('d-none');
           failBox.classList.add('d-none');
-
-          // 上传控件缩为次要样式 + 提示文字更新
           fileInput.classList.add('form-control-sm');
           manualHint.textContent = '已自动读取，如需覆盖可手动上传其他文件';
         } else {
-          // ⚠️ 自动读取失败
           okBox.classList.add('d-none');
           failBox.classList.remove('d-none');
-
           fileInput.classList.remove('form-control-sm');
           manualHint.textContent = '自动读取路径：\\\\10.10.18.154\\00-标本签收与领取\\2026\\共同岗位清单';
         }
       })
       .catch(() => {
-        // 网络异常：静默降级，显示失败提示
         okBox.classList.add('d-none');
         failBox.classList.remove('d-none');
+      })
+      .finally(() => {
+        loadBox.classList.add('d-none');
       });
   }
 

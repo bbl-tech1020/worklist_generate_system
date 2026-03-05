@@ -535,8 +535,55 @@ def _validate_new_srctubeids(
     return True, ""
 
 
-# ======== 视图函数（Step1：解析 + 重复条码检查） ========
+def _load_station_map_auto(testing_day: str) -> tuple[dict, dict | None]:
+    """
+    从共享路径自动读取当天岗位清单，返回 (station_map, station_save_summary)。
+    若未找到文件，返回 ({}, None)。
+    """
+    from .views import _auto_fetch_station_list
+    from collections import defaultdict
 
+    auto_result = _auto_fetch_station_list(testing_day)
+    if not auto_result.get("found"):
+        return {}, None
+
+    auto_path = auto_result["path"]
+    try:
+        df_s = pd.read_excel(auto_path)
+        cols = {c.strip(): c for c in df_s.columns if isinstance(c, str)}
+        if "子条码" not in cols or "实验号" not in cols:
+            return {}, None
+
+        sub = df_s[[cols["子条码"], cols["实验号"]]].dropna()
+        sub.columns = ["barcode", "exp"]
+        mp = defaultdict(list)
+        for _, r in sub.iterrows():
+            b = str(r["barcode"]).strip()
+            e = str(r["exp"]).strip()
+            if b and e:
+                mp[b].append(e)
+        station_map = dict(mp)
+
+        # 顺带保存到每日 JSON 映射库
+        try:
+            # 构造伪 file 对象传给 _extract_station_pairs_from_upload
+            import io
+            with open(auto_path, "rb") as f:
+                bio = io.BytesIO(f.read())
+            bio.name = auto_result["filename"]
+            pairs = _extract_station_pairs_from_upload(bio)
+            summary = _save_station_store_daily(pairs)
+        except Exception:
+            summary = None
+
+        return station_map, summary
+
+    except Exception:
+        return {}, None
+
+
+
+# ======== 视图函数（Step1：解析 + 重复条码检查） ========
 @csrf_protect
 def tecaningest(request: HttpRequest) -> HttpResponse:
     if request.method != "POST":
@@ -578,7 +625,9 @@ def tecaningest(request: HttpRequest) -> HttpResponse:
             # 不阻断主流程
             station_save_summary = {"saved": False, "added_pairs": 0, "conflicts": 0, "error": str(e)}
     else:
-        request.session["tecan_station_map"] = {}
+        testing_day = request.POST.get("testing_day", "today")
+        station_map, station_save_summary = _load_station_map_auto(testing_day)
+        request.session["tecan_station_map"] = station_map
 
     # 把项目信息写入 session，给 Step2 使用
     request.session["tecan_project_dir"] = project_dir

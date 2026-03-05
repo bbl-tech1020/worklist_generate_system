@@ -31,8 +31,39 @@
 
         <div class="mb-3">
           <label class="form-label">岗位清单表</label>
-          <input type="file" class="form-control" name="station_list">
+
+          <!-- loading 状态 -->
+          <div id="station-auto-loading" class="alert alert-secondary d-flex align-items-center py-2 mb-2 d-none">
+            <span class="spinner-border spinner-border-sm me-2" role="status"></span>
+            <span>正在检测当天岗位清单...</span>
+          </div>
+
+          <!-- 自动读取成功 -->
+          <div id="station-auto-ok" class="alert alert-success d-flex align-items-center py-2 mb-2 d-none">
+            <svg xmlns="http://www.w3.org/2000/svg" class="me-2 flex-shrink-0" width="18" height="18"
+              fill="currentColor" viewBox="0 0 16 16">
+              <path
+                d="M16 8A8 8 0 1 1 0 8a8 8 0 0 1 16 0zm-3.97-3.03a.75.75 0 0 0-1.08.022L7.477 9.417 5.384 7.323a.75.75 0 0 0-1.06 1.06L6.97 11.03a.75.75 0 0 0 1.079-.02l3.992-4.99a.75.75 0 0 0-.01-1.05z" />
+            </svg>
+            <span>已自动读取：<strong id="station-auto-filename"></strong>（无需手动上传）</span>
+          </div>
+
+          <!-- 自动读取失败 -->
+          <div id="station-auto-fail" class="alert alert-warning d-flex align-items-center py-2 mb-2 d-none">
+            <svg xmlns="http://www.w3.org/2000/svg" class="me-2 flex-shrink-0" width="18" height="18"
+              fill="currentColor" viewBox="0 0 16 16">
+              <path
+                d="M8.982 1.566a1.13 1.13 0 0 0-1.96 0L.165 13.233c-.457.778.091 1.767.98 1.767h13.713c.889 0 1.438-.99.98-1.767L8.982 1.566zM8 5c.535 0 .954.462.9.995l-.35 3.507a.552.552 0 0 1-1.1 0L7.1 5.995A.905.905 0 0 1 8 5zm.002 6a1 1 0 1 1 0 2 1 1 0 0 1 0-2z" />
+            </svg>
+            <span>未找到当天岗位清单，请手动上传</span>
+          </div>
+
+          <input type="file" class="form-control" name="station_list" id="station-list-input">
+          <div class="form-text text-muted" id="station-manual-hint">
+            自动读取路径：\\10.10.18.154\00-标本签收与领取\2026\共同岗位清单
+          </div>
         </div>
+
         <div class="mb-3">
           <label class="form-label">扫码结果表</label>
           <input type="file" class="form-control" name="scan_result">
@@ -59,6 +90,15 @@
             <option value="">请选择进样盘号</option>
           </select>
           <div class="form-text">当该项目与仪器在“进样盘号配置”中存在记录时，此项才会出现。</div>
+        </div>
+
+        <!-- 检测日期 -->
+        <div class="mb-3">
+          <label class="form-label">检测日期(适用于夜班检测项目,非特殊情况保持默认即可)</label>
+          <select class="form-select" id="testing_day" name="testing_day">
+            <option value="today">当天日期</option>
+            <option value="tomorrow">明天日期</option>
+          </select>
         </div>
 
         <!-- 历史 processed 文件列表 -->
@@ -145,7 +185,52 @@
 
     // 初次进入，若默认有选中，也加载一次
     loadProcessedList();
+
+    // 页面加载后立即检查自动读取状态
+    checkStationAuto();
+    // 切换检测日期时重新检查
+    document.getElementById('testing_day').addEventListener('change', checkStationAuto);
   });
+
+
+  // === 自动读取岗位清单状态检查 ===
+  function checkStationAuto() {
+    const testingDay = document.getElementById('testing_day').value;
+    const okBox = document.getElementById('station-auto-ok');
+    const failBox = document.getElementById('station-auto-fail');
+    const loadBox = document.getElementById('station-auto-loading');
+    const fileInput = document.getElementById('station-list-input');
+    const manualHint = document.getElementById('station-manual-hint');
+
+    okBox.classList.add('d-none');
+    failBox.classList.add('d-none');
+    loadBox.classList.remove('d-none');
+
+    fetch("{% url 'check_station_auto' %}?testing_day=" + encodeURIComponent(testingDay))
+      .then(res => res.json())
+      .then(data => {
+        if (data.found) {
+          document.getElementById('station-auto-filename').textContent = data.filename;
+          okBox.classList.remove('d-none');
+          failBox.classList.add('d-none');
+          fileInput.classList.add('form-control-sm');
+          manualHint.textContent = '已自动读取，如需覆盖可手动上传其他文件';
+        } else {
+          okBox.classList.add('d-none');
+          failBox.classList.remove('d-none');
+          fileInput.classList.remove('form-control-sm');
+          manualHint.textContent = '自动读取路径：\\\\10.10.18.154\\00-标本签收与领取\\2026\\共同岗位清单';
+        }
+      })
+      .catch(() => {
+        okBox.classList.add('d-none');
+        failBox.classList.remove('d-none');
+      })
+      .finally(() => {
+        loadBox.classList.add('d-none');
+      });
+  }
+
 
 
   // 若你已有 getCookie 函数，可跳过
@@ -174,8 +259,8 @@
   async function loadProcessedList() {
     const sel = document.getElementById('project-select');
     const pid = sel && sel.value;
-    const pname = sel && sel.options[sel.selectedIndex] 
-      ? sel.options[sel.selectedIndex].text.trim() 
+    const pname = sel && sel.options[sel.selectedIndex]
+      ? sel.options[sel.selectedIndex].text.trim()
       : "";
     if (!pid && !pname) return renderProcessedList([]);
 
@@ -228,7 +313,7 @@
 
         const sel = document.getElementById('project-select');
         const pid = sel && sel.value;
-        const pname = sel && sel.options[sel.selectedIndex] 
+        const pname = sel && sel.options[sel.selectedIndex]
           ? sel.options[sel.selectedIndex].text.trim()
           : "";
 
@@ -267,8 +352,8 @@
   async function manageProcessed(filename, action) {
     const sel = document.getElementById('project-select');
     const pid = sel && sel.value;
-    const pname = sel && sel.options[sel.selectedIndex] 
-      ? sel.options[sel.selectedIndex].text.trim() 
+    const pname = sel && sel.options[sel.selectedIndex]
+      ? sel.options[sel.selectedIndex].text.trim()
       : "";
 
     const form = new FormData();
@@ -293,14 +378,14 @@
   function refreshPlateDropdown() {
     const selectProject = document.getElementById('project-select');
     const instrumentInput = document.getElementById('instrument_num');
-    const systermSelect   = document.getElementById('systerm_num');
+    const systermSelect = document.getElementById('systerm_num');
 
     const plateGroup = document.getElementById('plate-group');
     const plateSelect = document.getElementById('injection-plate-select');
 
     const projectName = selectProject.options[selectProject.selectedIndex]?.text || '';
     const instrumentNum = instrumentInput.value.trim();
-    const systermNum    = systermSelect.value.trim();
+    const systermNum = systermSelect.value.trim();
 
     // 条件不足则隐藏并清空
     if (!projectName || !instrumentNum) {
@@ -311,7 +396,7 @@
 
     // 请求后端获取盘号
     fetch("{% url 'get_injection_plates' %}?project_name=" + encodeURIComponent(projectName) +
-      "&instrument_num=" + encodeURIComponent(instrumentNum) + 
+      "&instrument_num=" + encodeURIComponent(instrumentNum) +
       (systermNum ? "&systerm_num=" + encodeURIComponent(systermNum) : ""))
       .then(res => res.json())
       .then(data => {
@@ -339,11 +424,11 @@
 
   // === 关联系统号（仿照 NIMBUS） ===
   function refreshSystermDropdown() {
-    const projectSelect   = document.getElementById('project-select');
+    const projectSelect = document.getElementById('project-select');
     const instrumentInput = document.getElementById('instrument_num');
-    const systermSelect   = document.getElementById('systerm_num');
+    const systermSelect = document.getElementById('systerm_num');
 
-    const projectName   = projectSelect.options[projectSelect.selectedIndex]?.text || '';
+    const projectName = projectSelect.options[projectSelect.selectedIndex]?.text || '';
     const instrumentNum = instrumentInput.value.trim();
 
     // 重置
@@ -354,7 +439,7 @@
     if (!projectName || !instrumentNum) return;
 
     fetch("{% url 'get_systerm_nums' %}?project_name=" + encodeURIComponent(projectName) +
-          "&instrument_num=" + encodeURIComponent(instrumentNum))
+      "&instrument_num=" + encodeURIComponent(instrumentNum))
       .then(res => res.json())
       .then(data => {
         const nums = data.systerm_nums || [];

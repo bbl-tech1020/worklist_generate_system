@@ -533,23 +533,21 @@ def _validate_new_srctubeids(
         seen_new_main.add(main_part)
 
     return True, ""
-
+    
 
 def _load_station_map_auto(testing_day: str) -> tuple[dict, dict | None]:
-    """
-    从共享路径自动读取当天岗位清单，返回 (station_map, station_save_summary)。
-    若未找到文件，返回 ({}, None)。
-    """
     from .views import _auto_fetch_station_list
     from collections import defaultdict
+    import io
 
-    auto_result = _auto_fetch_station_list(testing_day)
-    if not auto_result.get("found"):
+    # _auto_fetch_station_list 返回 (file_bytes, filename) 或 (None, None)
+    file_bytes, filename = _auto_fetch_station_list(testing_day)
+    if not file_bytes or not filename:
         return {}, None
 
-    auto_path = auto_result["path"]
     try:
-        df_s = pd.read_excel(auto_path)
+        bio = io.BytesIO(file_bytes)
+        df_s = pd.read_excel(bio, dtype=str)
         cols = {c.strip(): c for c in df_s.columns if isinstance(c, str)}
         if "子条码" not in cols or "实验号" not in cols:
             return {}, None
@@ -566,12 +564,9 @@ def _load_station_map_auto(testing_day: str) -> tuple[dict, dict | None]:
 
         # 顺带保存到每日 JSON 映射库
         try:
-            # 构造伪 file 对象传给 _extract_station_pairs_from_upload
-            import io
-            with open(auto_path, "rb") as f:
-                bio = io.BytesIO(f.read())
-            bio.name = auto_result["filename"]
-            pairs = _extract_station_pairs_from_upload(bio)
+            bio2 = io.BytesIO(file_bytes)  # 重新创建 BytesIO（第一个已读完）
+            bio2.name = filename
+            pairs = _extract_station_pairs_from_upload(bio2)
             summary = _save_station_store_daily(pairs)
         except Exception:
             summary = None
@@ -580,6 +575,7 @@ def _load_station_map_auto(testing_day: str) -> tuple[dict, dict | None]:
 
     except Exception:
         return {}, None
+
 
 
 

@@ -3259,7 +3259,18 @@ def ProcessResult(request):
                             "new_main_barcode": mb,
                             "msg": f"实验号 {sn} 当天已映射主条码 {old_mb}，本次上传为 {mb}，已忽略本次冲突行"
                         })
-                        continue
+                        
+                        # ↓↓↓ 不再 continue，改为覆盖旧映射 ↓↓↓
+                        sn2mb[sn] = mb                    # 反向映射：实验号 → 新条码
+                        # 同步清理 mb2sn：把旧条码里的该实验号移除
+                        if old_mb in mb2sn:
+                            old_list = mb2sn[old_mb]
+                            if isinstance(old_list, list) and sn in old_list:
+                                old_list.remove(sn)
+                                if old_list:
+                                    mb2sn[old_mb] = old_list
+                                else:
+                                    del mb2sn[old_mb]     # 旧条码已无实验号，删除整条
                     # old_mb == mb：完全重复 -> 忽略
                 else:
                     # 新实验号：写入 sn->mb

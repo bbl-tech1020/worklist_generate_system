@@ -1193,55 +1193,115 @@ def _locator_coord_for_plate(plate_number: int, start_offset: int) -> tuple[str,
 
 
 def _apply_locator_shift_for_clinicals(
-    clinical_cells: list[tuple[str, int, str, str]],  # ← ★ 添加第4个元素：barcode
+    clinical_cells: list[tuple[str, int, str, str]],
     plate_number: int,
     start_offset: int,
-) -> list[tuple[str, int, str, str]]:  # ← ★ 返回值也添加 barcode
+) -> list[tuple[str, int, str, str]]:
     """
-    按'定位孔随板号'规则对临床样本做位移（沿定位孔所在列'纵向'）。
-    - base_col = 3 + floor((plate-1)/8) + (start_offset-1)
-    - k = (plate-1) % 8   # 0..7 -> A..H
-    处理：
-      1) (A, base_col) → vertical_prev(A, base_col)  # A→H 且列-1
-      2) (B..rows[k], base_col) 逐个上移一行（B→A，C→B，…）
-      3) (rows[k], base_col) 留空（给定位孔）
-    """
-    base_col = 3 + ((max(1, plate_number) - 1) // 8) + (max(1, start_offset) - 1)
-    k = (max(1, plate_number) - 1) % 8  # 0..7
+    按'定位孔随板号'规则对临床样本做位移（沿定位孔所在列纵向）。
 
-    # ★ 修改：建索引时同时存储 (text, barcode)
+    定位孔坐标由 _locator_coord_for_plate 决定：
+      loc_row = _PLATE_ROWS[(plate-1) % 8]
+      loc_col = 3 + (plate-1)//8 + (start_offset-1)
+
+    位移规则（统一描述）：
+      将定位孔 (loc_row, loc_col) 之前纵向序中的所有样本，
+      各往前推一个孔位，为定位孔腾出位置。
+      纵向序定义：A1→B1→…→H1→A2→B2→… (列优先，行 A→H)。
+
+      等价于：从定位孔前一格开始，逐格向前做"src→dst"移动，
+      直到第一格 (A, start_col) 被移到 (H, start_col-1)。
+
+      其中 start_col = 3 + (start_offset-1)（即第一列临床样本的初始列号）。
+
+    示例（start_offset=1, start_col=3）：
+      Plate4 (k=3, loc=(D,3))：
+        (A,3)→(H,2)，(B,3)→(A,3)，(C,3)→(B,3)，(D,3)→(C,3)，D3留空
+      Plate9 (k=0, loc=(A,4))：
+        (A,3)→(H,2)，(B,3)→(A,3)，…，(H,3)→(G,3)，(A,4)→(H,3)，A4留空
+    """
+    p = max(1, plate_number)
+    off = max(1, start_offset) - 1
+
+    # 定位孔坐标
+    loc_row = _PLATE_ROWS[(p - 1) % 8]
+    loc_col = 3 + (p - 1) // 8 + off   # = base_col（与原逻辑一致）
+
+    # 临床样本初始列（base_area_map 中最小列，start_offset 偏移后）
+    start_col = 3 + off
+
+    # ── 建立孔位索引 ──────────────────────────────────────────
     mp: dict[tuple[str, int], tuple[str, str]] = {}
     for r, c, s, bc in clinical_cells:
-        mp[(r, c)] = (s, bc)  # (实验号, 条码)
+        mp[(r, c)] = (s, bc)
 
-    # 纵向序中的"前一个孔"：A→H 且列-1；其余行向上同列
+    # ── 纵向序工具：返回纵向序中前一个孔位 ─────────────────────
     def vertical_prev(row_letter: str, col_num: int) -> tuple[str, int]:
         if row_letter != "A":
-            prev_row = _PLATE_ROWS[_PLATE_ROWS.index(row_letter) - 1]
-            return prev_row, col_num
+            return _PLATE_ROWS[_PLATE_ROWS.index(row_letter) - 1], col_num
         return "H", col_num - 1
 
-    # 1) A, base_col → 前一个纵向孔
-    src = ("A", base_col)
-    if src in mp:
-        dst = vertical_prev("A", base_col)
-        if dst[1] >= 1:           # 列下限保护
-            mp[dst] = mp[src]
-        del mp[src]
+    # ── 构造位移链：从定位孔位置开始，逐步向前追溯到 (A, start_col) ──
+    # 链的每一步是 (src, dst)，src 的内容移到 dst
+    # 链的顺序：定位孔 ← … ← (A, start_col)
+    # 执行时必须从链尾（靠近 (A, start_col) 的一端）往链头方向执行，
+    # 避免连锁覆盖；这里改为从链头（定位孔端）往前逐步执行，
+    # 每步把 src 内容移到 dst（dst 此时已空或内容已处理）。
+    #
+    # 等价写法：收集从 (A, start_col) 到 loc 的纵向序列，
+    # 然后从序列头部开始逐步"前移"。
 
-    # 2) B..rows[k] 逐个上移（B→A、C→B、…）
-    for i in range(1, k + 1):
-        src = (_PLATE_ROWS[i], base_col)
-        dst = (_PLATE_ROWS[i - 1], base_col)
-        if src in mp:
-            mp[dst] = mp[src]
-            del mp[src]
+    # 1) 收集从 (A, start_col) 到 loc_coord（含）的纵向孔位序列
+    sequence = []
+    cur_row, cur_col = "A", start_col
+    loc_coord = (loc_row, loc_col)
+    while True:
+        sequence.append((cur_row, cur_col))
+        if (cur_row, cur_col) == loc_coord:
+            break
+        # 纵向下一个
+        row_idx = _PLATE_ROWS.index(cur_row)
+        if row_idx < 7:
+            cur_row = _PLATE_ROWS[row_idx + 1]
+        else:
+            cur_row = "A"
+            cur_col += 1
+        # 安全上限：避免死循环（理论上 loc_coord 一定在 start_col 之后）
+        if cur_col > 12:
+            break
 
-    # 回写为列表
-    out = []
-    for (r, c), (s, bc) in mp.items():
-        out.append((r, c, s, bc))  # ← ★ 返回4元组
+    # sequence 形如：[(A,3),(B,3),…,(H,3),(A,4)] （Plate9 为例）
+    # 位移：sequence[0] → vertical_prev(sequence[0])
+    #        sequence[i] → sequence[i-1]  (i=1..len-1)
+    # 最后 sequence[-1]（定位孔）留空
+
+    if len(sequence) >= 1:
+        # 2) sequence[0] 移到其前一个纵向孔（跨列到上一列 H 行）
+        src0 = sequence[0]   # 固定是 (A, start_col)
+        dst0 = vertical_prev(src0[0], src0[1])  # → (H, start_col-1)
+        if src0 in mp and dst0[1] >= 1:
+            mp[dst0] = mp[src0]
+            del mp[src0]
+        elif src0 in mp:
+            del mp[src0]   # 列下限越界时丢弃（理论上不会发生）
+
+        # 3) sequence[i] → sequence[i-1]，i = 1 .. len-2
+        #    （最后一格 sequence[-1] 是定位孔，不移动，留空）
+        for i in range(1, len(sequence)):
+            src = sequence[i]
+            dst = sequence[i - 1]
+            if src in mp:
+                mp[dst] = mp[src]
+                del mp[src]
+
+        # 4) sequence[-1]（定位孔）如有残留内容，删除（留空给定位孔）
+        if loc_coord in mp:
+            del mp[loc_coord]
+
+    # ── 回写为列表 ───────────────────────────────────────────
+    out = [(r, c, s, bc) for (r, c), (s, bc) in mp.items()]
     return out
+
 
 
 

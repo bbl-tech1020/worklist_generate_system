@@ -3149,7 +3149,6 @@ def ProcessResult(request):
     st_index   = {col: idx for idx, col in enumerate(st_header)}
     SN_IDX     = st_index.get("实验号", 0)
 
-
     # 检测岗位清单是否含"子条码"列，决定匹配模式
     use_sub_barcode = "子条码" in st_index
     if use_sub_barcode:
@@ -3466,7 +3465,7 @@ def ProcessResult(request):
                 barcode_to_well[origin_barcode].append((well_pos_str, well_index))
 
             value = str(MatchSampleName[data_idx])
-            match_sample = value if MatchResult[data_idx] == "TRUE" else ("" if value == "" else barcode_to_name.get(value, "No match"))
+            match_sample = value if MatchResult[data_idx] == "TRUE" else ("" if (value == "" or '---' in value) else barcode_to_name.get(value, "No match"))
 
             is_locator    = (well_pos_str in locator_positions) or (str(OriginBarcode[data_idx]).upper().startswith("X"))
             locator_label = Warm[data_idx] if is_locator else ""

@@ -63,6 +63,30 @@
           <input type="file" class="form-control" name="station_list" id="station-list-input">
           <div class="form-text text-muted" id="station-manual-hint">
             自动读取路径：\\10.10.18.154\00-标本签收与领取\2026\共同岗位清单
+          </div>    
+        </div>
+
+        <!-- 【新增】手动覆盖确认弹窗 -->
+        <div class="modal fade" id="stationOverrideModal" tabindex="-1" aria-labelledby="stationOverrideModalLabel" aria-hidden="true" data-bs-backdrop="static" data-bs-keyboard="false">
+          <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+              <div class="modal-header bg-warning">
+                <h5 class="modal-title fw-bold" id="stationOverrideModalLabel">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="currentColor" class="me-2" viewBox="0 0 16 16">
+                    <path d="M8.982 1.566a1.13 1.13 0 0 0-1.96 0L.165 13.233c-.457.778.091 1.767.98 1.767h13.713c.889 0 1.438-.99.98-1.767L8.982 1.566zM8 5c.535 0 .954.462.9.995l-.35 3.507a.552.552 0 0 1-1.1 0L7.1 5.995A.905.905 0 0 1 8 5zm.002 6a1 1 0 1 1 0 2 1 1 0 0 1 0-2z"/>
+                  </svg>
+                  注意：当天岗位清单已自动读取
+                </h5>
+              </div>
+              <div class="modal-body">
+                <p>当天岗位清单 <strong id="station-override-filename"></strong> 已自动读取成功。</p>
+                <p class="mb-0">手动上传将<strong class="text-danger">覆盖</strong>自动读取的文件，请确认是否继续？</p>
+              </div>
+              <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" id="stationOverrideCancelBtn">取消</button>
+                <button type="button" class="btn btn-warning fw-bold" id="stationOverrideConfirmBtn">确认知晓，继续上传</button>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -140,6 +164,46 @@
     // 页面加载后立即检查自动读取状态
     checkStationAuto();
 
+    // 【新增】手动上传拦截：自动读取成功后，用户选择文件前弹窗确认
+    const _stationInput = document.getElementById('station-list-input');
+    const _overrideModal = new bootstrap.Modal(document.getElementById('stationOverrideModal'));
+    let _stationAutoFound = false;   // 记录自动读取是否成功
+    let _pendingFiles = null;        // 暂存用户选择的文件
+
+    // 拦截 change 事件：若已自动读取则先弹窗确认
+    _stationInput.addEventListener('change', function (e) {
+      if (_stationAutoFound && this.files && this.files.length > 0) {
+        // 暂存文件，清空 input，等用户确认后再恢复
+        _pendingFiles = this.files;
+        this.value = '';   // 清空选择，防止表单直接提交旧值
+        document.getElementById('station-override-filename').textContent =
+          document.getElementById('station-auto-filename').textContent;
+        _overrideModal.show();
+      }
+    });
+
+    // 点击"确认知晓，继续上传"：用 DataTransfer 恢复文件到 input
+    document.getElementById('stationOverrideConfirmBtn').addEventListener('click', function () {
+      if (_pendingFiles) {
+        const dt = new DataTransfer();
+        for (let i = 0; i < _pendingFiles.length; i++) {
+          dt.items.add(_pendingFiles[i]);
+        }
+        _stationInput.files = dt.files;
+        _pendingFiles = null;
+      }
+      _overrideModal.hide();
+      // 更新提示文字
+      document.getElementById('station-manual-hint').textContent = '已选择手动文件，将覆盖自动读取';
+    });
+
+    // 点击"取消"：丢弃文件，维持自动读取状态
+    document.getElementById('stationOverrideCancelBtn').addEventListener('click', function () {
+      _pendingFiles = null;
+      _stationInput.value = '';
+      _overrideModal.hide();
+    });
+
     // 检测日期切换时重新检查
     document.getElementById('testing_day').addEventListener('change', checkStationAuto);
   });
@@ -167,16 +231,19 @@
           failBox.classList.add('d-none');
           fileInput.classList.add('form-control-sm');
           manualHint.textContent = '已自动读取，如需覆盖可手动上传其他文件';
+          _stationAutoFound = true;   // 【新增】标记自动读取成功
         } else {
           okBox.classList.add('d-none');
           failBox.classList.remove('d-none');
           fileInput.classList.remove('form-control-sm');
           manualHint.textContent = '自动读取路径：\\\\10.10.18.154\\00-标本签收与领取\\2026\\共同岗位清单';
+          _stationAutoFound = false;  // 【新增】标记自动读取未成功
         }
       })
       .catch(() => {
         okBox.classList.add('d-none');
         failBox.classList.remove('d-none');
+        _stationAutoFound = false;
       })
       .finally(() => {
         loadBox.classList.add('d-none');

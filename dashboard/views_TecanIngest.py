@@ -355,7 +355,7 @@ def _collect_history_mainbarcode_prefixes(processed_dir: str) -> dict[str, str]:
                 if not main or main in result:
                     continue
                 # 查找该主码对应的实验号列表
-                exp_list = sn2mb_inv.get(main, [])
+                exp_list = sn2mb_inv.get(src, [])
                 prefix = ""
                 if exp_list:
                     from collections import Counter
@@ -707,7 +707,7 @@ def tecaningest(request: HttpRequest) -> HttpResponse:
         cur_prefix = _get_main_exp_prefix(str(row["SRCTubeID"]), station_map)
         # 若历史或当前均无前缀信息，保持原有逻辑（主码重复即标记）
         if not hist_prefix or not cur_prefix:
-            return True
+            return False
         return hist_prefix == cur_prefix
 
     mask_cross = df.apply(_is_cross_dup, axis=1)

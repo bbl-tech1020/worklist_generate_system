@@ -3333,6 +3333,59 @@ def ProcessResult(request):
         station_save_summary = {"saved": False, "added_pairs": 0, "conflicts": 0, "error": str(e)}
 
 
+    # ====【新增】叠加前3天历史 station_list.json，构建 barcode_to_names_for_match ====
+    # 说明：
+    # - barcode_to_names：仅含当天岗位清单数据，用于写入当天 station_list.json（已在上方完成写入）
+    # - barcode_to_names_for_match：在当天基础上叠加前3天历史，仅用于本次工作清单的条码匹配
+    # - 优先级：当天岗位清单 > 前1天 > 前2天 > 前3天（先找到的不会被后来的覆盖）
+    barcode_to_names_for_match = defaultdict(list, barcode_to_names)  # 复制当天数据
+
+    try:
+        for _delta in range(1, 4):   # 前1天、前2天、前3天
+            _past_date = record_date - timedelta(days=_delta)
+            _hist_store_path = _station_store_path(_past_date)
+
+            if not os.path.isfile(_hist_store_path):
+                continue   # 该天的 station_list.json 不存在，跳过
+
+            _hist_store = _load_station_store(_hist_store_path)
+            _hist_map = _hist_store.get("barcode->实验号列表", {})
+
+            # 兼容旧字段名（历史文件可能还用"主条码->实验号列表"或"子条码->实验号列表"）
+            if not _hist_map:
+                _hist_map = (
+                    _hist_store.get("主条码->实验号列表", {}) or
+                    _hist_store.get("子条码->实验号列表", {})
+                )
+
+            for _hist_bc, _hist_sns in _hist_map.items():
+                _hist_bc = (_hist_bc or "").strip()
+                if not _hist_bc:
+                    continue
+                # 当天岗位清单中已有该条码 → 跳过，不覆盖（当天数据优先）
+                if _hist_bc in barcode_to_names_for_match:
+                    continue
+                # 规范化历史实验号列表
+                if isinstance(_hist_sns, list):
+                    _norm_sns = [str(s).strip() for s in _hist_sns if str(s).strip()]
+                else:
+                    _norm_sns = [str(_hist_sns).strip()] if str(_hist_sns).strip() else []
+                if _norm_sns:
+                    barcode_to_names_for_match[_hist_bc] = _norm_sns
+
+        logging.getLogger(__name__).info(
+            "[barcode_to_names_for_match] 叠加前3天历史完成，总条目数: %d（当天: %d）",
+            len(barcode_to_names_for_match), len(barcode_to_names)
+        )
+    except Exception as _e:
+        # 历史叠加失败不阻断主流程，降级为仅使用当天数据
+        logging.getLogger(__name__).warning(
+            "[barcode_to_names_for_match] 叠加历史失败，降级使用当天数据: %s", _e
+        )
+        barcode_to_names_for_match = barcode_to_names
+    # ====【新增结束】====
+
+
     # 曲线/质控映射（获取一一对应关系,供后续识别非临床样本,即曲线和质控）
     barcode_to_name = dict(zip(df_mapping_wc["Barcode"].astype(str), df_mapping_wc["Name"]))
 
@@ -3407,7 +3460,7 @@ def ProcessResult(request):
 
         for mk in match_keys:
             mk_str = str(mk)
-            matched_names = barcode_to_names.get(mk_str, [])
+            matched_names = barcode_to_names_for_match.get(mk_str, [])
             cb_count = key_counter[mk_str]
 
             # ★★★ 情况1：匹配到唯一实验号 ★★★

@@ -1146,6 +1146,71 @@ def _mark_cell_highlight(cell: dict):
     cell["highlight"] = True
 
 
+# ===== 新增：从当天 station_list.json 中查找条码对应的实验号 =====
+def _lookup_experiment_from_station(new_barcode: str, record_date=None) -> str:
+    """
+    用新条码在当天 station_list.json 的
+    '主条码->实验号列表' 或 '子条码->实验号列表' 中查找实验号。
+    - 找到唯一实验号：返回该实验号
+    - 找到多个实验号：返回用 '-' 拼接的字符串（与 ProcessResult 逻辑一致）
+    - 找不到：返回空字符串（由调用方决定回退逻辑）
+    """
+    from django.utils import timezone as _tz
+    from datetime import date as _date
+
+    if not new_barcode or new_barcode.strip().upper() == "NOTUBE":
+        return ""
+
+    if record_date is None:
+        record_date = _tz.localdate()
+
+    store_path = os.path.join(
+        settings.DOWNLOAD_ROOT,
+        "岗位清单",
+        record_date.strftime("%Y-%m-%d"),
+        "station_list.json",
+    )
+
+    if not os.path.isfile(store_path):
+        return ""
+
+    try:
+        with open(store_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return ""
+
+    # 兼容主条码/子条码两种字段名
+    barcode_map = (
+        data.get("主条码->实验号列表")
+        or data.get("子条码->实验号列表")
+        or data.get("barcode->实验号列表")
+        or {}
+    )
+
+    # 先用完整条码查，找不到再用主条码（切割 '-' 之前的部分）查
+    bc = new_barcode.strip()
+    exp_list = barcode_map.get(bc)
+
+    if not exp_list:
+        cut_bc = bc.split("-")[0]
+        if cut_bc != bc:
+            exp_list = barcode_map.get(cut_bc)
+
+    if not exp_list:
+        return ""
+
+    # 规范化
+    norm = [str(s).strip() for s in exp_list if str(s).strip()]
+    if not norm:
+        return ""
+    if len(norm) == 1:
+        return norm[0]
+    # 多个实验号：去重后拼接（与 ProcessResult 的共血逻辑保持一致）
+    return "-".join(list(dict.fromkeys(norm)))
+
+
+
 # 新增核心函数：对 payload 应用 used / nouse / delete，并保持 error_rows 不动
 _SAMPLE_RE = re.compile(r"[A-Za-z]")  # 含字母则更像“实验号/样本名”
 
@@ -1196,6 +1261,14 @@ def _apply_replace_to_payload(payload: dict, replace_reason: str, entries: list[
                 cell["sub_barcode"] = sub
                 cell["origin_barcode"] = origin
 
+                # ===== 新增：用新条码查 station_list.json，更新实验号 =====
+                new_exp = _lookup_experiment_from_station(origin)
+                if new_exp:
+                    cell["match_sample"] = new_exp
+                else:
+                    # 查不到实验号：match_sample 回退为新条码本身（与首次生成逻辑一致）
+                    cell["match_sample"] = origin
+
             # 你需求“孔位/条码/实验号替换”，因此即使 old 填的是实验号/条码，都以 new 覆盖显示
             # （这里不强制校验 old 是否与 cell 现值一致，避免用户只按孔位替换时失败）
             _mark_cell_highlight(cell)
@@ -1209,6 +1282,15 @@ def _apply_replace_to_payload(payload: dict, replace_reason: str, entries: list[
                 cell["cut_barcode"] = cut
                 cell["sub_barcode"] = sub
                 cell["origin_barcode"] = origin
+
+                # ===== 新增：用新条码查 station_list.json，更新实验号 =====
+                new_exp = _lookup_experiment_from_station(origin)
+                if new_exp:
+                    cell["match_sample"] = new_exp
+                else:
+                    # 查不到实验号：match_sample 回退为新条码本身（与首次生成逻辑一致）
+                    cell["match_sample"] = origin
+                    
             _mark_cell_highlight(cell)
 
         elif replace_reason == "delete":

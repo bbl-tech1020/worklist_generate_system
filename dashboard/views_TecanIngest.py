@@ -587,6 +587,7 @@ def tecaningest(request: HttpRequest) -> HttpResponse:
 
     # === 新增：当天目录（YYYYMMDD） ===
     today = datetime.now().strftime("%Y%m%d")
+    today_str  = timezone.localtime().strftime("%Y%m%d")
 
     # 从表单获取项目信息（前端 Tecan 页面会提交 project_id / project_name）
     project_id   = request.POST.get("project_id", "").strip()
@@ -622,7 +623,7 @@ def tecaningest(request: HttpRequest) -> HttpResponse:
             station_save_summary = {"saved": False, "added_pairs": 0, "conflicts": 0, "error": str(e)}
     else:
         testing_day = request.POST.get("testing_day", "today")
-        station_map, station_save_summary = _load_station_map_auto(testing_day)
+        station_map, station_save_summary = _load_station_map_auto(today_str)
         request.session["tecan_station_map"] = station_map
 
     # 把项目信息写入 session，给 Step2 使用

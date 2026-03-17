@@ -4450,7 +4450,6 @@ def Manual_process_result(request):
         return HttpResponseBadRequest("仅支持POST")
 
     method_type = request.POST.get("method_type")
-    ic(method_type)
 
     if method_type == "icpms":  # ICP-MS特殊方法逻辑
         ctx = _build_icpms_manual_worksheets(request)
@@ -4611,9 +4610,17 @@ def _build_icpms_manual_worksheets(request):
     """
 
     project_id     = request.POST.get("project_id", "").strip()
+    project_name = request.POST.get("project_name")
     instrument_num = request.POST.get("instrument_num", "").strip()
     systerm_num    = request.POST.get("systerm_num", "").strip()
     injection_plate = request.POST.get("injection_plate")
+
+    # 进样体积（非必须设置项）
+    try:
+        injection_cfg = InjectionVolumeConfiguration.objects.get(project_name=project_name,instrument_num=instrument_num,systerm_num=systerm_num)
+        injection_vol  = injection_cfg.injection_volume
+    except InjectionVolumeConfiguration.DoesNotExist:
+        injection_vol  = ""
 
     station_file = request.FILES.get("station_list")
     scan_file    = request.FILES.get("scan_result")
@@ -4985,8 +4992,6 @@ def _build_icpms_manual_worksheets(request):
             b = str(row_m.get("Barcode", "")).strip()
             if n and b and b != "nan":
                 name_to_barcodes[n].append(b)
-        
-        ic(name_to_barcodes)
 
         # ---------- 1) 构建 barcode -> [(well_pos, well_no)...] 队列 ----------
         barcode_to_well = defaultdict(deque)
@@ -5002,9 +5007,9 @@ def _build_icpms_manual_worksheets(request):
 
         # ---------- 2) 构造第一列 SampleName：DB/Test + STD/QC + 临床条码 + QC ----------
         test_list   = ["DB1"] + [f"Test{i}" for i in range(1, test_count + 1)]
-        curve_list  = std_names_use
-        qc_list1    = ["DB1"] + qc_names
-        qc_list2    = qc_names
+        curve_list  = ["DB2"] + std_names
+        qc_list1    = ["DB3"] + qc_names + ["DB4"]
+        qc_list2    = qc_names + ["DB5"]
 
         # ★ 临床样本：从工作清单中“纵向”遍历，取 **条码** 而不是实验号
         clinical_list = []
@@ -5025,11 +5030,8 @@ def _build_icpms_manual_worksheets(request):
                     continue
                 clinical_list.append(origin_bc)      # ★ 第一列使用条码
 
-        SampleName_list = curve_list + qc_list1 + clinical_list + qc_list2
-        SampleName_list = [
-            x for x in SampleName_list
-            if isinstance(x, str) and x
-        ]
+        SampleName_list = test_list + curve_list + qc_list1 + ClinicalSample + qc_list2
+        SampleName_list = [name for name in SampleName_list if isinstance(name, str) and name.count('-') <= 3]
 
         # 3) 建立空 worklist DataFrame
         df_worklist = pd.DataFrame(columns=txt_headers)
@@ -5093,7 +5095,7 @@ def _build_icpms_manual_worksheets(request):
 
                 # 2) 进样体积列：直接用配置的 injection_volume（如果有），否则写回映射表里的值
                 if col in ("SmplInjVol", "Injection volume"):
-                    df_worklist.loc[mask, col] = injection_volume or v
+                    df_worklist.loc[mask, col] = injection_vol or v
                     continue
 
                 # 3) ★ 动态计算孔位列：列名为 VialPos / Vial position / 样品瓶
@@ -5147,8 +5149,11 @@ def _build_icpms_manual_worksheets(request):
         # 5) 镜像列填充
         for col in mirror_cols:
             df_worklist[col] = df_worklist[first_col_header]
+        
+        df_worklist = df_worklist.fillna("")
 
-        txt_headers = ["跳过", "样品类型", "样品名称", "样品瓶号", "级别", "总稀释倍数"]
+        # txt_headers = ["跳过", "样品类型", "样品名称", "样品瓶号", "级别", "总稀释倍数"]
+        txt_headers = ["% header=SampleName", "AcqMethod", "RackCode", "PlateCode", "VialPos", "SmplInjVol", "RackPos", "PlatePos", "SetName", "OutputFile"]
     
         p["txt_headers"]      = txt_headers
         p["worklist_records"] = df_worklist.to_dict(orient="records")

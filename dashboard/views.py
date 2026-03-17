@@ -586,7 +586,7 @@ def _extract_project_from_onboarding_filename(fname: str) -> str:
 def _auto_fetch_station_list(today_str: str):
     """
     自动从局域网共享路径读取当天日期下时间戳最新的岗位清单文件。
-    路径：\\\\10.10.18.154\\00-标本签收与领取\\2026\\共同岗位清单
+    路径：\\\\10.10.18.70\\00-标本签收与领取\\2026\\共同岗位清单
     文件名格式：共同岗位清单{YYYYMMDD}_{HHMM}.xlsx
 
     返回：(file_bytes: bytes, filename: str) 成功
@@ -594,7 +594,7 @@ def _auto_fetch_station_list(today_str: str):
     """
     import re as _re
 
-    STATION_NETWORK_DIR = r"\\10.10.18.154\00-标本签收与领取\2026\共同岗位清单"
+    STATION_NETWORK_DIR = r"\\10.10.18.70\00-标本签收与领取\2026\共同岗位清单"
     pattern = _re.compile(
         r"^共同岗位清单" + _re.escape(today_str) + r"_(\d{4})\.(xlsx|xls)$",
         _re.IGNORECASE,
@@ -3125,7 +3125,7 @@ def ProcessResult(request):
     # ========== 1. 入参与上传文件 ==========
     project_id      = request.POST.get("project_id")
     project_name = request.POST.get("project_name")
-    platform        = request.POST.get("platform")                # 'NIMBUS' | 'Starlet'
+    platform        = request.POST.get("platform")          
     injection_plate = request.POST.get("injection_plate") if 'injection_plate' in request.POST else None
     instrument_num  = request.POST.get("instrument_num")  # 默认上机仪器
     systerm_num  = request.POST.get("systerm_num")  # 系统号
@@ -3159,7 +3159,6 @@ def ProcessResult(request):
         Stationtable = xlrd.open_workbook(filename=None, file_contents=station_bytes)
 
     Scantable = xlrd.open_workbook(filename=None, file_contents=Scanresult.read())
-
     scan_sheet   = Scantable.sheets()[0]
 
     # 扫码表头索引
@@ -4595,7 +4594,6 @@ def Manual_process_result(request):
     # 采用独立模板（仅渲染工作清单，无上机列表）
     return render(request, "dashboard/ProcessResult_Manual.html", ctx)
 
-
 def _build_icpms_manual_worksheets(request):
     """
     手工取样模块 - ICP-MS 特殊方法
@@ -4611,9 +4609,18 @@ def _build_icpms_manual_worksheets(request):
 
     project_id     = request.POST.get("project_id", "").strip()
     project_name = request.POST.get("project_name")
+    platform        = request.POST.get("platform")
     instrument_num = request.POST.get("instrument_num", "").strip()
     systerm_num    = request.POST.get("systerm_num", "").strip()
     injection_plate = request.POST.get("injection_plate")
+    testing_day      = request.POST.get("testing_day") # 检测日期
+
+    if testing_day == "today":
+        today_str  = timezone.localtime().strftime("%Y%m%d")  # 用于96孔板和上机列表
+        record_date = date.today()  # 用于历史标本查找和统计
+    else:
+        today_str = (timezone.localtime() + timedelta(days=1)).strftime("%Y%m%d")
+        record_date = date.today() + timedelta(days=1)
 
     # 进样体积（非必须设置项）
     try:
@@ -4622,11 +4629,28 @@ def _build_icpms_manual_worksheets(request):
     except InjectionVolumeConfiguration.DoesNotExist:
         injection_vol  = ""
 
-    station_file = request.FILES.get("station_list")
-    scan_file    = request.FILES.get("scan_result")
+    Stationlist = request.FILES.get('station_list')               # 每日操作清单（可为空，尝试自动抓取）
+    Scanresult  = request.FILES.get('scan_result')                # 扫码结果
 
-    if not (project_id and station_file and scan_file):
-        raise ValueError("缺少必要参数或文件（project_id / station_list / scan_result）")
+    # ── 自动抓取岗位清单（仅 NIMBUS 平台，手动未上传时触发）──
+    station_bytes = None
+    station_auto_name = None
+    if not Stationlist:
+        station_bytes, station_auto_name = _auto_fetch_station_list(today_str)
+
+    # 校验：扫码结果和基础参数必须存在；岗位清单手动或自动二选一
+    station_available = bool(Stationlist) or bool(station_bytes)
+    if not (station_available and Scanresult and project_id and platform and instrument_num):
+        return HttpResponseBadRequest("缺少必要参数或文件。")
+
+    # 读取岗位清单（优先手动上传，其次自动抓取）
+    if Stationlist:
+        Stationtable = xlrd.open_workbook(filename=None, file_contents=Stationlist.read())
+    else:
+        Stationtable = xlrd.open_workbook(filename=None, file_contents=station_bytes)
+
+    Scantable = xlrd.open_workbook(filename=None, file_contents=Scanresult.read())
+    scan_sheet   = Scantable.sheets()[0]
 
     # 1) 项目配置 & 对应关系表（工作清单 sheet）
     cfg = SamplingConfiguration.objects.get(pk=project_id)
@@ -4644,8 +4668,7 @@ def _build_icpms_manual_worksheets(request):
     )
 
     # 2) 岗位清单：主条码 -> 实验号 列表（与 NIMBUS 完全同源）
-    station_book = xlrd.open_workbook(filename=None, file_contents=station_file.read())
-    st_sheet   = station_book.sheets()[0]
+    st_sheet   = Stationtable.sheets()[0]
     st_nrows   = st_sheet.nrows
     st_ncols   = st_sheet.ncols
     st_header  = [str(st_sheet.row_values(0)[i]).strip() for i in range(st_ncols)]
@@ -4662,7 +4685,7 @@ def _build_icpms_manual_worksheets(request):
             barcode_to_names[bc].append(sn)
 
     # 3) 扫码结果表：读取 B3:P34 中的条码，按列纵向收集为列表 A
-    wb_scan = load_workbook(filename=scan_file, data_only=True)
+    wb_scan = load_workbook(filename=Scanresult, data_only=True)
     ws_scan = wb_scan.active
 
     list_a = []  # 条码列表 A
@@ -4805,7 +4828,6 @@ def _build_icpms_manual_worksheets(request):
     # 6) 生成多板工作清单（纵向填充；A3/B3/C3... 为定位孔；每块板 H12 为空）
     letters = list("ABCDEFGH")
     nums    = [str(i) for i in range(1, 13)]
-    today_str = timezone.localtime().strftime("%Y-%m-%d")
 
     def make_empty_plate():
         grid = []
@@ -5012,7 +5034,7 @@ def _build_icpms_manual_worksheets(request):
         qc_list2    = qc_names + ["DB5"]
 
         # ★ 临床样本：从工作清单中“纵向”遍历，取 **条码** 而不是实验号
-        clinical_list = []
+        ClinicalSample = []
         for c in range(12):         # 列优先：A1,A2,...,H12,B1,B2,...
             for r in range(8):
                 cell = rows_grid[r][c]
@@ -5028,7 +5050,7 @@ def _build_icpms_manual_worksheets(request):
                 origin_bc = str(cell["origin_barcode"]).strip()
                 if not origin_bc:
                     continue
-                clinical_list.append(origin_bc)      # ★ 第一列使用条码
+                ClinicalSample.append(origin_bc)      # ★ 第一列使用条码
 
         SampleName_list = test_list + curve_list + qc_list1 + ClinicalSample + qc_list2
         SampleName_list = [name for name in SampleName_list if isinstance(name, str) and name.count('-') <= 3]
@@ -5066,9 +5088,9 @@ def _build_icpms_manual_worksheets(request):
                     pos, no = wells_q.popleft()
                     # ICP-MS 这里不区分 Thermo/Agilent，格式保持与 NIMBUS 一致
                     if placeholder == "{{Well_Number}}":
-                        return f"{injection_plate}:{no}"
+                        return f"{no}"
                     else:
-                        return f"{injection_plate}-{pos}"
+                        return f"{pos}"
 
             # 2) 临床样本：第一列即为条码
             if s in barcode_to_well:
@@ -5076,9 +5098,9 @@ def _build_icpms_manual_worksheets(request):
                 if wells_q:
                     pos, no = wells_q.popleft()
                     if placeholder == "{{Well_Number}}":
-                        return f"{injection_plate}:{no}"
+                        return f"{no}"
                     else:
-                        return f"{injection_plate}-{pos}"
+                        return f"{pos}"
 
             # 3) 找不到就返回空
             return f"{injection_plate}-{'H1'}"
@@ -5150,9 +5172,17 @@ def _build_icpms_manual_worksheets(request):
         for col in mirror_cols:
             df_worklist[col] = df_worklist[first_col_header]
         
+        year       = today_str[:4]
+        yearmonth  = today_str[:6]
+
+        setname    = f"{instrument_num}_{systerm_num}_{project_name}_{today_str}_{plate_no_str}_GZ"
+        output_val = f"{year}\\{yearmonth}\\Data{setname}"
+
+        if "SetName" in df_worklist.columns:  df_worklist["SetName"]  = setname
+        if "OutputFile" in df_worklist.columns: df_worklist["OutputFile"] = output_val
+        
         df_worklist = df_worklist.fillna("")
 
-        # txt_headers = ["跳过", "样品类型", "样品名称", "样品瓶号", "级别", "总稀释倍数"]
         txt_headers = ["% header=SampleName", "AcqMethod", "RackCode", "PlateCode", "VialPos", "SmplInjVol", "RackPos", "PlatePos", "SetName", "OutputFile"]
     
         p["txt_headers"]      = txt_headers

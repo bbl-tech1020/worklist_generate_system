@@ -994,6 +994,157 @@ def file_replace_sampled_codes(request):
     })
 
 
+# ===== ICP-MS 特殊方法：主条码重复但子条码不同（跨当天历史文件） =====
+
+def _split_main_sub_barcode(barcode: str) -> tuple[str, str]:
+    """
+    仅把含 '-' 的条码拆成 (主条码, 子条码)
+    例如：
+      6859899683-01 -> ("6859899683", "-01")
+      6859899683    -> ("6859899683", "")
+    """
+    s = (barcode or "").strip()
+    if not s:
+        return "", ""
+    parts = s.split("-", 1)
+    if len(parts) == 2 and parts[0].strip() and parts[1].strip():
+        return parts[0].strip(), "-" + parts[1].strip()
+    return s, ""
+
+
+def _collect_today_project_main_barcode_history(platform: str, record_date, project_name: str) -> dict[str, set[str]]:
+    """
+    扫描当天该平台/项目下已生成的所有 *.payload.json，
+    收集“主条码 -> 已出现过的完整条码集合”。
+
+    仅统计：
+      - 非历史目录
+      - 非岗位清单目录
+      - 当天日期目录
+      - 当前项目目录
+      - worksheet_table 中真正的样本孔位
+      - 且 origin_barcode 同时含主条码和子条码（必须带 '-'）
+    """
+    result = defaultdict(set)
+
+    if not platform or not project_name or not record_date:
+        return result
+
+    date_folder = record_date.strftime("%Y-%m-%d")
+    base_dir = os.path.join(settings.DOWNLOAD_ROOT, platform, date_folder, project_name)
+    if not os.path.isdir(base_dir):
+        return result
+
+    for dirpath, _, filenames in os.walk(base_dir):
+        p = Path(dirpath)
+
+        # 跳过历史文件和岗位清单目录
+        if HISTORY_DIRNAME in p.parts or STATION_DIRNAME in p.parts:
+            continue
+
+        for fn in filenames:
+            lower = (fn or "").lower().strip()
+            if not lower.endswith(".payload.json"):
+                continue
+
+            fpath = os.path.join(dirpath, fn)
+            try:
+                with open(fpath, "r", encoding="utf-8") as f:
+                    payload = json.load(f)
+            except Exception:
+                continue
+
+            table = payload.get("worksheet_table") or []
+            for row in table:
+                if not isinstance(row, list):
+                    continue
+                for cell in row:
+                    if not isinstance(cell, dict):
+                        continue
+
+                    if cell.get("locator"):
+                        continue
+
+                    origin = str(cell.get("origin_barcode") or "").strip()
+                    match_sample = str(cell.get("match_sample") or "").strip()
+
+                    if not origin or origin.upper() == "NOTUBE":
+                        continue
+
+                    main_bc, sub_bc = _split_main_sub_barcode(origin)
+                    if not main_bc or not sub_bc:
+                        # 只统计“同时含主条码和子条码”的条码
+                        continue
+
+                    # 尽量排除曲线/质控/Blank
+                    if (
+                        match_sample.startswith("STD")
+                        or match_sample.startswith("QC")
+                        or match_sample.startswith("Blank")
+                    ):
+                        continue
+
+                    result[main_bc].add(origin)
+
+    return result
+
+
+def _detect_icpms_subbarcode_conflicts(
+    origin_barcodes: list[str],
+    barcode_to_code: dict,
+    history_main_to_origins: dict[str, set[str]],
+) -> list[bool]:
+    """
+    检测“同主条码、不同子条码”的后出现条码。
+    返回与 origin_barcodes 等长的 bool 列表：
+      True  -> 命中新规则，需要强制 No match + 黄色高亮
+      False -> 不命中
+
+    规则：
+      1) 只针对同时含主条码和子条码的条码（必须带 '-'）
+      2) 只针对临床样本，STD/QC/Blank 不参与
+      3) 若历史 payload 或当前文件前面已出现过相同主条码但完整条码不同，则当前这个记为冲突
+      4) “后出现者”才冲突，先出现者不冲突
+    """
+    flags = []
+    seen_main_to_origins = defaultdict(set)
+
+    # 先灌入“当天历史文件”里已经出现过的条码
+    for main_bc, origins in (history_main_to_origins or {}).items():
+        for origin in origins:
+            seen_main_to_origins[str(main_bc)].add(str(origin).strip())
+
+    for origin in origin_barcodes:
+        origin = str(origin or "").strip()
+        main_bc, sub_bc = _split_main_sub_barcode(origin)
+
+        if not origin or not main_bc or not sub_bc:
+            flags.append(False)
+            continue
+
+        code = str(barcode_to_code.get(main_bc, "") or "")
+        is_special = (
+            code.startswith("STD")
+            or code.startswith("QC")
+            or code.startswith("Blank")
+        )
+        if is_special:
+            flags.append(False)
+            continue
+
+        seen_origins = seen_main_to_origins[main_bc]
+
+        # 历史/当前前序中，已出现过同主条码但不是同一个完整条码
+        has_conflict = any(prev != origin for prev in seen_origins)
+
+        flags.append(has_conflict)
+
+        # 当前条码入账，供后面的条码继续判断
+        seen_main_to_origins[main_bc].add(origin)
+
+    return flags
+
+
 @require_GET
 def file_replace_get_payload(request):
     """
@@ -1210,6 +1361,53 @@ def _lookup_experiment_from_station(new_barcode: str, record_date=None) -> str:
     return "-".join(list(dict.fromkeys(norm)))
 
 
+# ===== 新增：通过实验号反查条码 =====
+def _lookup_barcode_from_station(experiment_no: str, record_date=None) -> str:
+    """
+    用实验号在当天 station_list.json 的 '实验号->主条码' 或 '实验号->子条码' 中反查条码。
+    - 找到：返回对应条码字符串
+    - 找不到：返回空字符串
+    """
+    from django.utils import timezone as _tz
+
+    if not experiment_no or not experiment_no.strip():
+        return ""
+
+    if record_date is None:
+        record_date = _tz.localdate()
+
+    store_path = os.path.join(
+        settings.DOWNLOAD_ROOT,
+        "岗位清单",
+        record_date.strftime("%Y-%m-%d"),
+        "station_list.json",
+    )
+
+    if not os.path.isfile(store_path):
+        return ""
+
+    try:
+        with open(store_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return ""
+
+    # 兼容两种字段名
+    exp_to_barcode = (
+        data.get("实验号->主条码")
+        or data.get("实验号->子条码")
+        or data.get("实验号->barcode")
+        or {}
+    )
+
+    exp = experiment_no.strip()
+    barcode = exp_to_barcode.get(exp)
+    if barcode:
+        return str(barcode).strip()
+
+    return ""
+
+
 
 # 新增核心函数：对 payload 应用 used / nouse / delete，并保持 error_rows 不动
 _SAMPLE_RE = re.compile(r"[A-Za-z]")  # 含字母则更像“实验号/样本名”
@@ -1255,6 +1453,15 @@ def _apply_replace_to_payload(payload: dict, replace_reason: str, entries: list[
             # old 为空时，根据 new 判断更新实验号还是条码
             if _SAMPLE_RE.search(new_val):  # 含字母：当作实验号
                 cell["match_sample"] = new_val
+
+                # ★ 新增：用实验号反查条码，若找到则同步更新条码字段
+                new_barcode = _lookup_barcode_from_station(new_val)
+                if new_barcode:
+                    cut, sub, origin = _parse_barcode(new_barcode)
+                    cell["cut_barcode"] = cut
+                    cell["sub_barcode"] = sub
+                    cell["origin_barcode"] = origin
+
             else:  # 当作条码
                 cut, sub, origin = _parse_barcode(new_val)
                 cell["cut_barcode"] = cut
@@ -1277,6 +1484,15 @@ def _apply_replace_to_payload(payload: dict, replace_reason: str, entries: list[
             new_val = (e.get("new") or "").strip()
             if _SAMPLE_RE.search(new_val):
                 cell["match_sample"] = new_val
+
+                # ★ 新增：用实验号反查条码，若找到则同步更新条码字段
+                new_barcode = _lookup_barcode_from_station(new_val)
+                if new_barcode:
+                    cut, sub, origin = _parse_barcode(new_barcode)
+                    cell["cut_barcode"] = cut
+                    cell["sub_barcode"] = sub
+                    cell["origin_barcode"] = origin
+
             else:
                 cut, sub, origin = _parse_barcode(new_val)
                 cell["cut_barcode"] = cut
@@ -4364,8 +4580,8 @@ def export_files(request):
     df = pd.DataFrame(records, columns=headers)
 
     # 从会话 payload 里取仪器编号，再查仪器厂家
-    instrument_num = (payload.get("header") or {}).get("instrument_num")  # 你在 payload['header'] 里放过它
-    instrument_name = ""
+    # instrument_num = (payload.get("header") or {}).get("instrument_num")  # 你在 payload['header'] 里放过它
+    # instrument_name = ""
     if instrument_num:
         cfg = InstrumentConfiguration.objects.filter(instrument_num=instrument_num).first()
         if cfg:
@@ -4457,12 +4673,18 @@ def Manual_process_result(request):
         header_meta = {
             "today_str":         ctx.get("today_str"),
             "instrument_num":    ctx.get("instrument_num"),
+            "systerm_num":ctx.get("systerm_num"),
             "injection_plate":   ctx.get("injection_plate"), 
+            "plate_no": ctx.get("plate_no"), 
         }
+
+        for plate in ctx.get("plates", []):
+            plate["header"] = header_meta 
 
         request.session["export_payload"] = {
             "project_name":      ctx.get("project_name"),
             "project_name_full": ctx.get("project_name_full"),
+            "plate_no": ctx.get("plate_no"), 
             "instrument_num":    ctx.get("instrument_num"),
             "systerm_num":       ctx.get("systerm_num"),
             "platform":          ctx.get("platform"),
@@ -4653,7 +4875,15 @@ def _build_icpms_manual_worksheets(request):
     scan_sheet   = Scantable.sheets()[0]
 
     # 1) 项目配置 & 对应关系表（工作清单 sheet）
-    cfg = SamplingConfiguration.objects.get(pk=project_id)
+    # 获取后台设置的项目参数，如果没设置报错并提示
+    try:
+        cfg = SamplingConfiguration.objects.get(project_name=project_name,default_upload_instrument=instrument_num,systerm_num=systerm_num)
+    except SamplingConfiguration.DoesNotExist:
+        # 返回友好的错误提示页面
+        return render(request, "dashboard/error.html", {
+            "message": "未配置项目参数，请前往后台参数配置中完善该项目设置后重试。"
+        })
+
     proj_name = cfg.project_name
     proj_name_full = cfg.project_name_full
     mapping_path   = cfg.mapping_file.path
@@ -4665,6 +4895,13 @@ def _build_icpms_manual_worksheets(request):
     )
     barcode_to_code = dict(
         zip(df_mapping_wc["Barcode"].astype(str), df_mapping_wc["Code"].astype(str))
+    )
+
+    # ===== 新增：收集“当天该项目已生成工作清单”中的历史完整条码 =====
+    history_main_to_origins = _collect_today_project_main_barcode_history(
+        platform=platform,
+        record_date=record_date,
+        project_name=project_name,
     )
 
     # 2) 岗位清单：主条码 -> 实验号 列表（与 NIMBUS 完全同源）
@@ -4718,21 +4955,42 @@ def _build_icpms_manual_worksheets(request):
 
     cut_counter = Counter(cut_barcodes)
 
+    # ===== 新增：先判定“同主条码、不同子条码”的后出现冲突（黄色规则） =====
+    subbarcode_conflict_flags = _detect_icpms_subbarcode_conflicts(
+        origin_barcodes=origin_barcodes,
+        barcode_to_code=barcode_to_code,
+        history_main_to_origins=history_main_to_origins,
+    )
+
     match_sample_raw   = []  # 与 NIMBUS 中 MatchSampleName 同源（未经过 mapping 表转名称）
     match_result       = []  # TRUE/FALSE
     dup_barcode        = []
     dup_barcode_sample = []
+    highlight_flags    = []  # 兼容现有 PDF/页面高亮
+    highlight_types    = []  # red_multi_match / yellow_dup_main_barcode / ""
 
-    for cb in cut_barcodes:
+    for idx, cb in enumerate(cut_barcodes):
         cb_str = str(cb)
         matched_names = barcode_to_names.get(cb_str, [])
         cb_count = cut_counter[cb_str]
+
+        # ===== 黄色规则优先：同主条码不同子条码，且当前为后出现者 =====
+        if subbarcode_conflict_flags[idx]:
+            match_result.append("FALSE")
+            match_sample_raw.append("No match")
+            dup_barcode.append("")
+            dup_barcode_sample.append("")
+            highlight_flags.append(True)
+            highlight_types.append("yellow_dup_main_barcode")
+            continue
 
         if len(matched_names) == 1:
             match_result.append("TRUE")
             match_sample_raw.append(matched_names[0])
             dup_barcode.append("")
             dup_barcode_sample.append("")
+            highlight_flags.append(False)
+            highlight_types.append("")
 
         elif len(matched_names) == 0:
             match_result.append("FALSE")
@@ -4742,6 +5000,8 @@ def _build_icpms_manual_worksheets(request):
                 match_sample_raw.append("")
             dup_barcode.append("")
             dup_barcode_sample.append("")
+            highlight_flags.append(False)
+            highlight_types.append("")
 
         elif len(matched_names) == 2:
             match_result.append("TRUE")
@@ -4749,10 +5009,14 @@ def _build_icpms_manual_worksheets(request):
                 dup_barcode.append("Likely")
                 match_sample_raw.append(matched_names[0])
                 dup_barcode_sample.append("")
+                highlight_flags.append(False)
+                highlight_types.append("")
             else:
                 dup_barcode.append("TRUE")
                 match_sample_raw.append(matched_names[0] + "-" + matched_names[1])
                 dup_barcode_sample.append("TRUE" if cb_count >= 2 else "")
+                highlight_flags.append(True)
+                highlight_types.append("red_multi_match")
 
         else:
             match_result.append("TRUE")
@@ -4771,23 +5035,33 @@ def _build_icpms_manual_worksheets(request):
                 match_sample_raw.append('-'.join(sorted_lis))
                 dup_barcode.append("TRUE")
                 dup_barcode_sample.append("TRUE" if cb_count >= 2 else "")
+                highlight_flags.append(True)
+                highlight_types.append("red_multi_match")
             else:
                 match_sample_raw.append(matched_names[0])
                 dup_barcode.append("")
                 dup_barcode_sample.append("")
+                highlight_flags.append(False)
+                highlight_types.append("")
+
 
     # 结合 df_mapping_wc，把 TRUE/ FALSE 的 raw 值转换成最终实验号 / 曲线名
     list_b_items = []  # 每个元素：{"barcode":cut,"origin_barcode":..., "sample_name":..., "is_special":bool}
     for i, cb in enumerate(cut_barcodes):
         raw_value = str(match_sample_raw[i])
-        if match_result[i] == "TRUE":
-            sample_name = raw_value
+
+        # ===== 黄色规则命中时，直接固定为 No match =====
+        if highlight_types[i] == "yellow_dup_main_barcode":
+            sample_name = "No match"
         else:
-            if raw_value == "":
-                sample_name = ""
+            if match_result[i] == "TRUE":
+                sample_name = raw_value
             else:
-                # 在 mapping_file 中找曲线 / 质控名称
-                sample_name = barcode_to_name.get(raw_value, "No match")
+                if raw_value == "":
+                    sample_name = ""
+                else:
+                    # 在 mapping_file 中找曲线 / 质控名称
+                    sample_name = barcode_to_name.get(raw_value, "No match")
 
         code = barcode_to_code.get(str(cb), "")
         is_special = bool(code) and (
@@ -4803,6 +5077,10 @@ def _build_icpms_manual_worksheets(request):
             "is_special": is_special,
             "dup_barcode": dup_barcode[i],
             "dup_barcode_sample": dup_barcode_sample[i],
+            "highlight": bool(highlight_flags[i]),   # ★ 新增
+            "highlight_type": highlight_types[i],
+            "warn_info": "同主条码已出现不同子条码，当前条码强制设为 No match" if highlight_types[i] == "yellow_dup_main_barcode" else "",
+            "warn_level": "Warning" if highlight_types[i] == "yellow_dup_main_barcode" else "",
         })
 
     # 5) 提取“曲线+质控”模板（每块板都要重复）和临床样本队列
@@ -4851,6 +5129,8 @@ def _build_icpms_manual_worksheets(request):
                     "status": "",
                     "dup_barcode": "",
                     "dup_barcode_sample": "",
+                    "highlight": False,   # ★ 新增
+                    "highlight_type": "",
                 })
             grid.append(row)
         return grid
@@ -4907,6 +5187,8 @@ def _build_icpms_manual_worksheets(request):
             cell["sub_barcode"]       = "-" + parts[1] if len(parts) == 2 else ""
             cell["dup_barcode"]       = item["dup_barcode"]
             cell["dup_barcode_sample"]= item["dup_barcode_sample"]
+            cell["highlight"]          = item.get("highlight", False)   # ★ 新增
+            cell["highlight_type"]     = item.get("highlight_type", "")
 
             # 报错信息：只关心 match_sample == "No match"
             if cell["match_sample"] == "No match":
@@ -4915,8 +5197,8 @@ def _build_icpms_manual_worksheets(request):
                     "origin_barcode": cell["origin_barcode"],
                     "plate_no": plate_no_str,
                     "well_str": cell["well_str"],
-                    "warn_level": "",
-                    "warn_info": "",
+                    "warn_level": "Warning" if cell.get("highlight_type") == "yellow_dup_main_barcode" else "",
+                    "warn_info": "同主条码已出现不同子条码，当前条码强制设为 No match" if cell.get("highlight_type") == "yellow_dup_main_barcode" else "",
                 })
 
         # 再填临床样本
@@ -4939,6 +5221,8 @@ def _build_icpms_manual_worksheets(request):
             cell["sub_barcode"]       = "-" + parts[1] if len(parts) == 2 else ""
             cell["dup_barcode"]       = item["dup_barcode"]
             cell["dup_barcode_sample"]= item["dup_barcode_sample"]
+            cell["highlight"]          = item.get("highlight", False)   # ★ 新增
+            cell["highlight_type"]     = item.get("highlight_type", "")
 
             # 报错信息：只关心 match_sample == "No match"
             if cell["match_sample"] == "No match":
@@ -4947,8 +5231,8 @@ def _build_icpms_manual_worksheets(request):
                     "origin_barcode": cell["origin_barcode"],
                     "plate_no": plate_no_str,
                     "well_str": cell["well_str"],
-                    "warn_level": "",
-                    "warn_info": "",
+                    "warn_level": "Warning" if cell.get("highlight_type") == "yellow_dup_main_barcode" else "",
+                    "warn_info": "同主条码已出现不同子条码，当前条码强制设为 No match" if cell.get("highlight_type") == "yellow_dup_main_barcode" else "",
                 })
 
         plates.append({
@@ -4956,6 +5240,41 @@ def _build_icpms_manual_worksheets(request):
             "worksheet_table": plate,
             "error_rows": error_rows_plate,
         })
+
+        # ===== 新增：写入 SampleRecord，供“历史标本查找”使用 =====
+        # 与 NIMBUS 保持一致：先清理同日/同项目/同板号旧记录，再逐孔写入
+        SampleRecord.objects.filter(
+            project_name=proj_name,
+            record_date=record_date,
+            plate_no=plate_no_str
+        ).delete()
+
+        for row in plate:
+            for cell in row:
+                match_sample   = str(cell.get("match_sample") or "").strip()
+                origin_barcode = str(cell.get("origin_barcode") or "").strip()
+                well_str       = str(cell.get("well_str") or "").strip()
+
+                # 跳过完全空白孔位；定位孔 Xn 也不需要进历史查询
+                if not match_sample and not origin_barcode:
+                    continue
+                if cell.get("locator"):
+                    continue
+
+                # ICP-MS 目前只有 No match 这一类明显报错信息
+                error_info = "No match" if match_sample == "No match" else ""
+
+                SampleRecord.objects.update_or_create(
+                    project_name=proj_name,
+                    record_date=record_date,
+                    plate_no=plate_no_str,
+                    well_str=well_str,
+                    defaults={
+                        "sample_name": match_sample,
+                        "barcode": origin_barcode,
+                        "error_info": error_info,
+                    }
+                )
 
         if clinical_idx >= len(clinical_queue):
             break
@@ -5034,10 +5353,18 @@ def _build_icpms_manual_worksheets(request):
         qc_list2    = qc_names + ["DB5"]
 
         # ★ 临床样本：从工作清单中“纵向”遍历，取 **条码** 而不是实验号
-        ClinicalSample = []
+        # ClinicalSample = []
+
+        # ★ 临床样本：每块板的定位孔 Xn 放在第一个临床样前面；其余仍按工作清单纵向遍历取条码
+        ClinicalSample = [f"X{plate_no_str}"]
         for c in range(12):         # 列优先：A1,A2,...,H12,B1,B2,...
             for r in range(8):
                 cell = rows_grid[r][c]
+
+                # 跳过定位孔自身，避免后面重复加入
+                if cell.get("locator"):
+                    continue
+
                 name = str(cell["match_sample"]).strip()
                 if not name:
                     continue
@@ -5079,6 +5406,23 @@ def _build_icpms_manual_worksheets(request):
             # 1) 非占位符：直接返回配置值（用于 DB* / Test* 的 D3B-F8 / D3B-F9）
             if placeholder not in ("{{Well_Number}}", "{{Well_Position}}"):
                 return placeholder
+
+            # 2) 定位孔：X1 / X2 / X3 ...
+            # 手工 ICP-MS 的定位孔规则与 worksheet 保持一致：
+            # 板1=A3, 板2=B3, 板3=C3 ... 超过8块后循环
+            m = re.fullmatch(r"X(\d+)", s.upper())
+            if m:
+                k0 = int(m.group(1)) - 1
+                row_idx = k0 % 8
+                coln = 3   # 固定第3列 -> “3”
+                row_letter = letters[row_idx]
+                well_pos = f"{row_letter}{coln}"
+                well_no = row_idx * 12 + coln
+
+                if placeholder == "{{Well_Number}}":
+                    return f"{well_no}"
+                else:
+                    return f"{well_pos}"
 
             # 1) QC/STD：通过 name_to_barcodes 队列取条码，再查位置信息
             if s in name_to_barcodes and name_to_barcodes[s]:
@@ -5175,11 +5519,15 @@ def _build_icpms_manual_worksheets(request):
         year       = today_str[:4]
         yearmonth  = today_str[:6]
 
-        setname    = f"{instrument_num}_{systerm_num}_{project_name}_{today_str}_{plate_no_str}_GZ"
+        setname    = f"{instrument_num}_{systerm_num}_{project_name}_{today_str}_X{plate_no_str}_GZ"
         output_val = f"{year}\\{yearmonth}\\Data{setname}"
 
         if "SetName" in df_worklist.columns:  df_worklist["SetName"]  = setname
         if "OutputFile" in df_worklist.columns: df_worklist["OutputFile"] = output_val
+
+        # 进样盘
+        if "PlatePos" in df_worklist.columns:
+            df_worklist["PlatePos"] = injection_plate
         
         df_worklist = df_worklist.fillna("")
 
@@ -5188,7 +5536,6 @@ def _build_icpms_manual_worksheets(request):
         p["txt_headers"]      = txt_headers
         p["worklist_records"] = df_worklist.to_dict(orient="records")
     
-
     # 8) 返回给视图的 payload
     ctx = {
         "instrument_num":instrument_num,
@@ -5199,6 +5546,7 @@ def _build_icpms_manual_worksheets(request):
         "project_name_full": proj_name_full,
         "today_str": today_str,
         "nums": nums,
+        "plate_no": 'X'+str(start_plate_no),
         "plate_number": len(plates),
         "plates": plates,
     }

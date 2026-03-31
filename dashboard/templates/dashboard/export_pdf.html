@@ -154,6 +154,16 @@
             color: #d00 !important;
             font-weight: 700;
         }
+
+        /* 新增：主条码相同、子条码不同的后出现条码 -> 黄色高亮 */
+        .highlight-cell-yellow {
+            background-color: #ffeb3b !important;
+        }
+        .highlight-cell-yellow,
+        .highlight-cell-yellow * {
+            color: #000 !important;
+            font-weight: 700;
+        }
     </style>
 
     <!-- ★ Tecan 专用样式：条件性添加整个 style 块 -->
@@ -219,7 +229,7 @@
                 <tr>
                     <td class="letters">{{ row_idx.0.letter }}</td>
                     {% for cell in row_idx %}
-                    <td class="cell {% if cell.highlight %}highlight-cell{% endif %}">
+                    <td class="cell {% if cell.highlight_type == 'yellow_dup_main_barcode' %}highlight-cell-yellow{% elif cell.highlight or cell.highlight_type == 'red_multi_match' %}highlight-cell{% endif %}">
                         {% if cell.locator %}
                         <div class="locator">{{ cell.locator_warm }}</div>
                         {% else %}

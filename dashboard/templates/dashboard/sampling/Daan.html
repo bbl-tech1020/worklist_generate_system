@@ -3,7 +3,7 @@
 {% block header %}
 <header class="navbar navbar-expand-md navbar-light d-print-none">
   <div class="container-fluid">
-    <h1 class="navbar-brand">全血工作站取样</h1>
+    <h1 class="navbar-brand">达安自动化取样（磁珠法）</h1>
   </div>
   {% include "dashboard/partials/user_toolbar.html" %}
 </header>
@@ -14,11 +14,12 @@
 
   <div class="card-body">
 
+    <!-- 达安自动化取样表单 -->
     <div id="nimbus-feature-group">
-      <form action="{% url 'WholeBloodWorkstationResult' %}" method="post" enctype="multipart/form-data">
+      <form action="{% url 'ProcessResult' %}" method="post" enctype="multipart/form-data">
         {% csrf_token %}
 
-        <input type="hidden" name="platform" value="WholeBloodWorkstation">
+        <input type="hidden" name="platform" value="Daan">
         <div class="mb-3">
           <label class="form-label" name="project_id">项目名称</label>
           <select class="form-select" id="project-select" name="project_id" required>
@@ -61,7 +62,7 @@
           <!-- 文件上传控件（始终保留，供回退使用） -->
           <input type="file" class="form-control" name="station_list" id="station-list-input">
           <div class="form-text text-muted" id="station-manual-hint">
-            自动读取路径：\\10.10.18.154\00-标本签收与领取\2026\共同岗位清单
+            自动读取路径：\\10.10.18.70\00-标本签收与领取\2026\共同岗位清单
           </div>
         </div>
 
@@ -93,13 +94,8 @@
         </div>
 
         <div class="mb-3">
-          <label class="form-label">取样总表</label>
-          <input type="file" class="form-control" name="sampling_summary">
-        </div>
-        <!-- ★ 新增：工作清单表上传 -->
-        <div class="mb-3">
-          <label class="form-label">工作清单表</label>
-          <input type="file" class="form-control" name="preprocess_worksheet">
+          <label class="form-label">扫码结果表</label>
+          <input type="file" class="form-control" name="scan_result">
         </div>
 
         <!-- 上机仪器 -->
@@ -155,12 +151,20 @@
       .then(res => res.json())
       .then(data => {
         const select = document.getElementById('project-select');
-        (data.projects || []).forEach(item => {
+        const projects = data.projects || [];
+
+        projects.forEach(item => {
           const opt = document.createElement('option');
-          opt.value = item.id;
+          opt.value = String(item.id);
           opt.textContent = item.name;
           select.appendChild(opt);
         });
+
+        // 项目列表加载完成后，恢复上次选择的项目
+        restoreLastProject();
+      })
+      .catch(err => {
+        console.error('加载项目列表失败:', err);
       });
 
     // 2. 绑定事件（只绑定一次）
@@ -178,21 +182,22 @@
     const _stationInput = document.getElementById('station-list-input');
     const _overrideModal = new bootstrap.Modal(document.getElementById('stationOverrideModal'));
 
+
     // 拦截 change 事件：若已自动读取则先弹窗确认
-    _stationInput.addEventListener('change', function () {
+    _stationInput.addEventListener('change', function (e) {
       if (_stationAutoFound && this.files && this.files.length > 0) {
-        // 先复制 File 对象，再清空 input
-        _pendingFiles = Array.from(this.files);
-        this.value = '';
+
+        // ✅ 先把 File 对象复制到独立数组，再清空 input
+        _pendingFiles = Array.from(this.files);  // 独立副本，不受 input 影响
+        this.value = '';                          // 清空 input（不再影响 _pendingFiles）
 
         document.getElementById('station-override-filename').textContent =
           document.getElementById('station-auto-filename').textContent;
-
         _overrideModal.show();
       }
     });
 
-    // 点击“确认知晓，继续上传”：恢复文件到 input
+    // 点击"确认知晓，继续上传"：用 DataTransfer 恢复文件到 input
     document.getElementById('stationOverrideConfirmBtn').addEventListener('click', function () {
       if (_pendingFiles) {
         const dt = new DataTransfer();
@@ -203,19 +208,59 @@
         _pendingFiles = null;
       }
       _overrideModal.hide();
+      // 更新提示文字
       document.getElementById('station-manual-hint').textContent = '已选择手动文件，将覆盖自动读取';
     });
 
-    // 点击“取消”：丢弃文件，保持自动读取状态
+    // 点击"取消"：丢弃文件，维持自动读取状态
     document.getElementById('stationOverrideCancelBtn').addEventListener('click', function () {
       _pendingFiles = null;
       _stationInput.value = '';
       _overrideModal.hide();
     });
 
-    // 切换检测日期时重新检查
+    // 检测日期切换时重新检查
     document.getElementById('testing_day').addEventListener('change', checkStationAuto);
   });
+
+
+  const NIMBUS_LAST_PROJECT_KEY = 'nimbus_last_project_id';
+
+  function saveLastProject(projectId) {
+    try {
+      if (projectId) {
+        localStorage.setItem(NIMBUS_LAST_PROJECT_KEY, projectId);
+      } else {
+        localStorage.removeItem(NIMBUS_LAST_PROJECT_KEY);
+      }
+    } catch (e) {
+      console.warn('保存上次项目失败:', e);
+    }
+  }
+
+  function getLastProject() {
+    try {
+      return localStorage.getItem(NIMBUS_LAST_PROJECT_KEY) || '';
+    } catch (e) {
+      console.warn('读取上次项目失败:', e);
+      return '';
+    }
+  }
+
+  function restoreLastProject() {
+    const select = document.getElementById('project-select');
+    const lastProjectId = getLastProject();
+
+    if (!lastProjectId) return;
+
+    const matchedOption = Array.from(select.options).find(opt => opt.value === lastProjectId);
+    if (!matchedOption) return;
+
+    select.value = lastProjectId;
+    onProjectChange();
+  }
+
+
 
   // === 自动读取岗位清单状态检查 ===
   function checkStationAuto() {
@@ -244,14 +289,14 @@
           okBox.classList.add('d-none');
           failBox.classList.remove('d-none');
           fileInput.classList.remove('form-control-sm');
-          manualHint.textContent = '自动读取路径：\\\\\\\\10.10.18.154\\\\00-标本签收与领取\\\\2026\\\\共同岗位清单';
+          manualHint.textContent = '自动读取路径：\\\\10.10.18.70\\00-标本签收与领取\\2026\\共同岗位清单';
           _stationAutoFound = false;  // 【新增】标记自动读取未成功
         }
       })
       .catch(() => {
         okBox.classList.add('d-none');
         failBox.classList.remove('d-none');
-        _stationAutoFound = false;    // 【新增】
+        _stationAutoFound = false;
       })
       .finally(() => {
         loadBox.classList.add('d-none');
@@ -267,6 +312,9 @@
 
     // 同步项目名称到隐藏字段
     document.getElementById('project-name').value = projectName;
+
+    // 记录本次选择到浏览器本地
+    saveLastProject(projectId);
 
     // 清空并重置（避免旧项目残留）
     document.getElementById('instrument_num').value = '';
@@ -297,11 +345,13 @@
       });
   }
 
+
   // === 用户手动修改仪器：刷新系统号 + 刷新盘号 ===
   function onInstrumentInput() {
     refreshSystermDropdown();
     refreshPlateDropdown();
   }
+
 
   // === 关联系统号 ===
   function refreshSystermDropdown() {
@@ -349,6 +399,7 @@
         systermSelect.dataset.hasConfig = "0";
       });
   }
+
 
   // === 刷新进样盘号 ===
   function refreshPlateDropdown() {

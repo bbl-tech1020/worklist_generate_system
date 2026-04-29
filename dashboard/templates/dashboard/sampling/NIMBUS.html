@@ -151,12 +151,20 @@
       .then(res => res.json())
       .then(data => {
         const select = document.getElementById('project-select');
-        (data.projects || []).forEach(item => {
+        const projects = data.projects || [];
+
+        projects.forEach(item => {
           const opt = document.createElement('option');
-          opt.value = item.id;
+          opt.value = String(item.id);
           opt.textContent = item.name;
           select.appendChild(opt);
         });
+
+        // 项目列表加载完成后，恢复上次选择的项目
+        restoreLastProject();
+      })
+      .catch(err => {
+        console.error('加载项目列表失败:', err);
       });
 
     // 2. 绑定事件（只绑定一次）
@@ -216,6 +224,44 @@
   });
 
 
+  const NIMBUS_LAST_PROJECT_KEY = 'nimbus_last_project_id';
+
+  function saveLastProject(projectId) {
+    try {
+      if (projectId) {
+        localStorage.setItem(NIMBUS_LAST_PROJECT_KEY, projectId);
+      } else {
+        localStorage.removeItem(NIMBUS_LAST_PROJECT_KEY);
+      }
+    } catch (e) {
+      console.warn('保存上次项目失败:', e);
+    }
+  }
+
+  function getLastProject() {
+    try {
+      return localStorage.getItem(NIMBUS_LAST_PROJECT_KEY) || '';
+    } catch (e) {
+      console.warn('读取上次项目失败:', e);
+      return '';
+    }
+  }
+
+  function restoreLastProject() {
+    const select = document.getElementById('project-select');
+    const lastProjectId = getLastProject();
+
+    if (!lastProjectId) return;
+
+    const matchedOption = Array.from(select.options).find(opt => opt.value === lastProjectId);
+    if (!matchedOption) return;
+
+    select.value = lastProjectId;
+    onProjectChange();
+  }
+
+
+
   // === 自动读取岗位清单状态检查 ===
   function checkStationAuto() {
     const testingDay = document.getElementById('testing_day').value;
@@ -267,6 +313,9 @@
     // 同步项目名称到隐藏字段
     document.getElementById('project-name').value = projectName;
 
+    // 记录本次选择到浏览器本地
+    saveLastProject(projectId);
+
     // 清空并重置（避免旧项目残留）
     document.getElementById('instrument_num').value = '';
     const systermSelect = document.getElementById('systerm_num');
@@ -296,13 +345,12 @@
       });
   }
 
+
   // === 用户手动修改仪器：刷新系统号 + 刷新盘号 ===
   function onInstrumentInput() {
     refreshSystermDropdown();
     refreshPlateDropdown();
   }
-
-
 
 
   // === 关联系统号 ===
@@ -353,8 +401,6 @@
   }
 
 
-
-  
   // === 刷新进样盘号 ===
   function refreshPlateDropdown() {
     const selectProject = document.getElementById('project-select');

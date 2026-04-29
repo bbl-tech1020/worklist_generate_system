@@ -112,5 +112,9 @@ class SampleRecord(models.Model):
     error_info = models.CharField(max_length=100, default='', blank=True)  # ★ 新增字段:报错信息（1，4，16384）
     record_date = models.DateField(default=date.today)  # 生成日期（自动）
 
+    # 新增：用于区分同一天同项目同板号的不同生成批次
+    batch_id = models.CharField(max_length=50, default='', blank=True)
+    
+
     def __str__(self):
         return f"{self.project_name} | {self.sample_name or self.barcode} | {self.plate_no}-{self.well_str}"

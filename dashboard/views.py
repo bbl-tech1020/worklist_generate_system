@@ -378,6 +378,10 @@ def Tecan_sampling(request):
 def WholeBloodWorkstation_sampling(request):
     return render(request, 'dashboard/sampling/WholeBloodWorkstation.html')
 
+# 达安自动化取样平台（磁珠法）
+def Daan_sampling(request):
+    return render(request, 'dashboard/sampling/Daan.html')
+
 # 2 标本查找
 def sample_search(request):
     return render(request, 'dashboard/sample_search/index.html')
@@ -3739,6 +3743,9 @@ def ProcessResult(request):
         SubBarcode     = aligned["SubBarcode"]
         Warm           = aligned["Warm"]
 
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        batch_id = timestamp
+
         # ★ 新增：
         TStatusSummary = aligned.get("TStatusSummary", [""] * len(Position))
         TVolume        = aligned.get("TVolume",        [0]   * len(Position))
@@ -3925,6 +3932,7 @@ def ProcessResult(request):
             SampleRecord.objects.update_or_create(
                 project_name=project_name,
                 record_date=record_date,
+                batch_id=batch_id,
                 plate_no=plate_no_str,
                 well_str=well_pos_str,
                 defaults={
@@ -3936,7 +3944,7 @@ def ProcessResult(request):
             return well
 
         # 清理同日同项目同板号旧记录（避免重复）
-        SampleRecord.objects.filter(project_name=project_name, record_date=record_date, plate_no=plate_no_str).delete()
+        # SampleRecord.objects.filter(project_name=project_name, record_date=record_date, plate_no=plate_no_str).delete()
 
         if layout == 'vertical':   # NIMBUS（列优先）
             for col_idx, col_num in enumerate(nums):
@@ -4641,6 +4649,7 @@ def sample_search_api(request):
         {
             "project_name": r.project_name,
             "date": r.record_date.strftime("%Y-%m-%d"),
+            "batch_id": r.batch_id,
             "plate_no": r.plate_no,
             "well_str": r.well_str,
             "error_info": r.error_info or "",

@@ -27,7 +27,9 @@ urlpatterns = [
 
     path('dashboard/frontend_entry/Tecan_sampling/', views.Tecan_sampling, name='Tecan_sampling'), # Tecan取样
 
-    path('dashboard/frontend_entry/WholeBloodWorkstation_sampling/', views.WholeBloodWorkstation_sampling, name='WholeBloodWorkstation_sampling'), # Tecan取样
+    path('dashboard/frontend_entry/WholeBloodWorkstation_sampling/', views.WholeBloodWorkstation_sampling, name='WholeBloodWorkstation_sampling'), # 全血工作站取样
+
+    path('dashboard/frontend_entry/Daan_sampling/', views.Daan_sampling, name='Daan_sampling'), # 达安自动化取样平台（磁珠法）
 
     # 2 标本查找
     path('dashboard/sample_search/', views.sample_search, name='sample_search'),  # 标本查找

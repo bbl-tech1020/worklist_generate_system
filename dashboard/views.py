@@ -5561,3 +5561,6 @@ def _build_icpms_manual_worksheets(request):
     }
     return ctx
 
+
+def Daan_process_result(request):
+    pass

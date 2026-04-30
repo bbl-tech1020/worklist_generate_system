@@ -2471,7 +2471,7 @@ def file_replace(request):
                     return True
                 return False
             
-            def _find_locator_row_index(rows: list[list[str]]) -> int:
+            def _find_locator_row_index(rows: list[list[str]]) -> int: 
                 """
                 在 rows 列表中查找定位孔行的索引
                 返回：定位孔行的索引（从0开始），若未找到返回 -1

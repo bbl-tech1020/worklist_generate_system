@@ -6701,7 +6701,7 @@ def Daan_process_result(request):
 
     # ========== 8. 生成上机列表 worklist_records，但当前阶段不写 session、不导出 ==========
     try:
-        worklist_records, txt_headers = _build_daan_worklist_records(
+        worklist_records, txt_headers, worklist_debug = _build_daan_worklist_records(
             aligned=aligned,
             matched=matched,
             config=config,
@@ -6723,6 +6723,15 @@ def Daan_process_result(request):
         return render(request, "dashboard/error.html", {
             "message": f"达安上机列表生成出现未知错误：{str(e)}"
         })
+
+    header_meta = {
+        "test_date": timezone.localtime().strftime("%Y-%m-%d"),
+        "plate_no": plate_no_str,
+        "instrument_num": instrument_num,
+        "systerm_num": systerm_num,
+        "injection_plate": injection_plate,
+        "today_str": today_str,
+    }
 
     plate_payload = {
         "project_name": project_name,

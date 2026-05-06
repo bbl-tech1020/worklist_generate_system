@@ -5562,5 +5562,323 @@ def _build_icpms_manual_worksheets(request):
     return ctx
 
 
-def Daan_process_result(request):
+###################### 达安自动化取样（磁珠法）专用函数 ######################
+
+class DaanScanParseError(ValueError):
+    """达安扫码结果表解析错误"""
     pass
+
+
+def _read_uploaded_text_with_fallback(uploaded_file) -> tuple[str, str]:
+    """
+    读取上传的 txt 文件，并尝试多种编码解码。
+
+    uploaded_file:
+      - Django UploadedFile 对象
+      - 或类似文件对象，需支持 read()
+
+    返回：
+      (text, encoding_used)
+    """
+    uploaded_file.seek(0)
+    raw = uploaded_file.read()
+
+    # 防止后续其他逻辑还需要读取该文件
+    try:
+        uploaded_file.seek(0)
+    except Exception:
+        pass
+
+    for enc in ("utf-8-sig", "utf-8", "gb18030", "gbk"):
+        try:
+            return raw.decode(enc), enc
+        except UnicodeDecodeError:
+            continue
+
+    # 最后兜底：不阻断，但可能出现 �
+    return raw.decode("utf-8", errors="replace"), "utf-8(replace)"
+
+
+def _parse_daan_scan_txt(uploaded_file) -> dict:
+    """
+    解析达安自动化取样扫码结果 txt。
+
+    已确认规则：
+      1. 文件为 txt
+      2. 使用 Tab \\t 分隔
+      3. 表头固定包含：Well / Sample Name / Item / Detector / Task
+      4. 核心字段：
+         - Well: 孔位号，如 A1、B1、D7
+         - Sample Name: 样本条码/定位孔/曲线质控标识
+         - Item: 普通样本 CAS、标准品、阳性对照、阴性对照等
+      5. 未使用孔位不会出现在文件中，本函数只解析“已出现的行”，不补齐 96 孔
+
+    返回：
+      {
+        "encoding": "utf-8-sig",
+        "header_row_index": 6,   # 0-based
+        "headers": ["Well", "Sample Name", "Item", "Detector", "Task"],
+        "rows": [
+          {
+            "well": "A1",
+            "sample_name": "X1",
+            "item": "CAS",
+            "detector": "LS174T",
+            "task": "UNKN",
+            "raw": {...}
+          },
+          ...
+        ]
+      }
+    """
+    text, encoding_used = _read_uploaded_text_with_fallback(uploaded_file)
+
+    # 保留非空行；达安文件前几行是说明信息，表头需要自动查找
+    lines = [line.rstrip("\r\n") for line in text.splitlines() if line.strip()]
+
+    if not lines:
+        raise DaanScanParseError("达安扫码结果表为空，请检查上传文件。")
+
+    header_row_index = None
+    headers = None
+
+    for idx, line in enumerate(lines):
+        cols = line.split("\t")
+        cols = [c.strip() for c in cols]
+
+        # 表头固定：Well / Sample Name
+        if len(cols) >= 2 and cols[0] == "Well" and cols[1] == "Sample Name":
+            header_row_index = idx
+            headers = cols
+            break
+
+    if header_row_index is None or headers is None:
+        raise DaanScanParseError("未找到达安扫码结果表表头：Well / Sample Name。请确认文件格式是否正确。")
+
+    # 必须字段校验
+    required_headers = ["Well", "Sample Name", "Item"]
+    missing_headers = [h for h in required_headers if h not in headers]
+    if missing_headers:
+        raise DaanScanParseError(
+            f"达安扫码结果表缺少必要列：{', '.join(missing_headers)}。"
+        )
+
+    header_index = {h: i for i, h in enumerate(headers)}
+
+    parsed_rows = []
+
+    # 从表头下一行开始解析
+    for line_no, line in enumerate(lines[header_row_index + 1:], start=header_row_index + 2):
+        cols = line.split("\t")
+        cols = [c.strip() for c in cols]
+
+        # 补齐列数，避免某些行末尾空列被省略导致越界
+        if len(cols) < len(headers):
+            cols = cols + [""] * (len(headers) - len(cols))
+
+        well = cols[header_index["Well"]].strip()
+        sample_name = cols[header_index["Sample Name"]].strip()
+        item = cols[header_index["Item"]].strip()
+
+        # 跳过完全空行
+        if not well and not sample_name and not item:
+            continue
+
+        if not well:
+            raise DaanScanParseError(f"第 {line_no} 行缺少 Well 孔位号。")
+
+        if not sample_name:
+            raise DaanScanParseError(f"第 {line_no} 行缺少 Sample Name。")
+
+        # 孔位基础校验：A1-H12
+        if not re.fullmatch(r"[A-H](?:[1-9]|1[0-2])", well, re.I):
+            raise DaanScanParseError(f"第 {line_no} 行 Well 孔位号不合法：{well}。")
+
+        raw = {}
+        for h, i in header_index.items():
+            raw[h] = cols[i] if i < len(cols) else ""
+
+        parsed_rows.append({
+            "well": well.upper(),
+            "sample_name": sample_name,
+            "item": item,
+            "detector": raw.get("Detector", ""),
+            "task": raw.get("Task", ""),
+            "raw": raw,
+        })
+
+    if not parsed_rows:
+        raise DaanScanParseError("达安扫码结果表中没有解析到任何样本行。")
+
+    # 同一 txt 中不允许重复孔位，否则后续落入 96 孔板会覆盖
+    seen_wells = set()
+    duplicate_wells = []
+    for row in parsed_rows:
+        well = row["well"]
+        if well in seen_wells:
+            duplicate_wells.append(well)
+        seen_wells.add(well)
+
+    if duplicate_wells:
+        duplicate_text = ", ".join(sorted(set(duplicate_wells)))
+        raise DaanScanParseError(f"达安扫码结果表存在重复孔位：{duplicate_text}。")
+
+    return {
+        "encoding": encoding_used,
+        "header_row_index": header_row_index,
+        "headers": headers,
+        "rows": parsed_rows,
+    }
+
+
+def Daan_process_result(request):
+
+    # ========== 1. 读取前端基础参数 ==========
+    project_id      = request.POST.get("project_id")
+    project_name = request.POST.get("project_name")
+    platform        = request.POST.get("platform")          
+    injection_plate = request.POST.get("injection_plate") if 'injection_plate' in request.POST else None
+    instrument_num  = request.POST.get("instrument_num")  # 默认上机仪器
+    systerm_num  = request.POST.get("systerm_num")  # 系统号
+    testing_day      = request.POST.get("testing_day") # 检测日期
+
+    # 检测日期
+    if testing_day == "tomorrow":
+        today_str = (timezone.localtime() + timedelta(days=1)).strftime("%Y%m%d")
+        record_date = date.today() + timedelta(days=1)
+    else:
+        testing_day = "today"
+        today_str = timezone.localtime().strftime("%Y%m%d")
+        record_date = date.today()
+
+    # ========== 2. 读取上传文件 ==========
+    # 岗位清单：达安页面上虽然显示“已自动读取”，但仍保留手动上传入口
+    Stationlist = request.FILES.get("station_list")
+    Scanresult = request.FILES.get("scan_result")
+
+    # ── 自动抓取岗位清单 ──
+    station_bytes = None
+    station_auto_name = None
+    if not Stationlist:
+        station_bytes, station_auto_name = _auto_fetch_station_list(today_str)
+
+    # 校验：扫码结果和基础参数必须存在；岗位清单手动或自动二选一
+    station_available = bool(Stationlist) or bool(station_bytes)
+    if not (station_available and Scanresult and project_id and platform and instrument_num):
+        return HttpResponseBadRequest("缺少必要参数或文件。")
+
+    # ========== 3. 解析达安 txt 扫码结果表 ==========
+    try:
+        parsed = _parse_daan_scan_txt(Scanresult)
+    except DaanScanParseError as e:
+        return render(request, "dashboard/error.html", {
+            "message": f"达安扫码结果表解析失败：{str(e)}"
+        })
+    except Exception as e:
+        return render(request, "dashboard/error.html", {
+            "message": f"达安扫码结果表解析出现未知错误：{str(e)}"
+        })
+
+    rows = parsed["rows"]
+
+    # 统计 Item 类型，方便确认 CAS / 标准品 / 阳性对照 / 阴性对照 是否读对
+    item_counter = Counter(row.get("item", "") for row in rows)
+
+    # 预先识别一下定位孔，但这里只做调试展示；正式 96 孔补齐放到第2阶段
+    locator_rows = []
+    plate_no_str = "X1"
+    for row in rows:
+        sample_name = str(row.get("sample_name", "")).strip().upper()
+        m = re.fullmatch(r"X(\d+)", sample_name)
+        if m:
+            locator_rows.append(row)
+            plate_no_str = f"X{int(m.group(1))}"
+            break
+
+    # ========== 5. print 到 runserver 控制台 ==========
+    print("=" * 100)
+    print("[Daan_process_result] 第1阶段调试：接收到前端参数")
+    print(f"[Daan_process_result] project_id       = {project_id}")
+    print(f"[Daan_process_result] project_name     = {project_name}")
+    print(f"[Daan_process_result] platform         = {platform}")
+    print(f"[Daan_process_result] instrument_num   = {instrument_num}")
+    print(f"[Daan_process_result] systerm_num      = {systerm_num}")
+    print(f"[Daan_process_result] injection_plate  = {injection_plate}")
+    print(f"[Daan_process_result] testing_day      = {testing_day}")
+    print(f"[Daan_process_result] today_str        = {today_str}")
+    print(f"[Daan_process_result] record_date      = {record_date}")
+
+    print("[Daan_process_result] 文件状态")
+    print(f"[Daan_process_result] Stationlist manual uploaded = {bool(Stationlist)}")
+    print(f"[Daan_process_result] Stationlist auto name       = {station_auto_name}")
+    print(f"[Daan_process_result] station_available           = {station_available}")
+    print(f"[Daan_process_result] Scanresult name              = {getattr(Scanresult, 'name', '')}")
+
+
+    print("[Daan_process_result] 达安扫码结果表解析成功")
+    print(f"[Daan_process_result] encoding         = {parsed.get('encoding')}")
+    print(f"[Daan_process_result] header_row_index = {parsed.get('header_row_index')}")
+    print(f"[Daan_process_result] headers          = {parsed.get('headers')}")
+    print(f"[Daan_process_result] row_count        = {len(rows)}")
+    print(f"[Daan_process_result] item_counter     = {dict(item_counter)}")
+    print(f"[Daan_process_result] plate_no_str     = {plate_no_str}")
+    print(f"[Daan_process_result] locator_rows     = {locator_rows}")
+
+    print("[Daan_process_result] first_5_rows:")
+    for row in rows[:5]:
+        print(row)
+
+    print("[Daan_process_result] last_5_rows:")
+    for row in rows[-5:]:
+        print(row)
+
+    print("=" * 100)
+
+    # ========== 6. 返回文本到浏览器，方便直接查看/cat ==========
+    lines = []
+    lines.append("达安 Daan_process_result 第1阶段调试结果")
+    lines.append("=" * 80)
+    lines.append("")
+
+    lines.append("[前端参数]")
+    lines.append(f"project_id: {project_id}")
+    lines.append(f"project_name: {project_name}")
+    lines.append(f"platform: {platform}")
+    lines.append(f"instrument_num: {instrument_num}")
+    lines.append(f"systerm_num: {systerm_num}")
+    lines.append(f"injection_plate: {injection_plate}")
+    lines.append(f"testing_day: {testing_day}")
+    lines.append(f"today_str: {today_str}")
+    lines.append(f"record_date: {record_date}")
+    lines.append("")
+
+    lines.append("[文件状态]")
+    lines.append(f"Stationlist manual uploaded: {bool(Stationlist)}")
+    lines.append(f"Stationlist auto name: {station_auto_name}")
+    lines.append(f"station_available: {station_available}")
+    lines.append(f"Scanresult name: {getattr(Scanresult, 'name', '')}")
+    lines.append("")
+
+    lines.append("[达安扫码结果表解析]")
+    lines.append(f"encoding: {parsed.get('encoding')}")
+    lines.append(f"header_row_index: {parsed.get('header_row_index')}")
+    lines.append(f"headers: {parsed.get('headers')}")
+    lines.append(f"row_count: {len(rows)}")
+    lines.append(f"item_counter: {dict(item_counter)}")
+    lines.append(f"plate_no_str: {plate_no_str}")
+    lines.append(f"locator_rows: {locator_rows}")
+    lines.append("")
+
+    lines.append("first_5_rows:")
+    for row in rows[:5]:
+        lines.append(str(row))
+
+    lines.append("")
+    lines.append("last_5_rows:")
+    for row in rows[-5:]:
+        lines.append(str(row))
+
+    return HttpResponse(
+        "\n".join(lines),
+        content_type="text/plain; charset=utf-8"
+    )

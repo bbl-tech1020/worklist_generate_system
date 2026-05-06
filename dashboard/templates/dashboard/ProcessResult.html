@@ -215,32 +215,34 @@
         </table>
 
         <!-- 报错信息表 -->
-        <table class="Table1" id="errortable" cellpadding="4" cellspacing="4" border="1">
-            <thead>
-                <tr>
-                    <th>实验号</th>
-                    <th>条码</th>
-                    <th>板号</th>
-                    <th>孔位</th>
-                    <th>警告级别</th>
-                    <th>警告信息</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for row in p.error_rows %}
-                    {% if row.origin_barcode != 'NOTUBE' and row.origin_barcode != 'No match' and 'X' not in row.origin_barcode %}
-                        <tr>
-                            <td>{{ row.sample_name }}</td>
-                            <td>{{ row.origin_barcode }}</td>
-                            <td>{{ row.plate_no }}</td>
-                            <td>{{ row.well_str }}</td>
-                            <td>{{ row.warn_level }}</td>
-                            <td>{{ row.warn_info }}</td>
-                        </tr>
-                    {% endif %}
-                {% endfor %}
-            </tbody>
-        </table>
+        {% if platform != "Daan" %}
+            <table class="Table1" id="errortable" cellpadding="4" cellspacing="4" border="1">
+                <thead>
+                    <tr>
+                        <th>实验号</th>
+                        <th>条码</th>
+                        <th>板号</th>
+                        <th>孔位</th>
+                        <th>警告级别</th>
+                        <th>警告信息</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in p.error_rows %}
+                        {% if row.origin_barcode != 'NOTUBE' and row.origin_barcode != 'No match' and 'X' not in row.origin_barcode %}
+                            <tr>
+                                <td>{{ row.sample_name }}</td>
+                                <td>{{ row.origin_barcode }}</td>
+                                <td>{{ row.plate_no }}</td>
+                                <td>{{ row.well_str }}</td>
+                                <td>{{ row.warn_level }}</td>
+                                <td>{{ row.warn_info }}</td>
+                            </tr>
+                        {% endif %}
+                    {% endfor %}
+                </tbody>
+            </table>
+        {% endif %}
         
         <!-- 上机列表 -->
         <table class="Table1" id="worklist" cellpadding="4" cellspacing="4" border="1">

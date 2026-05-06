@@ -5731,6 +5731,801 @@ def _parse_daan_scan_txt(uploaded_file) -> dict:
     }
 
 
+def _build_daan_aligned_plate(parsed_rows: list[dict]) -> dict:
+    """
+    将达安 txt 解析结果补齐为 96 孔板结构。
+
+    输入：
+      parsed_rows: _parse_daan_scan_txt(...).get("rows")
+
+    输出：
+      {
+        "Position":       ["A1", "B1", ..., "H12"],
+        "OriginBarcode":  ["X1", "1426218671-01", ..., "NOTUBE"],
+        "CutBarcode":     ["X1", "1426218671", ..., "NOTUBE"],
+        "SubBarcode":     ["", "-01", ..., ""],
+        "Status":         ["", "", ..., "Not used"],
+        "Warm":           ["X1", "", ..., ""],
+        "Item":           ["CAS", "CAS", ..., ""],
+        "plate_no_str":   "X1",
+        "locator_positions": {"A1"},
+        "row_by_well":    {"A1": {...}, ...},
+      }
+
+    已确认规则：
+      1. 达安 txt 只显示已使用孔位，未出现孔位需要补 NOTUBE
+      2. 孔位以 Well 为准
+      3. 定位孔：Sample Name 完整匹配 X数字
+      4. 找不到定位孔时，板号默认 X1
+      5. 当前暂按单板处理
+    """
+    if not parsed_rows:
+        raise DaanScanParseError("达安扫码结果为空，无法补齐 96 孔板。")
+
+    letters = list("ABCDEFGH")
+    nums = [str(i) for i in range(1, 13)]
+    expected_positions = [f"{row}{col}" for col in nums for row in letters]
+    # 注意：这里是列优先顺序：
+    # A1,B1,C1,...H1,A2,B2,...H12
+    # 因为达安样例 txt 本身也是 A1,B1,C1...H1,A2... 的顺序。
+    # 后续落工作清单时仍然会按 well 精确落格，不依赖这一顺序。
+
+    row_by_well = {}
+    for row in parsed_rows:
+        well = str(row.get("well", "")).strip().upper()
+        if not well:
+            continue
+        row_by_well[well] = row
+
+    Position = []
+    OriginBarcode = []
+    CutBarcode = []
+    SubBarcode = []
+    Status = []
+    Warm = []
+    Item = []
+
+    locator_positions = set()
+    plate_no_str = "X1"
+
+    # 先扫描定位孔。只识别完整 X数字，例如 X1、X2、X12
+    for row in parsed_rows:
+        sample_name = str(row.get("sample_name", "")).strip().upper()
+        m = re.fullmatch(r"X(\d+)", sample_name)
+        if m:
+            well = str(row.get("well", "")).strip().upper()
+            locator_positions.add(well)
+            plate_no_str = f"X{int(m.group(1))}"
+            break
+
+    for well in expected_positions:
+        row = row_by_well.get(well)
+
+        if row:
+            origin = str(row.get("sample_name", "")).strip()
+            item = str(row.get("item", "")).strip()
+            status = ""
+        else:
+            origin = ""
+            item = ""
+            status = "Not used"
+
+        # 条码切割：1426218671-01 -> 1426218671 / -01
+        # NOTUBE -> NOTUBE / ""
+        if origin.upper() == "NOTUBE":
+            cut = "NOTUBE"
+            sub = ""
+        else:
+            parts = origin.split("-", 1)
+            cut = parts[0]
+            sub = "-" + parts[1] if len(parts) == 2 else ""
+
+        # Warm 字段用于兼容后续 NIMBUS 风格工作清单结构。
+        # 达安没有 Warm 列，定位孔位置写入 Xn，其余为空。
+        warm = plate_no_str if well in locator_positions else ""
+
+        Position.append(well)
+        OriginBarcode.append(origin)
+        CutBarcode.append(cut)
+        SubBarcode.append(sub)
+        Status.append(status)
+        Warm.append(warm)
+        Item.append(item)
+
+    return {
+        "Position": Position,
+        "OriginBarcode": OriginBarcode,
+        "CutBarcode": CutBarcode,
+        "SubBarcode": SubBarcode,
+        "Status": Status,
+        "Warm": Warm,
+        "Item": Item,
+        "plate_no_str": plate_no_str,
+        "locator_positions": locator_positions,
+        "row_by_well": row_by_well,
+    }
+
+
+def _build_station_barcode_map_for_daan(Stationlist, station_bytes=None) -> tuple[defaultdict, dict]:
+    """
+    读取岗位清单，构建 条码 -> 实验号列表 的映射。
+
+    达安当前沿用 NIMBUS 的岗位清单匹配逻辑：
+      - 如果岗位清单中有“子条码”列，优先用子条码匹配
+      - 否则使用“主条码”列匹配
+      - 实验号列固定为“实验号”
+
+    返回：
+      (
+        barcode_to_names,
+        meta
+      )
+
+    barcode_to_names 示例：
+      {
+        "1426218671-01": ["AD12345"],
+        "1426218671": ["AD12345"],
+      }
+
+    meta 示例：
+      {
+        "use_sub_barcode": True,
+        "key_column": "子条码",
+        "sample_column": "实验号",
+        "row_count": 123,
+      }
+    """
+    if Stationlist:
+        Stationlist.seek(0)
+        station_table = xlrd.open_workbook(filename=None, file_contents=Stationlist.read())
+        try:
+            Stationlist.seek(0)
+        except Exception:
+            pass
+    elif station_bytes:
+        station_table = xlrd.open_workbook(filename=None, file_contents=station_bytes)
+    else:
+        raise DaanScanParseError("未检测到岗位清单，无法进行临床样本匹配。")
+
+    st_sheet = station_table.sheets()[0]
+    st_nrows = st_sheet.nrows
+    st_ncols = st_sheet.ncols
+
+    if st_nrows < 2:
+        raise DaanScanParseError("岗位清单内容为空或缺少数据行。")
+
+    st_header = [str(st_sheet.row_values(0)[i]).strip() for i in range(st_ncols)]
+    st_index = {col: idx for idx, col in enumerate(st_header)}
+
+    if "实验号" not in st_index:
+        raise DaanScanParseError("岗位清单缺少必要列：实验号。")
+
+    use_sub_barcode = "子条码" in st_index
+
+    if use_sub_barcode:
+        key_col = "子条码"
+    elif "主条码" in st_index:
+        key_col = "主条码"
+    else:
+        raise DaanScanParseError("岗位清单缺少必要列：主条码 或 子条码。")
+
+    KEY_IDX = st_index[key_col]
+    SN_IDX = st_index["实验号"]
+
+    barcode_to_names = defaultdict(list)
+
+    for i in range(1, st_nrows):
+        bc = str(st_sheet.row_values(i)[KEY_IDX]).strip()
+        sn = str(st_sheet.row_values(i)[SN_IDX]).strip()
+
+        if not bc or not sn:
+            continue
+
+        # xlrd 有时会把纯数字读成 1426218671.0，这里转成整数样式字符串
+        if re.fullmatch(r"\d+\.0", bc):
+            bc = bc[:-2]
+
+        if re.fullmatch(r"\d+\.0", sn):
+            sn = sn[:-2]
+
+        barcode_to_names[bc].append(sn)
+
+    meta = {
+        "use_sub_barcode": use_sub_barcode,
+        "key_column": key_col,
+        "sample_column": "实验号",
+        "row_count": st_nrows - 1,
+        "map_count": len(barcode_to_names),
+        "headers": st_header,
+    }
+
+    return barcode_to_names, meta
+
+
+def _match_daan_aligned_samples(
+    aligned: dict,
+    barcode_to_names: dict,
+    df_mapping_wc: pd.DataFrame,
+) -> dict:
+    """
+    对达安 96 孔 aligned 数据做样本匹配。
+
+    规则：
+      1. 定位孔：OriginBarcode 完整匹配 X数字，保留 Xn
+      2. 空孔：OriginBarcode == NOTUBE，显示为空
+      3. 曲线：Item == 标准品，通过 mapping_file 工作清单 sheet 的 Barcode -> Name 映射
+      4. 质控：Item == 阳性对照 / 阴性对照，通过 mapping_file 工作清单 sheet 的 Barcode -> Name 映射
+      5. 临床样本：用岗位清单 barcode_to_names 匹配实验号
+         - 岗位清单用子条码时，优先用完整 OriginBarcode 匹配
+         - 岗位清单用主条码时，传进来的 barcode_to_names 本身已决定 key；这里同时尝试 OriginBarcode 和 CutBarcode
+      6. 未匹配临床样本：No match
+    """
+    Position = aligned["Position"]
+    OriginBarcode = aligned["OriginBarcode"]
+    CutBarcode = aligned["CutBarcode"]
+    SubBarcode = aligned["SubBarcode"]
+    Item = aligned["Item"]
+    locator_positions = aligned["locator_positions"]
+
+    # mapping_file 工作清单：Barcode -> Name
+    required_cols = {"Barcode", "Name"}
+    missing_cols = required_cols - set(df_mapping_wc.columns)
+    if missing_cols:
+        raise DaanScanParseError(
+            f"mapping_file 的“工作清单”sheet 缺少必要列：{', '.join(sorted(missing_cols))}。"
+        )
+
+    barcode_to_name = dict(
+        zip(
+            df_mapping_wc["Barcode"].astype(str).str.strip(),
+            df_mapping_wc["Name"].astype(str).str.strip(),
+        )
+    )
+
+    MatchSampleName = []
+    MatchResult = []
+    DupBarcode = []
+    DupBarcodeSampleName = []
+
+    debug_rows = []
+
+    for idx, well in enumerate(Position):
+        origin = str(OriginBarcode[idx]).strip()
+        cut = str(CutBarcode[idx]).strip()
+        sub = str(SubBarcode[idx]).strip()
+        item = str(Item[idx]).strip()
+
+        origin_upper = origin.upper()
+
+        match_sample = ""
+        match_result = ""
+        dup_barcode = ""
+        dup_barcode_sample = ""
+        match_source = ""
+
+        # 1. 空孔
+        if origin_upper in ("", "NOTUBE", "NAN"):
+            match_sample = ""
+            match_result = "EMPTY"
+            match_source = "empty"
+
+        # 2. 定位孔：完整 X数字
+        elif re.fullmatch(r"X\d+", origin_upper):
+            match_sample = origin_upper
+            match_result = "TRUE"
+            match_source = "locator"
+
+        # 3. 曲线 / 质控：按 Item 判断，再用 mapping_file Barcode -> Name
+        elif item == "标准品" or item in ("阳性对照", "阴性对照"):
+            match_sample = barcode_to_name.get(origin, origin)
+            match_result = "TRUE" if origin in barcode_to_name else "FALSE"
+            match_source = "mapping_std_qc" if origin in barcode_to_name else "mapping_missing"
+
+        # 4. 临床样本：岗位清单匹配
+        else:
+            # 达安扫码表中临床样本通常带 -01/-02，所以先用完整条码查；
+            # 查不到再用 cut 主条码查，兼容岗位清单只有主条码的情况。
+            matched_names = barcode_to_names.get(origin)
+            match_key = origin
+
+            if not matched_names and cut and cut != origin:
+                matched_names = barcode_to_names.get(cut)
+                match_key = cut
+
+            if not matched_names:
+                matched_names = []
+
+            if len(matched_names) == 1:
+                match_sample = matched_names[0]
+                match_result = "TRUE"
+                match_source = f"station:{match_key}"
+
+            elif len(matched_names) == 0:
+                match_sample = "No match"
+                match_result = "FALSE"
+                match_source = "station_no_match"
+
+            elif len(matched_names) == 2:
+                match_result = "TRUE"
+                if matched_names[0] == matched_names[1]:
+                    match_sample = matched_names[0]
+                    dup_barcode = "Likely"
+                    match_source = f"station_dup_likely:{match_key}"
+                else:
+                    match_sample = matched_names[0] + "-" + matched_names[1]
+                    dup_barcode = "TRUE"
+                    dup_barcode_sample = "TRUE"
+                    match_source = f"station_dup_true:{match_key}"
+
+            else:
+                unique_names = list(dict.fromkeys(matched_names))
+                match_result = "TRUE"
+
+                if len(unique_names) >= 2:
+                    match_sample = "-".join(unique_names)
+                    dup_barcode = "TRUE"
+                    dup_barcode_sample = "TRUE"
+                    match_source = f"station_multi:{match_key}"
+                else:
+                    match_sample = unique_names[0]
+                    match_source = f"station_multi_same:{match_key}"
+
+        MatchSampleName.append(match_sample)
+        MatchResult.append(match_result)
+        DupBarcode.append(dup_barcode)
+        DupBarcodeSampleName.append(dup_barcode_sample)
+
+        debug_rows.append({
+            "well": well,
+            "origin": origin,
+            "cut": cut,
+            "sub": sub,
+            "item": item,
+            "match_sample": match_sample,
+            "match_result": match_result,
+            "match_source": match_source,
+            "dup_barcode": dup_barcode,
+            "dup_barcode_sample": dup_barcode_sample,
+            "is_locator": well in locator_positions,
+        })
+
+    return {
+        "MatchSampleName": MatchSampleName,
+        "MatchResult": MatchResult,
+        "DupBarcode": DupBarcode,
+        "DupBarcodeSampleName": DupBarcodeSampleName,
+        "debug_rows": debug_rows,
+        "barcode_to_name": barcode_to_name,
+    }
+
+
+
+def _build_daan_worksheet_table(aligned: dict, matched: dict) -> list:
+    """
+    根据达安 aligned + matched 结果生成页面展示用 worksheet_table。
+
+    仅生成工作清单 96 孔表格：
+      - 不生成上机列表
+      - 不生成 error_rows
+      - 不写 session
+      - 不导出文件
+
+    返回结构与 ProcessResult.html / export_pdf.html 使用的 worksheet_table 保持一致：
+      worksheet_table = [
+        [A1, A2, ..., A12],
+        [B1, B2, ..., B12],
+        ...
+        [H1, H2, ..., H12],
+      ]
+
+    注意：
+      aligned 的 Position 是列优先：
+        A1,B1,...H1,A2,B2,...H12
+      但 worksheet_table 需要按页面表格结构组织：
+        第1行 A1-A12
+        第2行 B1-B12
+        ...
+    """
+    Position = aligned["Position"]
+    OriginBarcode = aligned["OriginBarcode"]
+    CutBarcode = aligned["CutBarcode"]
+    SubBarcode = aligned["SubBarcode"]
+    Status = aligned["Status"]
+    Warm = aligned["Warm"]
+    Item = aligned["Item"]
+    locator_positions = aligned["locator_positions"]
+
+    MatchSampleName = matched["MatchSampleName"]
+    MatchResult = matched["MatchResult"]
+    DupBarcode = matched["DupBarcode"]
+    DupBarcodeSampleName = matched["DupBarcodeSampleName"]
+
+    letters = list("ABCDEFGH")
+    nums = [str(i) for i in range(1, 13)]
+
+    # 先建 well -> data_idx，确保完全以 Well 为准
+    well_to_idx = {
+        str(well).strip().upper(): idx
+        for idx, well in enumerate(Position)
+    }
+
+    worksheet_table = []
+
+    for row_idx, row_letter in enumerate(letters):
+        row_cells = []
+
+        for col_idx, col_num in enumerate(nums):
+            well_str = f"{row_letter}{col_num}"
+            data_idx = well_to_idx.get(well_str)
+
+            if data_idx is None:
+                # 理论上不会发生，因为 aligned 已补齐 96 孔
+                origin_barcode = ""
+                cut_barcode = ""
+                sub_barcode = ""
+                item = ""
+                warm = ""
+                status = "Not used"
+                match_sample = ""
+                match_result = "EMPTY"
+                dup_barcode = ""
+                dup_barcode_sample = ""
+                is_locator = False
+            else:
+                origin_barcode = OriginBarcode[data_idx]
+                cut_barcode = CutBarcode[data_idx]
+                sub_barcode = SubBarcode[data_idx]
+                item = Item[data_idx]
+                warm = Warm[data_idx]
+                status = Status[data_idx]
+                match_sample = MatchSampleName[data_idx]
+                match_result = MatchResult[data_idx]
+                dup_barcode = DupBarcode[data_idx]
+                dup_barcode_sample = DupBarcodeSampleName[data_idx]
+                is_locator = well_str in locator_positions
+
+            well_index = row_idx * 12 + int(col_num)
+
+            cell = {
+                "letter": row_letter,
+                "num": col_num,
+                "well_str": well_str,
+                "index": well_index,
+
+                # 定位孔
+                "locator": is_locator,
+                "locator_warm": warm if is_locator else "",
+
+                # 页面核心显示
+                "match_sample": match_sample,
+
+                # 条码信息
+                "cut_barcode": cut_barcode,
+                "sub_barcode": sub_barcode,
+                "origin_barcode": origin_barcode,
+
+                # 兼容模板字段
+                "warm": warm,
+                "status": status,
+                "dup_barcode": dup_barcode,
+                "dup_barcode_sample": dup_barcode_sample,
+
+                # 达安专用调试字段，模板不一定显示，但后续排查很有用
+                "item": item,
+                "match_result": match_result,
+            }
+
+            row_cells.append(cell)
+
+        worksheet_table.append(row_cells)
+
+    return worksheet_table
+
+
+def _build_daan_worklist_records(
+    *,
+    aligned: dict,
+    matched: dict,
+    config,
+    df_worklistmap: pd.DataFrame,
+    df_template: pd.DataFrame,
+    instrument_name: str,
+    injection_plate: str,
+    injection_vol: str,
+    instrument_num: str,
+    systerm_num: str,
+    project_name: str,
+    today_str: str,
+) -> tuple[list[dict], list[str], dict]:
+    """
+    生成达安上机列表 worklist_records。
+
+    当前规则：
+      1. 上机列表顺序：
+         DB1 / Test / DB2 / STD / DB3 / QC / DB4 / 临床样本 / QC / DB5
+      2. Test 数量来自 SamplingConfiguration.test_count
+      3. STD/QC 顺序按达安 txt 中出现顺序
+      4. 每个样本孔位来自 txt 的 Well
+      5. injection_plate：
+         - 有值时：
+           Well_Number   -> injection_plate:孔号
+           Well_Position -> injection_plate-孔位
+         - 无值时：
+           Well_Number   -> 孔号
+           Well_Position -> 孔位
+      6. 当前只构造 records，不写 session、不导出。
+    """
+    Position = aligned["Position"]
+    OriginBarcode = aligned["OriginBarcode"]
+    Item = aligned["Item"]
+
+    MatchSampleName = matched["MatchSampleName"]
+    DupBarcode = matched["DupBarcode"]
+    DupBarcodeSampleName = matched["DupBarcodeSampleName"]
+
+    txt_headers = df_template.columns.tolist()
+
+    if not txt_headers:
+        raise DaanScanParseError("上机模板为空，无法生成上机列表。")
+
+    # 清洗映射表列名
+    df_worklistmap = df_worklistmap.copy()
+    df_worklistmap.columns = [str(c).strip() for c in df_worklistmap.columns]
+
+    # ========== 1. 基础工具函数 ==========
+    def _safe_int(v, default=0):
+        try:
+            if v is None or str(v).strip() == "":
+                return default
+            return int(float(v))
+        except Exception:
+            return default
+
+    def _well_number_rowwise(well: str) -> int:
+        """
+        A1=1, A2=2, ..., A12=12,
+        B1=13, ..., H12=96
+        """
+        s = str(well or "").strip().upper()
+        m = re.fullmatch(r"([A-H])([1-9]|1[0-2])", s)
+        if not m:
+            return 1
+        row_letter = m.group(1)
+        col_num = int(m.group(2))
+        row_idx = ord(row_letter) - ord("A")
+        return row_idx * 12 + col_num
+
+    def _format_vialpos(well: str, mode: str):
+        """
+        mode:
+          - {{Well_Number}}
+          - {{Well_Position}}
+        """
+        well = str(well or "").strip().upper()
+        well_no = _well_number_rowwise(well)
+
+        if mode == "{{Well_Number}}":
+            return f"{injection_plate}:{well_no}" if injection_plate else well_no
+        else:
+            return f"{injection_plate}-{well}" if injection_plate else well
+
+    # ========== 2. 构建 sample_name -> well 队列 ==========
+    # 注意：同一个 match_sample 可能出现多次，因此用 deque。
+    name_to_wells = defaultdict(deque)
+
+    # 临床样本列表，按达安 txt 出现顺序
+    clinical_samples = []
+
+    # STD/QC 列表，按达安 txt 出现顺序
+    std_samples = []
+    qc_samples = []
+
+    # 定位孔 X 行
+    locator_samples = []
+
+    for idx, well in enumerate(Position):
+        origin = str(OriginBarcode[idx]).strip()
+        item = str(Item[idx]).strip()
+        match_sample = str(MatchSampleName[idx]).strip()
+
+        if not match_sample:
+            continue
+
+        if origin.upper() in ("", "NOTUBE", "NAN"):
+            continue
+
+        # 记录孔位映射。STD/QC/临床都需要通过最终名称找孔位。
+        name_to_wells[match_sample].append(well)
+
+        # 定位孔
+        if re.fullmatch(r"X\d+", origin.upper()):
+            locator_samples.append(match_sample)
+            continue
+
+        # STD/QC
+        if item == "标准品":
+            std_samples.append(match_sample)
+            continue
+
+        if item in ("阳性对照", "阴性对照"):
+            qc_samples.append(match_sample)
+            continue
+
+        # 临床样本
+        clinical_samples.append(match_sample)
+
+    # 去除 STD/QC/定位孔的重复项，但保持顺序
+    def _dedup_keep_order(seq):
+        return list(dict.fromkeys([str(x).strip() for x in seq if str(x).strip()]))
+
+    std_samples = _dedup_keep_order(std_samples)
+    qc_samples = _dedup_keep_order(qc_samples)
+    locator_samples = _dedup_keep_order(locator_samples)
+
+    # 临床样本一般不建议去重；共血/多血时需要保留多行。
+    clinical_samples = [s for s in clinical_samples if s]
+
+    # ========== 3. 生成上机列表第一列顺序 ==========
+    test_count = _safe_int(getattr(config, "test_count", 0), 0)
+
+    test_list = ["DB1"] + [f"Test{i}" for i in range(test_count)]
+    curve_list = ["DB2"] + std_samples
+    qc_list1 = ["DB3"] + qc_samples + ["DB4"]
+    qc_list2 = qc_samples + ["DB5"]
+
+    sample_name_list = test_list + curve_list + qc_list1 + locator_samples + clinical_samples + qc_list2
+
+    # 过滤异常长连接项，保持 NIMBUS 的保护逻辑
+    sample_name_list = [
+        name for name in sample_name_list
+        if isinstance(name, str) and name.count("-") <= 3
+    ]
+
+    # ========== 4. 创建 worklist_table ==========
+    worklist_table = pd.DataFrame(columns=txt_headers)
+    first_col = worklist_table.columns[0]
+    worklist_table[first_col] = sample_name_list
+
+    # 记录需要镜像第一列的列
+    mirror_cols = set()
+
+    # ========== 5. 按 mapping_file 的“上机列表”sheet 填充 ==========
+    for _, map_row in df_worklistmap.iterrows():
+        sample_key = str(map_row.iloc[0]).strip()
+        fill_vals = map_row.iloc[1:]
+
+        def fill_cols(mask):
+            for col, val in zip(worklist_table.columns[1:], fill_vals.values):
+                val = "" if pd.isna(val) else str(val).strip()
+
+                if val == "*":
+                    mirror_cols.add(col)
+                    continue
+
+                if col in ("SmplInjVol", "Injection volume"):
+                    continue
+
+                if col in ("VialPos", "Vial position", "样品瓶"):
+                    def _resolve_vialpos(sample_name_value):
+                        sample_name_value = str(sample_name_value).strip()
+
+                        # 如果该样本在达安 txt 中有孔位，使用 txt Well
+                        wells_q = name_to_wells.get(sample_name_value)
+                        if wells_q:
+                            well = wells_q.popleft()
+                            if val in ("{{Well_Number}}", "{{Well_Position}}"):
+                                return _format_vialpos(well, val)
+                            return val
+
+                        # DB/Test 等没有实际孔位的项：沿用 NIMBUS 兜底 A1/1
+                        if val in ("{{Well_Number}}", "{{Well_Position}}"):
+                            if val == "{{Well_Number}}":
+                                return f"{injection_plate}:1" if injection_plate else "1"
+                            return f"{injection_plate}-A1" if injection_plate else "A1"
+
+                        return val
+
+                    worklist_table.loc[mask, col] = worklist_table.loc[mask, first_col].apply(_resolve_vialpos)
+
+                else:
+                    worklist_table.loc[mask, col] = val
+
+        if sample_key == "DB*":
+            mask = worklist_table[first_col].astype(str).str.startswith("DB", na=False)
+            fill_cols(mask)
+
+        elif sample_key.startswith("DB"):
+            mask = worklist_table[first_col].astype(str) == sample_key
+            fill_cols(mask)
+
+        elif sample_key == "Test*":
+            mask = worklist_table[first_col].astype(str).str.startswith("Test", na=False)
+            fill_cols(mask)
+
+        elif sample_key.startswith("Test"):
+            mask = worklist_table[first_col].astype(str) == sample_key
+            fill_cols(mask)
+
+        elif sample_key == "STD*":
+            mask = worklist_table[first_col].astype(str).str.startswith("STD", na=False)
+            fill_cols(mask)
+
+        elif sample_key.startswith("STD"):
+            mask = worklist_table[first_col].astype(str) == sample_key
+            fill_cols(mask)
+
+        elif sample_key == "QC*":
+            # 兼容 mapping_file 中存在 QC* 行的情况
+            mask = worklist_table[first_col].astype(str).str.startswith("QC", na=False)
+            fill_cols(mask)
+
+        elif sample_key.startswith("QC"):
+            # 兼容具体 QC 名称或 QC 前缀
+            mask = worklist_table[first_col].astype(str) == sample_key
+            fill_cols(mask)
+
+        elif sample_key == "*":
+            # 默认行：填充还未被填过的行
+            # 使用第二列是否为空作为判断，与 NIMBUS 逻辑一致
+            if len(worklist_table.columns) > 1:
+                mask = worklist_table.iloc[:, 1].isna()
+            else:
+                mask = pd.Series([False] * len(worklist_table), index=worklist_table.index)
+            fill_cols(mask)
+
+    # ========== 6. SetName / OutputFile ==========
+    year = today_str[:4]
+    yearmonth = today_str[:6]
+
+    # 当前阶段没有导出文件，但先按 NIMBUS 规则生成字段值，便于页面验证
+    setname = f"{instrument_num}_{systerm_num}_{project_name}_{today_str}_{aligned['plate_no_str']}_GZ"
+    output_val = f"{year}\\{yearmonth}\\Data{setname}"
+
+    if "SetName" in worklist_table.columns:
+        worklist_table["SetName"] = setname
+
+    if "OutputFile" in worklist_table.columns:
+        worklist_table["OutputFile"] = output_val
+
+    # ========== 7. 镜像列 ==========
+    if mirror_cols:
+        first_col_name = worklist_table.columns[0]
+        for col in mirror_cols:
+            worklist_table[col] = worklist_table[first_col_name]
+
+    # ========== 8. 进样体积 ==========
+    for col in ["SmplInjVol", "Injection volume"]:
+        if col in worklist_table.columns:
+            worklist_table[col] = injection_vol
+
+    # ========== 9. 进样盘字段 ==========
+    if "PlatePos" in worklist_table.columns:
+        worklist_table["PlatePos"] = injection_plate
+
+    # ========== 10. 清理 NaN，输出 records ==========
+    worklist_table = worklist_table.fillna("")
+
+    # VialPos 这类列可能出现数字，统一转字符串，避免页面/导出时变成 1.0
+    for col in ["VialPos", "Vial position", "样品瓶"]:
+        if col in worklist_table.columns:
+            worklist_table[col] = worklist_table[col].map(lambda x: "" if pd.isna(x) else str(x).replace(".0", ""))
+
+    worklist_records = worklist_table.to_dict(orient="records")
+
+    debug_info = {
+        "sample_name_list": sample_name_list,
+        "test_list": test_list,
+        "std_samples": std_samples,
+        "qc_samples": qc_samples,
+        "locator_samples": locator_samples,
+        "clinical_samples_first_20": clinical_samples[:20],
+        "clinical_count": len(clinical_samples),
+        "txt_headers": txt_headers,
+        "first_col": first_col,
+    }
+
+    return worklist_records, txt_headers, debug_info
+
 def Daan_process_result(request):
 
     # ========== 1. 读取前端基础参数 ==========
@@ -5767,118 +6562,211 @@ def Daan_process_result(request):
     if not (station_available and Scanresult and project_id and platform and instrument_num):
         return HttpResponseBadRequest("缺少必要参数或文件。")
 
-    # ========== 3. 解析达安 txt 扫码结果表 ==========
+    # ========== 3. 读取项目配置和 mapping_file ==========
     try:
-        parsed = _parse_daan_scan_txt(Scanresult)
+        config = SamplingConfiguration.objects.get(
+            project_name=project_name,
+            default_upload_instrument=instrument_num,
+            systerm_num=systerm_num,
+        )
+    except SamplingConfiguration.DoesNotExist:
+        return render(request, "dashboard/error.html", {
+            "message": "未配置项目参数，请前往后台参数配置中完善该项目设置后重试。"
+        })
+
+    project_name = config.project_name
+    project_name_full = config.project_name_full
+
+    if not config.mapping_file:
+        return render(request, "dashboard/error.html", {
+            "message": "当前项目未配置 mapping_file，请前往后台参数配置中上传。"
+        })
+
+    try:
+        mapping_path = config.mapping_file.path
+        df_mapping_wc = pd.read_excel(mapping_path, sheet_name="工作清单")
+        df_worklistmap = pd.read_excel(mapping_path, sheet_name="上机列表")
+    except Exception as e:
+        return render(request, "dashboard/error.html", {
+            "message": f"读取 mapping_file 的“工作清单”sheet 失败：{str(e)}"
+        })
+
+    # ========== 4. 解析岗位清单 ==========
+    try:
+        barcode_to_names, station_meta = _build_station_barcode_map_for_daan(
+            Stationlist=Stationlist,
+            station_bytes=station_bytes,
+        )
     except DaanScanParseError as e:
         return render(request, "dashboard/error.html", {
-            "message": f"达安扫码结果表解析失败：{str(e)}"
+            "message": f"岗位清单解析失败：{str(e)}"
         })
     except Exception as e:
         return render(request, "dashboard/error.html", {
-            "message": f"达安扫码结果表解析出现未知错误：{str(e)}"
+            "message": f"岗位清单解析出现未知错误：{str(e)}"
+        })
+
+     # ========== 5 读取仪器配置和上机模板 ==========
+    try:
+        instrument_config = InstrumentConfiguration.objects.get(
+            instrument_num=instrument_num,
+            systerm_num=systerm_num,
+        )
+    except InstrumentConfiguration.DoesNotExist:
+        return render(request, "dashboard/error.html", {
+            "message": "未配置仪器厂家参数，请前往后台参数配置中完善设置后重试。"
+        })
+
+    instrument_name = instrument_config.instrument_name
+
+    if not instrument_config.upload_file:
+        return render(request, "dashboard/error.html", {
+            "message": "未设置该上机仪器对应的上机模板，请设置后再试。"
+        })
+
+    ext = os.path.splitext(instrument_config.upload_file.name)[1].lower()
+    if ext not in (".txt", ".csv"):
+        return render(request, "dashboard/error.html", {
+            "message": f"仅支持 .txt 或 .csv 上机模板，当前为：{ext}"
+        })
+
+    try:
+        with instrument_config.upload_file.open("rb") as f:
+            raw = f.read()
+
+        template_text = None
+        for enc in ("utf-8", "utf-8-sig", "gb18030", "gbk"):
+            try:
+                template_text = raw.decode(enc)
+                break
+            except UnicodeDecodeError:
+                continue
+
+        if template_text is None:
+            template_text = raw.decode("utf-8", errors="replace")
+
+        df_template = pd.read_csv(StringIO(template_text), sep=None, engine="python", dtype=str)
+
+    except Exception as e:
+        return render(request, "dashboard/error.html", {
+            "message": f"读取上机模板失败：{str(e)}"
+        })
+
+    # ========== 5- 读取进样体积 ==========
+    try:
+        injection_cfg = InjectionVolumeConfiguration.objects.get(
+            project_name=project_name,
+            instrument_num=instrument_num,
+            systerm_num=systerm_num,
+        )
+        injection_vol = injection_cfg.injection_volume
+    except InjectionVolumeConfiguration.DoesNotExist:
+        injection_vol = ""
+
+    # ========== 6. 解析达安 txt + 补齐 96 孔 + 样本匹配 + 生成 worksheet_table ==========
+    try:
+        parsed = _parse_daan_scan_txt(Scanresult)
+        aligned = _build_daan_aligned_plate(parsed["rows"])
+        matched = _match_daan_aligned_samples(
+            aligned=aligned,
+            barcode_to_names=barcode_to_names,
+            df_mapping_wc=df_mapping_wc,
+        )
+        worksheet_table = _build_daan_worksheet_table(
+            aligned=aligned,
+            matched=matched,
+        )
+    except DaanScanParseError as e:
+        return render(request, "dashboard/error.html", {
+            "message": f"达安扫码结果表处理失败：{str(e)}"
+        })
+    except Exception as e:
+        return render(request, "dashboard/error.html", {
+            "message": f"达安扫码结果表处理出现未知错误：{str(e)}"
         })
 
     rows = parsed["rows"]
-
-    # 统计 Item 类型，方便确认 CAS / 标准品 / 阳性对照 / 阴性对照 是否读对
     item_counter = Counter(row.get("item", "") for row in rows)
 
-    # 预先识别一下定位孔，但这里只做调试展示；正式 96 孔补齐放到第2阶段
-    locator_rows = []
-    plate_no_str = "X1"
-    for row in rows:
-        sample_name = str(row.get("sample_name", "")).strip().upper()
-        m = re.fullmatch(r"X(\d+)", sample_name)
-        if m:
-            locator_rows.append(row)
-            plate_no_str = f"X{int(m.group(1))}"
-            break
+    Position = aligned["Position"]
+    OriginBarcode = aligned["OriginBarcode"]
+    Item = aligned["Item"]
+    plate_no_str = aligned["plate_no_str"]
+    locator_positions = aligned["locator_positions"]
 
-    # ========== 5. print 到 runserver 控制台 ==========
-    print("=" * 100)
-    print("[Daan_process_result] 第1阶段调试：接收到前端参数")
-    print(f"[Daan_process_result] project_id       = {project_id}")
-    print(f"[Daan_process_result] project_name     = {project_name}")
-    print(f"[Daan_process_result] platform         = {platform}")
-    print(f"[Daan_process_result] instrument_num   = {instrument_num}")
-    print(f"[Daan_process_result] systerm_num      = {systerm_num}")
-    print(f"[Daan_process_result] injection_plate  = {injection_plate}")
-    print(f"[Daan_process_result] testing_day      = {testing_day}")
-    print(f"[Daan_process_result] today_str        = {today_str}")
-    print(f"[Daan_process_result] record_date      = {record_date}")
+    debug_rows = matched["debug_rows"]
 
-    print("[Daan_process_result] 文件状态")
-    print(f"[Daan_process_result] Stationlist manual uploaded = {bool(Stationlist)}")
-    print(f"[Daan_process_result] Stationlist auto name       = {station_auto_name}")
-    print(f"[Daan_process_result] station_available           = {station_available}")
-    print(f"[Daan_process_result] Scanresult name              = {getattr(Scanresult, 'name', '')}")
+    # ========== 7. 达安不生成报错信息表 ==========
+    error_rows = []
 
+    # ========== 8. 生成上机列表 worklist_records，但当前阶段不写 session、不导出 ==========
+    try:
+        worklist_records, txt_headers = _build_daan_worklist_records(
+            aligned=aligned,
+            matched=matched,
+            config=config,
+            df_worklistmap=df_worklistmap,
+            df_template=df_template,
+            instrument_name=instrument_name,
+            injection_plate=injection_plate,
+            injection_vol=injection_vol,
+            instrument_num=instrument_num,
+            systerm_num=systerm_num,
+            project_name=project_name,
+            today_str=today_str,
+        )
+    except DaanScanParseError as e:
+        return render(request, "dashboard/error.html", {
+            "message": f"达安上机列表生成失败：{str(e)}"
+        })
+    except Exception as e:
+        return render(request, "dashboard/error.html", {
+            "message": f"达安上机列表生成出现未知错误：{str(e)}"
+        })
 
-    print("[Daan_process_result] 达安扫码结果表解析成功")
-    print(f"[Daan_process_result] encoding         = {parsed.get('encoding')}")
-    print(f"[Daan_process_result] header_row_index = {parsed.get('header_row_index')}")
-    print(f"[Daan_process_result] headers          = {parsed.get('headers')}")
-    print(f"[Daan_process_result] row_count        = {len(rows)}")
-    print(f"[Daan_process_result] item_counter     = {dict(item_counter)}")
-    print(f"[Daan_process_result] plate_no_str     = {plate_no_str}")
-    print(f"[Daan_process_result] locator_rows     = {locator_rows}")
+    plate_payload = {
+        "project_name": project_name,
+        "project_name_full": project_name_full,
+        "instrument_num": instrument_num,
+        "systerm_num": systerm_num,
+        "plate_no": aligned["plate_no_str"],
+        "platform": platform,
+        "today_str": today_str,
+        "testing_day": testing_day,
 
-    print("[Daan_process_result] first_5_rows:")
-    for row in rows[:5]:
-        print(row)
+        "worksheet_table": worksheet_table,
+        "error_rows": error_rows,
+        "txt_headers": txt_headers,
+        "worklist_records": worklist_records,
+        "header": header_meta,
 
-    print("[Daan_process_result] last_5_rows:")
-    for row in rows[-5:]:
-        print(row)
+        # 调试信息：当前阶段方便在模板或后续 print 中检查
+        "station_meta": station_meta,
+    }
 
-    print("=" * 100)
+    plates_payload = [plate_payload]
 
-    # ========== 6. 返回文本到浏览器，方便直接查看/cat ==========
-    lines = []
-    lines.append("达安 Daan_process_result 第1阶段调试结果")
-    lines.append("=" * 80)
-    lines.append("")
-
-    lines.append("[前端参数]")
-    lines.append(f"project_id: {project_id}")
-    lines.append(f"project_name: {project_name}")
-    lines.append(f"platform: {platform}")
-    lines.append(f"instrument_num: {instrument_num}")
-    lines.append(f"systerm_num: {systerm_num}")
-    lines.append(f"injection_plate: {injection_plate}")
-    lines.append(f"testing_day: {testing_day}")
-    lines.append(f"today_str: {today_str}")
-    lines.append(f"record_date: {record_date}")
-    lines.append("")
-
-    lines.append("[文件状态]")
-    lines.append(f"Stationlist manual uploaded: {bool(Stationlist)}")
-    lines.append(f"Stationlist auto name: {station_auto_name}")
-    lines.append(f"station_available: {station_available}")
-    lines.append(f"Scanresult name: {getattr(Scanresult, 'name', '')}")
-    lines.append("")
-
-    lines.append("[达安扫码结果表解析]")
-    lines.append(f"encoding: {parsed.get('encoding')}")
-    lines.append(f"header_row_index: {parsed.get('header_row_index')}")
-    lines.append(f"headers: {parsed.get('headers')}")
-    lines.append(f"row_count: {len(rows)}")
-    lines.append(f"item_counter: {dict(item_counter)}")
-    lines.append(f"plate_no_str: {plate_no_str}")
-    lines.append(f"locator_rows: {locator_rows}")
-    lines.append("")
-
-    lines.append("first_5_rows:")
-    for row in rows[:5]:
-        lines.append(str(row))
-
-    lines.append("")
-    lines.append("last_5_rows:")
-    for row in rows[-5:]:
-        lines.append(str(row))
-
-    return HttpResponse(
-        "\n".join(lines),
-        content_type="text/plain; charset=utf-8"
+    # ========== 9. 控制台输出简要摘要 ==========
+    rows = parsed["rows"]
+    item_counter = Counter(row.get("item", "") for row in rows)
+    notube_count = sum(
+        1 for x in aligned["OriginBarcode"]
+        if str(x).upper() == "NOTUBE"
     )
+    used_count = len(aligned["OriginBarcode"]) - notube_count
+    match_counter = Counter(matched["MatchResult"])
+
+
+    # ========== 10. 渲染现有结果页 ==========
+    return render(request, "dashboard/ProcessResult.html", {
+        "project_name": project_name,
+        "project_name_full": project_name_full,
+        "platform": platform,
+        "today_str": today_str,
+
+        # 复用 NIMBUS/Starlet 的多板模板结构
+        "plates": plates_payload,
+
+        # 达安无需报错信息表，这里不传 station_save_summary 也可以
+        "station_save_summary": None,
+    })

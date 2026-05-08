@@ -4498,7 +4498,7 @@ def export_files(request):
     platform = str(payload.get("platform", "NewPlatform"))
     base_dir = settings.DOWNLOAD_ROOT
 
-    if platform == 'NIMBUS' or platform == 'Tecan' or platform == '手工取样':
+    if platform in ['NIMBUS', 'Tecan', '手工取样', '达安']:
         target_dir = os.path.join(base_dir, platform, today_str, project)
     else:
         target_dir = os.path.join(base_dir, platform,'工作清单和上机列表',today_str, project)
@@ -6537,6 +6537,9 @@ def Daan_process_result(request):
     systerm_num  = request.POST.get("systerm_num")  # 系统号
     testing_day      = request.POST.get("testing_day") # 检测日期
 
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    batch_id = timestamp
+
     # 检测日期
     if testing_day == "tomorrow":
         today_str = (timezone.localtime() + timedelta(days=1)).strftime("%Y%m%d")
@@ -6733,6 +6736,83 @@ def Daan_process_result(request):
         "today_str": today_str,
     }
 
+    def _save_daan_worksheet_to_sample_records(
+        *,
+        worksheet_table,
+        project_name,
+        record_date,
+        batch_id,
+        plate_no_str,
+    ):
+        """
+        达安自动化取样：将 worksheet_table 写入 SampleRecord，
+        供“历史标本查找”和“每日标本统计”使用。
+
+        说明：
+        - NIMBUS / Starlet 在构建每个 well 时已经 update_or_create；
+        - 达安模块目前只构造 worksheet_table / worklist_records，
+        因此需要在每块板构造完成后统一落库。
+        """
+        for row in worksheet_table:
+            if not isinstance(row, list):
+                continue
+
+            for cell in row:
+                if not isinstance(cell, dict):
+                    continue
+
+                # 跳过定位孔
+                if cell.get("locator"):
+                    continue
+
+                well_str = str(cell.get("well_str") or "").strip()
+                if not well_str:
+                    letter = str(cell.get("letter") or "").strip()
+                    num = str(cell.get("num") or "").strip()
+                    well_str = f"{letter}{num}" if letter and num else ""
+
+                if not well_str:
+                    continue
+
+                sample_name = str(cell.get("match_sample") or "").strip()
+
+                # 尽量保存完整条码：origin_barcode 优先；
+                # 如果没有，则用 cut_barcode + sub_barcode 拼回完整条码。
+                origin_barcode = str(cell.get("origin_barcode") or "").strip()
+                if not origin_barcode:
+                    cut_barcode = str(cell.get("cut_barcode") or "").strip()
+                    sub_barcode = str(cell.get("sub_barcode") or "").strip()
+                    origin_barcode = f"{cut_barcode}{sub_barcode}".strip()
+
+                # 完全空孔不写入
+                if not sample_name and not origin_barcode:
+                    continue
+
+                # 如果达安空孔用 NOTUBE 表示，建议跳过；
+                # 如果你希望 No match 也可追溯，可以不要跳过 No match。
+                if origin_barcode.upper() == "NOTUBE":
+                    continue
+
+                error_info = str(
+                    cell.get("error_info")
+                    or cell.get("warm")
+                    or cell.get("warn_level")
+                    or ""
+                ).strip()
+
+                SampleRecord.objects.update_or_create(
+                    project_name=project_name,
+                    record_date=record_date,
+                    batch_id=batch_id,
+                    plate_no=plate_no_str,
+                    well_str=well_str,
+                    defaults={
+                        "sample_name": sample_name,
+                        "barcode": origin_barcode,
+                        "error_info": error_info,
+                    }
+                )
+
     plate_payload = {
         "project_name": project_name,
         "project_name_full": project_name_full,
@@ -6753,6 +6833,14 @@ def Daan_process_result(request):
         "station_meta": station_meta,
     }
 
+    _save_daan_worksheet_to_sample_records(
+        worksheet_table=worksheet_table,
+        project_name=project_name,
+        record_date=record_date,
+        batch_id=batch_id,
+        plate_no_str=plate_no_str,
+    )
+
     plates_payload = [plate_payload]
 
     # ========== 9. 控制台输出简要摘要 ==========
@@ -6764,6 +6852,20 @@ def Daan_process_result(request):
     )
     used_count = len(aligned["OriginBarcode"]) - notube_count
     match_counter = Counter(matched["MatchResult"])
+
+    # ========== 达安：保存 Session，供 preview_export / export_files 使用 ==========
+    request.session["export_payload"] = {
+        "project_name": project_name,
+        "project_name_full": project_name_full,
+        "instrument_num": instrument_num,
+        "systerm_num": systerm_num,
+        "platform": platform,
+        "injection_plate": injection_plate,
+        "today_str": today_str,
+        "testing_day": testing_day,
+        "plates": plates_payload,
+    }
+    request.session.modified = True
 
 
     # ========== 10. 渲染现有结果页 ==========

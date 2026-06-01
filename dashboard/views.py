@@ -4038,7 +4038,7 @@ def ProcessResult(request):
                                     if val == "{{Well_Number}}":
                                         return well_no
                                     else:
-                                        return ell_pos
+                                        return well_pos
 
                             if val in ["{{Well_Number}}", "{{Well_Position}}"]:
                                 # 1) QC/STD：通过 name->barcode 队列取条码，再查位置信息
@@ -6304,10 +6304,21 @@ def _build_daan_worklist_records(
         well = str(well or "").strip().upper()
         well_no = _well_number_rowwise(well)
 
-        if mode == "{{Well_Number}}":
-            return f"{injection_plate}:{well_no}" if injection_plate else well_no
+        if instrument_name == "Thermo" or instrument_name == "Agilent":
+            if mode == "{{Well_Number}}":
+                return f"{injection_plate}:{well_no}" if injection_plate else well_no
+            else:
+                return f"{injection_plate}-{well}" if injection_plate else well
         else:
-            return f"{injection_plate}-{well}" if injection_plate else well
+            if mode == "{{Well_Number}}":
+                return well_no
+            else:
+                return well
+
+        # if mode == "{{Well_Number}}":
+        #     return f"{injection_plate}:{well_no}" if injection_plate else well_no
+        # else:
+        #     return f"{injection_plate}-{well}" if injection_plate else well
 
     # ========== 2. 构建 sample_name -> well 队列 ==========
     # 注意：同一个 match_sample 可能出现多次，因此用 deque。
@@ -6420,8 +6431,8 @@ def _build_daan_worklist_records(
                         # DB/Test 等没有实际孔位的项：沿用 NIMBUS 兜底 A1/1
                         if val in ("{{Well_Number}}", "{{Well_Position}}"):
                             if val == "{{Well_Number}}":
-                                return f"{injection_plate}:1" if injection_plate else "1"
-                            return f"{injection_plate}-A1" if injection_plate else "A1"
+                                return "1"
+                            return "A1"
 
                         return val
 

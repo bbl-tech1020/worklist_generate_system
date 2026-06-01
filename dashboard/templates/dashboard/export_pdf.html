@@ -167,7 +167,7 @@
     </style>
 
     <!-- ★ Tecan 专用样式：条件性添加整个 style 块 -->
-    {% if platform == "Tecan" %}
+    {% if platform == "Tecan" or platform == "达安"%}
     <style>
         .table-worksheet .cell {
             height: 16mm !important;

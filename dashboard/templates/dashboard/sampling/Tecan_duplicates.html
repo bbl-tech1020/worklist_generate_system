@@ -57,13 +57,13 @@
                         <!-- ========== 新增：冲突类型列 ========== -->
                         <td>
                             {% if r.conflict_type == "文件内重复" %}
-                                <span class="badge bg-warning text-dark">多余管</span>
+                            <span class="badge bg-warning text-dark">多余管</span>
                             {% elif r.conflict_type == "跨文件重复" %}
-                                <span class="badge bg-warning text-dark">多余管</span>
+                            <span class="badge bg-warning text-dark">多余管</span>
                             {% elif r.conflict_type == "项目实验号冲突" %}
-                                <span class="badge bg-info text-dark">检测项目错误</span>
+                            <span class="badge bg-info text-dark">检测项目错误</span>
                             {% else %}
-                                <span class="badge bg-secondary">未知</span>
+                            <span class="badge bg-secondary">未知</span>
                             {% endif %}
                         </td>
                         <!-- ======================================= -->
@@ -109,51 +109,70 @@
 
 
 <script>
-  (function () {
-    // 只在这两个输入框里启用拦截
-    function isBarcodeInputFocused() {
-      const el = document.activeElement;
-      if (!el) return false;
-      if (el.tagName !== 'INPUT') return false;
-      const name = el.getAttribute('name') || '';
-      return name.startsWith('new_') || name.startsWith('confirm_old_');
-    }
-  
-    // 判断是否为打开 DevTools 的快捷键
-    function shouldBlockDevtoolsShortcut(e) {
-      // F12
-      if (e.key === 'F12' || e.code === 'F12') return true;
-  
-      // Ctrl + Shift + I/J/C
-      const k = (e.key || '').toUpperCase();
-      if (e.ctrlKey && e.shiftKey && (k === 'I' || k === 'J' || k === 'C')) return true;
-  
-      return false;
-    }
-  
-    // capture=true：尽可能抢先拦截
-    document.addEventListener('keydown', function (e) {
-      if (!isBarcodeInputFocused()) return;
-  
-      if (shouldBlockDevtoolsShortcut(e)) {
-        e.preventDefault();
-        e.stopPropagation();
-        if (e.stopImmediatePropagation) e.stopImmediatePropagation();
-      }
-    }, true);
-  
-    document.addEventListener('keyup', function (e) {
-      if (!isBarcodeInputFocused()) return;
-  
-      if (shouldBlockDevtoolsShortcut(e)) {
-        e.preventDefault();
-        e.stopPropagation();
-        if (e.stopImmediatePropagation) e.stopImmediatePropagation();
-      }
-    }, true);
-  
-  })();
-  </script>
-  
+    (function () {
+        // 只在这两个输入框里启用拦截
+        function isBarcodeInputFocused() {
+            const el = document.activeElement;
+            if (!el) return false;
+            if (el.tagName !== 'INPUT') return false;
+            const name = el.getAttribute('name') || '';
+            return name.startsWith('new_') || name.startsWith('confirm_old_');
+        }
+
+        // 判断是否为打开 DevTools 的快捷键
+        function shouldBlockDevtoolsShortcut(e) {
+            // F12
+            if (e.key === 'F12' || e.code === 'F12') return true;
+
+            // Ctrl + Shift + I/J/C
+            const k = (e.key || '').toUpperCase();
+            if (e.ctrlKey && e.shiftKey && (k === 'I' || k === 'J' || k === 'C')) return true;
+
+            return false;
+        }
+
+        // capture=true：尽可能抢先拦截
+        document.addEventListener('keydown', function (e) {
+            if (!isBarcodeInputFocused()) return;
+
+            // 拦截扫码枪末尾的 Enter，防止表单自动提交
+            if (e.key === 'Enter' || e.code === 'Enter' || e.keyCode === 13) {
+                e.preventDefault();
+                e.stopPropagation();
+                if (e.stopImmediatePropagation) e.stopImmediatePropagation();
+
+                // 可选：扫码后自动跳到下一个输入框
+                const inputs = Array.from(document.querySelectorAll(
+                    'input[name^="confirm_old_"], input[name^="new_"]'
+                ));
+                const idx = inputs.indexOf(document.activeElement);
+                if (idx >= 0 && idx < inputs.length - 1) {
+                    inputs[idx + 1].focus();
+                    inputs[idx + 1].select();
+                }
+
+                return;
+            }
+
+            if (shouldBlockDevtoolsShortcut(e)) {
+                e.preventDefault();
+                e.stopPropagation();
+                if (e.stopImmediatePropagation) e.stopImmediatePropagation();
+            }
+        }, true);
+
+        document.addEventListener('keyup', function (e) {
+            if (!isBarcodeInputFocused()) return;
+
+            if (shouldBlockDevtoolsShortcut(e)) {
+                e.preventDefault();
+                e.stopPropagation();
+                if (e.stopImmediatePropagation) e.stopImmediatePropagation();
+            }
+        }, true);
+
+    })();
+</script>
+
 
 {% endblock %}

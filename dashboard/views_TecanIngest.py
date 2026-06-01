@@ -87,7 +87,7 @@ def _extract_station_pairs_from_upload(f) -> list[tuple[str, str]]:
     # 列名清洗
     df.columns = [str(c).strip() for c in df.columns]
 
-    mb_col = "主条码" if "主条码" in df.columns else ("子条码" if "子条码" in df.columns else None)
+    mb_col = "子条码" if "子条码" in df.columns else ("主条码" if "主条码" in df.columns else None)
     sn_col = "实验号" if "实验号" in df.columns else None
     if not mb_col or not sn_col:
         return []
